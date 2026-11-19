@@ -1,6 +1,6 @@
 # SecurityOps Platform
 
-Tenant-isolated security operations platform. Phase 3 adds live telemetry, GPS positions, sensor-driven alarms, live mapping, and incident management on top of the Phase 1/2 foundation.
+Tenant-isolated security operations platform. Phases 1-5 provide alarm operations, patrols, sensor/GPS telemetry, incident management, NSL communication, reporting and operational protection.
 
 ## Run locally
 
@@ -17,8 +17,14 @@ Phase 3 API highlights: authenticated `POST /api/v1/telemetry` for fall, posture
 
 Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, active incidents, latest positions, and patrol progress; alarm reports export as CSV/PDF; handovers, direct messages, in-app notifications, subscriptions, and audit events are tenant-scoped. Alarm and incident events are queued in an idempotent outbox and delivered asynchronously through SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATION_FROM`) and an HTTP SMS adapter (`SMS_GATEWAY_URL`, optional `SMS_GATEWAY_TOKEN`). The notification worker retries failed deliveries up to five times and starts with the backend. See `docs/adr-004-phase-4-notifications-nsl.md`.
 
+Phase 5 API highlights: filtered management statistics and employee/site/patrol/alarm/incident/work-time reports under `/api/v1/reports`; idempotent TimeScan synchronization under `/api/v1/timescan`; tenant audit query/export; retention policies; data-subject export/anonymization; and backup status. TimeScan credentials are referenced by an environment variable name in `secret_ref`, never stored as a credential. Use `scripts/backup-db.sh` and `scripts/restore-db.sh`; the complete procedure is in `docs/backup-and-restore.md` and the design in `docs/adr-005-phase-5-reporting-timescan-security.md`.
+
 ## Commands
 `npm run typecheck`, `npm test`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 
 ## Security
 Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id password hashes and a session-bound double-submit CSRF token for state-changing requests. Granular permissions are loaded from PostgreSQL role mappings; tenant-scoped SQL predicates, Helmet, CORS allow-list, rate limiting, structured logging, and a WebSocket heartbeat authenticated by the session cookie are included. Alarm history stores purpose-specific state transitions, and patrol scans retain only operational evidence needed for deviation detection. Never use development secrets in production.
+
+## Production readiness
+
+Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, migration execution outside first-start initialization, and tenant-specific retention/legal-review settings.

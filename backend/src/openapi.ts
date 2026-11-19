@@ -40,6 +40,13 @@ export const openapi={
     '/notifications/{id}/read':{post:{summary:'Mark notification read',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/notification-subscriptions':crudPath('notification-subscriptions'),
     '/notification-events':{post:{summary:'Queue a notification event',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/reports/statistics':{get:{summary:'Get filtered management statistics',security:[{sessionCookie:[]}]}},
+    '/reports/{kind}':{get:{summary:'Export employee, site, patrol, alarm, incident or work-time report',security:[{sessionCookie:[]}]}},
+    '/timescan/config':crudPath('timescan-config'),'/timescan/runs':{get:{summary:'List TimeScan sync runs',security:[{sessionCookie:[]}]}},'/timescan/sync':{post:{summary:'Synchronize TimeScan work times idempotently',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/audit':{get:{summary:'List tenant audit events',security:[{sessionCookie:[]}]}},'/audit/export':{get:{summary:'Export tenant audit events as CSV',security:[{sessionCookie:[]}] }},
+    '/retention':{get:{summary:'List data retention policies',security:[{sessionCookie:[]}]}},'/retention/{dataType}':{patch:{summary:'Update a retention policy',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/privacy/export':{post:{summary:'Export data subject records',security:[{sessionCookie:[],csrfToken:[]}] }},'/privacy/delete':{post:{summary:'Anonymize a data subject',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/backups/status':{get:{summary:'List local backup artifacts',security:[{sessionCookie:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}

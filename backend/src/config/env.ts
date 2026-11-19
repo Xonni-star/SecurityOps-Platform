@@ -12,5 +12,6 @@ const schema=z.object({
   NOTIFICATION_FROM:z.string().email().default('notifications@securityops.local'),
   SMS_GATEWAY_URL:z.string().url().optional(),
   SMS_GATEWAY_TOKEN:z.string().optional(),
+  BACKUP_DIRECTORY:z.string().default('./backups'),
 });
 export const env=schema.parse(process.env);
