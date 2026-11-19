@@ -43,6 +43,14 @@ describe('permission and tenant enforcement',()=>{
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects invalid CRUD input with the uniform error shape',async()=>{
+    queryMock.mockResolvedValue(result([{...sessionUser,permissions:['employees:write']}])) ;
+    const response=await request(app).post('/api/v1/employees').set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value']).set('x-csrf-token','csrf-value').send({name:'',email:'not-an-email',unexpected:'rejected'});
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({error:'Invalid request'});
+    expect(queryMock).toHaveBeenCalledTimes(1);
+  });
+
   it('passes the authenticated tenant to CRUD queries',async()=>{
     queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([sessionUser]):result([{id:'employee-1',tenant_id:'tenant-a',name:'Ava'}]));
     const response=await request(app).get('/api/v1/employees').set('Cookie','securityops_session=opaque');
