@@ -12,7 +12,6 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: postgres://securityops:securityops@db:5432/securityops
-      JWT_SECRET: ${JWT_SECRET:-development-only-change-me}
       CORS_ORIGIN: http://localhost:5173
     ports: ["3000:3000"]
     depends_on: {db: {condition: service_healthy}}
