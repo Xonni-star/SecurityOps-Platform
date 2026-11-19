@@ -13,5 +13,6 @@ const schema=z.object({
   SMS_GATEWAY_URL:z.string().url().optional(),
   SMS_GATEWAY_TOKEN:z.string().optional(),
   BACKUP_DIRECTORY:z.string().default('./backups'),
+  LOG_LEVEL:z.string().default('info'),
 });
 export const env=schema.parse(process.env);

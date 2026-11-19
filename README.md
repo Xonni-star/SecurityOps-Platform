@@ -34,3 +34,8 @@ Production deployment uses a secret-managed environment file:
 ```bash
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 ```
+
+Phase 7 operating procedures are documented in `docs/phase7-runbook.md`. The production
+readiness endpoint is `/ready` and checks PostgreSQL; `/health` only confirms that the
+HTTP process is alive. Use `scripts/restore-drill.sh` for an isolated restore validation
+and complete `docs/phase7-uat-checklist.md` before operational sign-off.
