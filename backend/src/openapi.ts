@@ -25,6 +25,12 @@ export const openapi={
     '/escalation-rules':crudPath('escalation-rules'),
     '/control-points':crudPath('control-points'),'/patrol-routes':crudPath('patrol-routes'),
     '/patrol-routes/{routeId}/scans':{post:{summary:'Record an NFC patrol scan and detect deviations',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/sensor-thresholds':crudPath('sensor-thresholds'),'/sensor-events':{get:{summary:'List tenant sensor events',security:[{sessionCookie:[]}] }},
+    '/telemetry':{post:{summary:'Ingest authenticated device sensor telemetry',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/positions':crudPath('positions'),'/map-data':{get:{summary:'Get latest positions and active alarms for the live map',security:[{sessionCookie:[]}] }},
+    '/incidents':crudPath('incidents'),'/incidents/{id}/assignments':{post:{summary:'Assign an employee to an incident',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/incidents/{id}/status':{post:{summary:'Advance an incident lifecycle status',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/incidents/{id}/history':{get:{summary:'List incident status history',security:[{sessionCookie:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}
