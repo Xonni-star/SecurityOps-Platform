@@ -47,6 +47,7 @@ export const openapi={
     '/retention':{get:{summary:'List data retention policies',security:[{sessionCookie:[]}]}},'/retention/{dataType}':{patch:{summary:'Update a retention policy',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/privacy/export':{post:{summary:'Export data subject records',security:[{sessionCookie:[],csrfToken:[]}] }},'/privacy/delete':{post:{summary:'Anonymize a data subject',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/backups/status':{get:{summary:'List local backup artifacts',security:[{sessionCookie:[]}] }},
+    '/nfc-devices':crudPath('nfc-devices'),'/nfc-devices/{id}':itemPath('nfc-devices'),
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}

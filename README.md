@@ -28,3 +28,9 @@ Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id pass
 ## Production readiness
 
 Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, migration execution outside first-start initialization, and tenant-specific retention/legal-review settings.
+
+Production deployment uses a secret-managed environment file:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
+```
