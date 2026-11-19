@@ -1,0 +1,35 @@
+name: android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, 'xonni-star-e2e-android-apk']
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install dependencies
+        run: npm install
+      - name: Build frontend (PWA -> dist)
+        run: npm run build -w frontend
+      - name: Sync Capacitor
+        run: npx cap sync android
+      - name: Build debug APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - name: Checksum
+        run: shasum -a 256 android/app/build/outputs/apk/debug/app-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: securityops-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
