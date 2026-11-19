@@ -13,6 +13,9 @@ test.describe('NSL-Leitstelle',()=>{
     await page.getByLabel('Password').fill('password');
     await page.getByRole('button',{name:'Sign in'}).click();
     await expect(page).toHaveURL('/');
+    const cookies=await page.context().cookies();
+    expect(cookies.find(cookie=>cookie.name==='securityops_session')?.httpOnly).toBe(true);
+    expect(cookies.find(cookie=>cookie.name==='securityops_csrf')?.httpOnly).toBe(false);
     await expect(page.getByRole('heading',{name:'NSL-Leitstelle'})).toBeVisible();
     for(const name of ['Offene Alarme','Aktive Einsätze','Positionen','Kontrollgänge']){
       await expect(page.getByRole('heading',{name:new RegExp(`^${name}`)})).toBeVisible();
