@@ -29,7 +29,7 @@ export async function sendSms(recipient:string,body:string){
 export async function queueNotificationEvent(tenantId:string,eventType:string,eventKey:string,title:string,body:string,entityType?:string,entityId?:string){
   await query(
     `INSERT INTO notifications(tenant_id,user_id,event_type,title,body,entity_type,entity_id)
-     SELECT $1,u.id,$2,$3,$4,$5,$6
+     SELECT DISTINCT ON (u.id) $1,u.id,$2,$3,$4,$5,$6
      FROM users u LEFT JOIN notification_subscriptions s
        ON s.tenant_id=$1 AND s.event_type=$2 AND s.enabled=true
        AND (s.user_id=u.id OR s.role=u.role)
