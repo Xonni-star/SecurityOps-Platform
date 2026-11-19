@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: securityops
+      POSTGRES_PASSWORD: securityops
+      POSTGRES_DB: securityops
+    ports: ["5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data", "./backend/migrations:/docker-entrypoint-initdb.d:ro"]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U securityops -d securityops"], interval: 5s, timeout: 5s, retries: 10}
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgres://securityops:securityops@db:5432/securityops
+      CORS_ORIGIN: http://localhost:5173
+    ports: ["3000:3000"]
+    depends_on: {db: {condition: service_healthy}}
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+    ports: ["5173:5173"]
+    depends_on: [backend]
+volumes: {postgres-data: {}}

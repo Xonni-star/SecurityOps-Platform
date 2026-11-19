@@ -1,0 +1,60 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment target
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      ref:
+        description: Commit, branch, or tag to deploy
+        required: true
+        default: main
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event_name == 'push' && 'production' || inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+      - name: Validate release
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Deploy over SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+          DEPLOY_ENVIRONMENT: ${{ github.event_name == 'push' && 'production' || inputs.environment }}
+          DEPLOY_REF: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+        run: |
+          test -n "$DEPLOY_HOST" -a -n "$DEPLOY_USER" -a -n "$DEPLOY_SSH_KEY" -a -n "$DEPLOY_KNOWN_HOSTS" -a -n "$DEPLOY_PATH"
+          install -m 600 /dev/null deploy_key
+          install -m 600 /dev/null known_hosts
+          printf '%s\n' "$DEPLOY_SSH_KEY" > deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > known_hosts
+          printf '%s' "$DEPLOY_ENV_FILE" | ssh -o StrictHostKeyChecking=yes -i deploy_key \
+            -o UserKnownHostsFile=known_hosts "$DEPLOY_USER@$DEPLOY_HOST" "umask 077; cd '$DEPLOY_PATH' && cat > .env.production"
+          ssh -o StrictHostKeyChecking=yes -i deploy_key -o UserKnownHostsFile=known_hosts "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_PATH' && git fetch --tags origin && git checkout '$DEPLOY_REF' && \
+             docker compose --env-file .env.production -f docker-compose.production.yml up -d --build && \
+             curl --fail --silent --show-error http://localhost/ready >/dev/null"
