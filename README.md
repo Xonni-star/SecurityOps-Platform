@@ -15,4 +15,4 @@ API: http://localhost:3000 (seed login `admin@example.com` / `password`; change 
 `npm run typecheck`, `npm test`, `npm run build`, `npm run format`.
 
 ## Security
-JWT authentication, bcrypt password hashes, role-based writes, tenant-scoped SQL predicates, Helmet, CORS allow-list, rate limiting, structured logging, and authenticated WebSocket heartbeat are included. Never use development secrets in production.
+Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id password hashes and a session-bound double-submit CSRF token for state-changing requests. Granular permissions are loaded from PostgreSQL role mappings; tenant-scoped SQL predicates, Helmet, CORS allow-list, rate limiting, structured logging, and a WebSocket heartbeat authenticated by the session cookie are included. Never use development secrets in production.
