@@ -9,5 +9,6 @@ jobs:
         with: {node-version: 22, cache: npm}
       - run: npm install
       - run: npm run typecheck
-      - run: npm test
+      - run: npm test -w backend
+      - run: npm test -w frontend
       - run: npm run build

@@ -1,15 +1,15 @@
-import {describe,it,expect,beforeEach,vi} from 'vitest';
 import request from 'supertest';
 import type {QueryResult} from 'pg';
+import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 
-const queryMock=vi.hoisted(()=>vi.fn());
-const loginMock=vi.hoisted(()=>vi.fn());
-const logoutMock=vi.hoisted(()=>vi.fn());
-vi.mock('../src/db/pool.js',()=>({query:queryMock}));
-vi.mock('../src/services/auth.js',()=>({login:loginMock,logout:logoutMock}));
+const queryMock=jest.fn();
+const loginMock=jest.fn();
+const logoutMock=jest.fn();
+jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock}));
+jest.unstable_mockModule('../src/services/auth.js',()=>({login:loginMock,logout:logoutMock}));
 
-import {app} from '../src/app.js';
-import {authenticateWebSocketRequest} from '../src/ws-auth.js';
+const {app}=await import('../src/app.js');
+const {authenticateWebSocketRequest}=await import('../src/ws-auth.js');
 
 const sessionUser={id:'user-1',tenantId:'tenant-a',email:'admin@example.com',role:'admin',permissions:['employees:read'],session_id:'s-1',csrf_token:'csrf-value',expires_at:'2099-01-01'};
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount} as unknown as QueryResult);
@@ -21,8 +21,9 @@ describe('session authentication and CSRF',()=>{
     loginMock.mockResolvedValue({sessionId:'opaque-session',csrfToken:'csrf-value',user:{id:'user-1',tenantId:'tenant-a',email:'admin@example.com',role:'admin',permissions:[]}});
     const response=await request(app).post('/api/v1/auth/login').send({email:'admin@example.com',password:'password'});
     expect(response.status).toBe(200);
-    expect(response.headers['set-cookie']).toEqual(expect.arrayContaining([expect.stringContaining('securityops_session=opaque-session; Path=/; HttpOnly'),expect.stringContaining('securityops_csrf=csrf-value; Path=/')]));
-    expect(response.headers['set-cookie'].find((cookie:string)=>cookie.startsWith('securityops_csrf='))).not.toContain('HttpOnly');
+    const cookies=response.headers['set-cookie'] as string[];
+    expect(cookies).toEqual(expect.arrayContaining([expect.stringContaining('securityops_session=opaque-session; Path=/; HttpOnly'),expect.stringContaining('securityops_csrf=csrf-value; Path=/')]));
+    expect(cookies.find((cookie:string)=>cookie.startsWith('securityops_csrf='))).not.toContain('HttpOnly');
   });
 
   it('requires the session-bound CSRF token for logout',async()=>{
