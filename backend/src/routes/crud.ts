@@ -1,6 +1,6 @@
 import {Router} from 'express'; import {z} from 'zod'; import {query} from '../db/pool.js'; import {requirePermission} from '../middleware/auth.js'; import {recordAudit} from '../services/audit.js';
 const nonempty=z.string().trim().min(1);
-const uuid=z.string().uuid();
+const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const date=z.coerce.date();
 const schemas={
   employees:z.object({name:nonempty,email:z.string().email(),title:nonempty.optional()}).strict(),

@@ -4,7 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {publish} from '../services/realtime.js';
 import {queueNotificationEvent} from '../services/notifications.js';
-const uuid=z.string().uuid(); const nonempty=z.string().trim().min(1);
+const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i); const nonempty=z.string().trim().min(1);
 const priority=z.object({name:nonempty,code:z.enum(['critical','high','medium','low']),rank:z.number().int().positive(),color:z.string().regex(/^#[0-9a-f]{6}$/i)}).strict();
 export const phase2Router=Router();
 phase2Router.use((req,res,next)=>/^\/(alarms|alarm-priorities|escalation-rules|control-points|patrol-routes)/.test(req.path)?requireAuth(req,res,()=>requireCsrf(req,res,next)):next());

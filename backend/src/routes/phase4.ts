@@ -5,7 +5,7 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {publish} from '../services/realtime.js';
 import {queueNotificationEvent} from '../services/notifications.js';
 
-const uuid=z.string().uuid();
+const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
 export const phase4Router=Router();
 phase4Router.use((req,res,next)=>/^\/(nsl|reports|handovers|messages|notifications|notification-)/.test(req.path)

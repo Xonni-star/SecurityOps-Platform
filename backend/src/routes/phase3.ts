@@ -6,7 +6,7 @@ import {createAlarm} from './phase2.js';
 import {publish} from '../services/realtime.js';
 import {queueNotificationEvent} from '../services/notifications.js';
 
-const uuid=z.string().uuid();
+const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
 const sensorType=z.enum(['fall','posture','inactivity','battery']);
 const status=z.enum(['initiated','en_route','on_site','completed']);
@@ -77,7 +77,7 @@ phase3Router.get('/sensor-events',requirePermission('telemetry:read'),async(req,
 });
 phase3Router.post('/telemetry',requirePermission('telemetry:write'),async(req,res,next)=>{
   try{
-    const body=z.object({device_id:uuid,sensor_type:sensorType,value:z.number(),recorded_at:z.coerce.date().optional(),metadata:z.record(z.unknown()).optional()}).strict().parse(req.body);
+    const body=z.object({device_id:uuid,sensor_type:sensorType,value:z.number(),recorded_at:z.coerce.date().optional(),metadata:z.record(z.string(),z.unknown()).optional()}).strict().parse(req.body);
     if(!await deviceBelongsToTenant(body.device_id,req.user!.tenantId))return res.status(404).json({error:'Device not found'});
     const recordedAt=body.recorded_at??new Date();
     const event=(await query(

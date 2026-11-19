@@ -6,7 +6,7 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
 
-const uuid=z.string().uuid();
+const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
 export const phase5Router=Router();
 phase5Router.use((req,res,next)=>/^\/(reports|timescan|audit|privacy|retention|backups)/.test(req.path)

@@ -8,6 +8,7 @@
   "scripts": {
     "build": "npm run build -w backend && npm run build -w frontend",
     "test": "npm test -w backend && npm test -w frontend",
+    "test:coverage": "npm test -w backend -- --coverage && npm test -w frontend -- --coverage",
     "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend",
     "format": "prettier --write ."
   },
