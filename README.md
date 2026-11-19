@@ -19,6 +19,13 @@ Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, ac
 
 Phase 5 API highlights: filtered management statistics and employee/site/patrol/alarm/incident/work-time reports under `/api/v1/reports`; idempotent TimeScan synchronization under `/api/v1/timescan`; tenant audit query/export; retention policies; data-subject export/anonymization; and backup status. TimeScan credentials are referenced by an environment variable name in `secret_ref`, never stored as a credential. Use `scripts/backup-db.sh` and `scripts/restore-db.sh`; the complete procedure is in `docs/backup-and-restore.md` and the design in `docs/adr-005-phase-5-reporting-timescan-security.md`.
 
+Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
+written to an encrypted IndexedDB outbox when offline and sent with a stable
+`client_event_id`; the server enforces tenant-scoped uniqueness so retries are
+idempotent. Conflicts remain visible for manual review and are never presented
+as server-confirmed. Push subscriptions use `/api/v1/push-subscriptions` and
+require an operator-provided Web Push delivery service and public key.
+
 ## Commands
 `npm run typecheck`, `npm test`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 

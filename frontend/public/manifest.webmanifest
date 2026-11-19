@@ -1,0 +1,9 @@
+{
+  "name": "SecurityOps Wächter-App",
+  "short_name": "SecurityOps",
+  "start_url": "/mobile",
+  "display": "standalone",
+  "background_color": "#101827",
+  "theme_color": "#132238",
+  "icons": []
+}
