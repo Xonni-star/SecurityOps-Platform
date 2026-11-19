@@ -15,6 +15,8 @@ Phase 2 API highlights: `POST /api/v1/alarms/panic`, `POST /api/v1/alarms/:id/ac
 
 Phase 3 API highlights: authenticated `POST /api/v1/telemetry` for fall, posture, inactivity, and battery events; `POST /api/v1/positions` plus history and `GET /api/v1/map-data`; configurable sensor thresholds; and incident creation, assignment, lifecycle, and history endpoints. Sensor thresholds feed the existing Phase 2 alarm system: fall defaults to critical, inactivity defaults to high, and all values are configurable per tenant. WebSocket clients receive `sensor.updated`, `position.updated`, `incident.created`, `incident.assigned`, and `incident.status_changed`. Retention indexes are included for operational cleanup of telemetry and position data.
 
+Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, active incidents, latest positions, and patrol progress; alarm reports export as CSV/PDF; handovers, direct messages, in-app notifications, subscriptions, and audit events are tenant-scoped. Alarm and incident events are queued in an idempotent outbox and delivered asynchronously through SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATION_FROM`) and an HTTP SMS adapter (`SMS_GATEWAY_URL`, optional `SMS_GATEWAY_TOKEN`). The notification worker retries failed deliveries up to five times and starts with the backend. See `docs/adr-004-phase-4-notifications-nsl.md`.
+
 ## Commands
 `npm run typecheck`, `npm test`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 

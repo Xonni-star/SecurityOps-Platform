@@ -4,6 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {createAlarm} from './phase2.js';
 import {publish} from '../services/realtime.js';
+import {queueNotificationEvent} from '../services/notifications.js';
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
@@ -131,6 +132,7 @@ phase3Router.post('/incidents',requirePermission('incidents:write'),async(req,re
     const incident=(await query(`INSERT INTO incidents(tenant_id,alarm_id,site_id,employee_id,priority_id,description,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[req.user!.tenantId,body.alarm_id??null,body.site_id??null,body.employee_id??null,body.priority_id,body.description,req.user!.id])).rows[0];
     await query(`INSERT INTO incident_history(incident_id,tenant_id,to_status,changed_by) VALUES($1,$2,'initiated',$3)`,[incident.id,req.user!.tenantId,req.user!.id]);
     publish(req.user!.tenantId,'incident.created',incident,'incidents:read');
+    void queueNotificationEvent(req.user!.tenantId,'incident.created',`incident:${incident.id}`,'Neuer Einsatz',body.description,'incident',incident.id).catch(()=>undefined);
     res.status(201).json(incident);
   }catch(error){next(error);}
 });
@@ -155,6 +157,7 @@ phase3Router.post('/incidents/:id/status',requirePermission('incidents:write'),a
     const incident=(await query('UPDATE incidents SET status=$1,updated_at=now() WHERE id=$2 AND tenant_id=$3 RETURNING *',[body.status,req.params.id,req.user!.tenantId])).rows[0];
     await query(`INSERT INTO incident_history(incident_id,tenant_id,from_status,to_status,changed_by) VALUES($1,$2,$3,$4,$5)`,[req.params.id,req.user!.tenantId,current.status,body.status,req.user!.id]);
     publish(req.user!.tenantId,'incident.status_changed',incident,'incidents:read');
+    void queueNotificationEvent(req.user!.tenantId,'incident.status_changed',`incident:${incident.id}:${body.status}`,'Einsatzstatus geändert',`Status: ${body.status}`,'incident',incident.id).catch(()=>undefined);
     res.json(incident);
   }catch(error){next(error);}
 });

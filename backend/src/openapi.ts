@@ -31,6 +31,15 @@ export const openapi={
     '/incidents':crudPath('incidents'),'/incidents/{id}/assignments':{post:{summary:'Assign an employee to an incident',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/incidents/{id}/status':{post:{summary:'Advance an incident lifecycle status',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/incidents/{id}/history':{get:{summary:'List incident status history',security:[{sessionCookie:[]}] }},
+    '/nsl/dashboard':{get:{summary:'Consolidated NSL dashboard with alarms, incidents, positions and patrols',security:[{sessionCookie:[]}]}},
+    '/nsl/alarms/{id}':{get:{summary:'Alarm detail with audit history',security:[{sessionCookie:[]}]}},
+    '/reports/alarms':{get:{summary:'Export alarm report as CSV or PDF',security:[{sessionCookie:[]}]}},
+    '/handovers':crudPath('handovers'),'/handovers/{id}/acknowledge':{post:{summary:'Acknowledge shift handover',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/messages':crudPath('messages'),'/messages/{id}/read':{post:{summary:'Mark direct message read',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/notifications':{get:{summary:'List in-app notifications',security:[{sessionCookie:[]}] }},
+    '/notifications/{id}/read':{post:{summary:'Mark notification read',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/notification-subscriptions':crudPath('notification-subscriptions'),
+    '/notification-events':{post:{summary:'Queue a notification event',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}
