@@ -29,6 +29,42 @@ require an operator-provided Web Push delivery service and public key.
 ## Commands
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 
+Playwright E2E requires PostgreSQL 16 plus the backend and frontend dev servers:
+
+```bash
+docker compose up -d db
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+`npm run test:e2e` starts the backend on port 3000 and Vite on port 5173 through
+`playwright.config.ts`. The suite covers unauthenticated redirects, admin login
+with both session/CSRF cookies, the four NSL dashboard areas, panic alarm
+visibility, acknowledge/resolve lifecycle, report CSV/PDF responses, and the
+mobile scan/panic/offline-outbox surface. Reset the database with
+`docker compose down -v` when a clean seeded database is needed.
+
+## Android debug APK
+
+The mobile WebView is configured with Capacitor (`de.example.securityops`) and
+uses the built PWA from `frontend/dist`:
+
+```bash
+npm run android:debug
+```
+
+The APK is written to
+`android/app/build/outputs/apk/debug/app-debug.apk`. Install it with
+`adb install -r android/app/build/outputs/apk/debug/app-debug.apk` and calculate
+the delivery checksum with
+`shasum -a 256 android/app/build/outputs/apk/debug/app-debug.apk`.
+
+The app supports the existing IndexedDB AES-GCM outbox, service worker,
+manifest, scan and panic workflows. NFC/BLE hardware access is intentionally not
+simulated: the current UI accepts a scanned/entered NFC identifier, and native
+NFC/BLE plugins still need to be selected and integrated for hardware access.
+
 ## Security
 Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id password hashes and a session-bound double-submit CSRF token for state-changing requests. Granular permissions are loaded from PostgreSQL role mappings; tenant-scoped SQL predicates, Helmet, CORS allow-list, rate limiting, structured logging, and a WebSocket heartbeat authenticated by the session cookie are included. Alarm history stores purpose-specific state transitions, and patrol scans retain only operational evidence needed for deviation detection. Never use development secrets in production.
 

@@ -12,3 +12,15 @@ jobs:
       - run: npm test -w backend
       - run: npm test -w frontend
       - run: npm run build
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - run: docker compose up -d db
+      - run: npm run test:e2e
+      - if: always()
+        run: docker compose down -v
