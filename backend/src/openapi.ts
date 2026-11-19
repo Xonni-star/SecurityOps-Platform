@@ -17,6 +17,14 @@ export const openapi={
     '/sites':crudPath('sites'),'/sites/{id}':itemPath('sites'),
     '/devices':crudPath('devices'),'/devices/{id}':itemPath('devices'),
     '/alarms':crudPath('alarms'),'/alarms/{id}':itemPath('alarms'),
+    '/alarms/panic':{post:{summary:'Create a critical panic alarm',security:[{sessionCookie:[],csrfToken:[]}],responses:{'201':{description:'Created and published in real time'},'429':{description:'Rate limited'}}}},
+    '/alarms/{id}/acknowledge':{post:{summary:'Acknowledge an alarm',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/alarms/{id}/resolve':{post:{summary:'Resolve an acknowledged or escalated alarm',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/alarms/{id}/history':{get:{summary:'List alarm lifecycle history',security:[{sessionCookie:[]}] }},
+    '/alarm-priorities':crudPath('alarm-priorities'),'/alarm-priorities/{id}':itemPath('alarm-priorities'),
+    '/escalation-rules':crudPath('escalation-rules'),
+    '/control-points':crudPath('control-points'),'/patrol-routes':crudPath('patrol-routes'),
+    '/patrol-routes/{routeId}/scans':{post:{summary:'Record an NFC patrol scan and detect deviations',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}
