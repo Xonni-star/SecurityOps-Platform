@@ -28,10 +28,10 @@ SMTP-, SMS- und TimeScan-Secrets.
 
 Der Workflow `.github/workflows/deploy.yml` deployt manuell nach Staging oder
 Produktion und bei einem `v*`-Tag nach Produktion. GitHub-Environment-Secrets
-`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PATH` und
-`DEPLOY_ENV_FILE` sind je Umgebung getrennt zu hinterlegen. Der SSH-Host muss
-den Deploy-Key vorab in `known_hosts`/der Runner-Konfiguration vertrauenswürdig
-verankern; die Workflow-Datei ersetzt keine Freigabe- oder TLS-Konfiguration.
+`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`,
+`DEPLOY_PATH` und `DEPLOY_ENV_FILE` sind je Umgebung getrennt zu hinterlegen.
+`DEPLOY_KNOWN_HOSTS` enthält den verifizierten öffentlichen Host-Key des Servers;
+die Workflow-Datei ersetzt keine Freigabe- oder TLS-Konfiguration.
 
 ## Stop, Update, Rollback
 
