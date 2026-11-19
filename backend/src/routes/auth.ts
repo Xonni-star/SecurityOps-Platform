@@ -1,0 +1,2 @@
+import {Router} from 'express'; import {z} from 'zod'; import {login} from '../services/auth.js';
+export const authRouter=Router(); authRouter.post('/login',async(req,res,next)=>{try{const {email,password}=z.object({email:z.string().email(),password:z.string().min(1)}).parse(req.body); const result=await login(email,password); if(!result)return res.status(401).json({error:'Invalid credentials'}); res.json(result);}catch(e){next(e);}});
