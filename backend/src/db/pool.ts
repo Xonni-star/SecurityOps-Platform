@@ -4,9 +4,9 @@ export const pool=new pg.Pool({connectionString:env.DATABASE_URL,max:10});
 type DbContext={tenantId?:string;loginEmail?:string;sessionTokenHash?:string};
 const dbContext=new AsyncLocalStorage<DbContext>();
 
-export function withTenantContext<T>(tenantId:string,work:()=>Promise<T>){return dbContext.run({tenantId},work);}
-export function withLoginContext<T>(loginEmail:string,work:()=>Promise<T>){return dbContext.run({loginEmail},work);}
-export function withSessionContext<T>(sessionTokenHash:string,work:()=>Promise<T>){return dbContext.run({sessionTokenHash},work);}
+export function withTenantContext<T>(tenantId:string,work:()=>Promise<T>){return dbContext.run({...dbContext.getStore(),tenantId},work);}
+export function withLoginContext<T>(loginEmail:string,work:()=>Promise<T>){return dbContext.run({...dbContext.getStore(),loginEmail},work);}
+export function withSessionContext<T>(sessionTokenHash:string,work:()=>Promise<T>){return dbContext.run({...dbContext.getStore(),sessionTokenHash},work);}
 
 export async function withTransaction<T>(work:(client:pg.PoolClient)=>Promise<T>){
   const context=dbContext.getStore();

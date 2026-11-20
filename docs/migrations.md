@@ -68,3 +68,12 @@ RLS transaction context (`app.tenant_id`). The API stores a canonical SHA-256
 payload hash and completes the receipt and mobile mutation in one transaction.
 It is safe to retry the same mutation after a lost response; a changed payload
 or action is rejected with HTTP 409.
+
+## Phase 2, step 7: authenticated devices
+
+Migration 014 is additive. It extends the existing tenant-scoped `devices`
+table with authenticated-device metadata, `revoked_at`, and binds `sessions`
+through `(tenant_id,device_id)`. It requires PostgreSQL `pgcrypto`, the
+Phase-1 RLS and composite-FK setup, and PostgreSQL transactional DML.
+Existing unbound sessions are no longer accepted by the auth middleware; users
+must sign in again with a client-generated device UUID.
