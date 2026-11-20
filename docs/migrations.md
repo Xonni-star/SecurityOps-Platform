@@ -118,3 +118,19 @@ receipts. Holder references are UUID-only and never duplicate personal data.
 PostgreSQL integration tests require `POSTGRES_TEST_DATABASE_URL`; without it,
 the RLS suite is skipped and the missing database is reported explicitly by
 the test command.
+
+## Phase 3, step 12: shift handover protocols
+
+Migration 019 adds tenant/site-scoped shift handovers, identity-bound
+participants, append-only confirmation rows, and hash-chained append-only
+events. Each participant references exactly one existing user or employee.
+Confirmations record the authenticated session and device; corrections and
+revocations append new records rather than silently changing history.
+
+Handover mutations use the existing `sync_receipts` actions and reject action or
+payload-hash mismatches. Site grants limit site-bound access, while the
+`handover:confirm` own scope binds ordinary confirmations to the participant's
+authenticated user identity. No direct task/attachment contract, delta/pull
+feed, or cross-device synchronization is introduced. Retention and DSGVO
+deletion require a separately approved policy.
+Migration `020_mfa.sql` adds encrypted TOTP fields, pending-MFA session state, tenant role policy, hashed recovery codes, RLS policies, and MFA permissions. Apply it with the normal migration runner. Set `MFA_ENCRYPTION_KEY` only in the deployment secret store; never commit it.
