@@ -104,7 +104,8 @@ SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-000
 ROLLBACK;
 SQL
 )"
-assert_equals 0 "$(printf '%s\n' "$tenant_a_visibility" | tail -n 1)" "tenant isolation"
+tenant_a_visibility_count="$(printf '%s\n' "$tenant_a_visibility" | grep -E '^[0-9]+$' | tail -n 1)"
+assert_equals 0 "$tenant_a_visibility_count" "tenant isolation"
 
 while IFS=$'\t' read -r object_key expected_hash expected_size; do
   [[ -n "$object_key" ]] || continue

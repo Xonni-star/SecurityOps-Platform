@@ -33,6 +33,7 @@ jobs:
           cat > restore-drill-bin/pg_restore <<'EOF'
           #!/usr/bin/env bash
           exec docker run --rm --network host \
+            --user "$(id -u):$(id -g)" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -v /tmp:/tmp \
             -w "$GITHUB_WORKSPACE" \
@@ -42,6 +43,7 @@ jobs:
           cat > restore-drill-bin/pg_dump <<'EOF'
           #!/usr/bin/env bash
           exec docker run --rm --network host \
+            --user "$(id -u):$(id -g)" \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -v /tmp:/tmp \
             -w "$GITHUB_WORKSPACE" \
