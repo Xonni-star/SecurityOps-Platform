@@ -5,11 +5,12 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
+import {checkSmsStatus,checkSmtpStatus,checkTimeScanStatus} from '../services/provider-status.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
 export const phase5Router=Router();
-phase5Router.use((req,res,next)=>/^\/(reports|timescan|audit|privacy|retention|backups)/.test(req.path)
+phase5Router.use((req,res,next)=>/^\/(reports|admin|timescan|audit|privacy|retention|backups)/.test(req.path)
   ? requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next())
   : next());
 
@@ -63,6 +64,16 @@ phase5Router.get('/reports/statistics',requirePermission('reports:read'),async(r
       query(`SELECT COALESCE(SUM(minutes),0)::integer minutes,COUNT(*)::integer entries FROM work_time_entries WHERE tenant_id=$1 AND started_at BETWEEN $2 AND $3`,[tenant,from,to]),
     ]);
     res.json({from,to,alarms:alarms.rows[0],incidents:incidents.rows[0],patrols:patrols.rows[0],work_time:work.rows[0]});
+  }catch(error){next(error);}
+});
+
+phase5Router.get('/admin/provider-status',requirePermission('providers:read'),async(req,res,next)=>{
+  try{
+    const connection=(await query<{base_url:string;account_ref:string;secret_ref:string;enabled:boolean}>(
+      'SELECT base_url,account_ref,secret_ref,enabled FROM timescan_connections WHERE tenant_id=$1',[req.user!.tenantId],
+    )).rows[0];
+    const providers=await Promise.all([checkSmtpStatus(),checkSmsStatus(),checkTimeScanStatus(connection)]);
+    res.json({providers});
   }catch(error){next(error);}
 });
 

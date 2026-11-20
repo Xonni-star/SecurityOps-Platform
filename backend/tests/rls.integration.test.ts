@@ -2,6 +2,7 @@ import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 
 const databaseUrl=process.env.POSTGRES_TEST_DATABASE_URL;
+if(!databaseUrl)console.warn('PostgreSQL tenant RLS integration skipped: POSTGRES_TEST_DATABASE_URL is not set.');
 const describePostgres=databaseUrl?describe:describe.skip;
 
 describePostgres('PostgreSQL tenant RLS integration',()=>{

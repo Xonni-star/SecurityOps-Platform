@@ -8,7 +8,7 @@ jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withTransacti
 jest.unstable_mockModule('../src/services/timescan.js',()=>({createTimeScanAdapter:jest.fn(()=>({listWorkTimes}))}));
 const {app}=await import('../src/app.js');
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount} as unknown as QueryResult);
-const user={id:'00000000-0000-0000-0000-000000000001',tenantId:'00000000-0000-0000-0000-000000000010',email:'admin@example.com',role:'admin',permissions:['reports:read','timescan:read','timescan:write','audit:read','privacy:write','backup:read']};
+const user={id:'00000000-0000-0000-0000-000000000001',tenantId:'00000000-0000-0000-0000-000000000010',email:'admin@example.com',role:'admin',permissions:['reports:read','timescan:read','timescan:write','audit:read','privacy:write','backup:read','providers:read']};
 const session={...user,session_id:'session-1',csrf_token:'csrf-value',expires_at:'2099-01-01'};
 const csrf={Cookie:['securityops_session=session-1','securityops_csrf=csrf-value'],'x-csrf-token':'csrf-value'};
 
@@ -40,6 +40,21 @@ describe('phase 5 reporting',()=>{
 });
 
 describe('phase 5 TimeScan and privacy',()=>{
+  it('reports provider status without treating unconfigured providers as verified',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      return result([]);
+    });
+    const response=await request(app).get('/api/v1/admin/provider-status').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({provider:'smtp',status:'not_configured'}),
+      expect.objectContaining({provider:'sms',status:'not_configured'}),
+      expect.objectContaining({provider:'timescan',status:'not_configured'}),
+    ]));
+    expect(response.body.providers.some((provider:{status:string})=>provider.status==='verified')).toBe(false);
+  });
+
   it('syncs work time idempotently through the adapter',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([session]);
