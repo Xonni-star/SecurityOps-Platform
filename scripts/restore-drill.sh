@@ -89,6 +89,7 @@ fi
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
 "$MC" mb --ignore-existing "$MC_ALIAS/$RESTORE_BUCKET" >/dev/null
 "$MC" mirror --overwrite "$WORK_DIRECTORY/source-blobs" "$MC_ALIAS/$RESTORE_BUCKET"
+"$MC" mirror --overwrite "$MC_ALIAS/$RESTORE_BUCKET" "$WORK_DIRECTORY/restored-blobs"
 restore_finished="$(date +%s)"
 
 assert_equals() {
