@@ -4,7 +4,7 @@ import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 
 const queryMock=jest.fn();
 const listWorkTimes=jest.fn(async()=>[{externalId:'shift-1',employeeEmail:'worker@example.com',startedAt:'2026-11-19T08:00:00Z',endedAt:'2026-11-19T16:00:00Z',minutes:480}]);
-jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock}));
+jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withLoginContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withSessionContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withTenantContext:async (_value:string,work:()=>Promise<unknown>)=>work()}));
 jest.unstable_mockModule('../src/services/timescan.js',()=>({createTimeScanAdapter:jest.fn(()=>({listWorkTimes}))}));
 const {app}=await import('../src/app.js');
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount} as unknown as QueryResult);

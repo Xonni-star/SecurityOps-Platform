@@ -3,7 +3,7 @@ import type {QueryResult} from 'pg';
 import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 
 const queryMock=jest.fn();
-jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock}));
+jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withLoginContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withSessionContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withTenantContext:async (_value:string,work:()=>Promise<unknown>)=>work()}));
 const {app}=await import('../src/app.js');
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount} as unknown as QueryResult);
 const user={id:'00000000-0000-0000-0000-000000000001',tenantId:'00000000-0000-0000-0000-000000000010',email:'operator@example.com',role:'operator',permissions:['telemetry:read','telemetry:write','positions:read','positions:write','incidents:read','incidents:write','alarms:read','alarms:write']};
