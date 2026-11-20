@@ -1,4 +1,5 @@
 import {api,csrf} from './api';
+import {uuid} from "./uuid";
 
 export type MobileEventKind='patrol_scan'|'panic';
 export type MobileOutboxItem={id:string;kind:MobileEventKind;path:string;body:Record<string,unknown>;createdAt:string;status:'pending'|'conflict';error?:string};
@@ -61,7 +62,7 @@ export async function listOutbox():Promise<MobileOutboxItem[]>{
 }
 
 export async function enqueue(item:Omit<MobileOutboxItem,'id'|'createdAt'|'status'>){
-  const record:MobileOutboxItem={...item,id:crypto.randomUUID(),createdAt:new Date().toISOString(),status:'pending'};
+  const record:MobileOutboxItem={...item,id:uuid(),createdAt:new Date().toISOString(),status:'pending'};
   const encrypted=await encryptBody(record.body);
   await transaction(STORE,'readwrite',store=>store.add({...record,body:undefined,...encrypted}));
   return record;

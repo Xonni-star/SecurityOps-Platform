@@ -1,5 +1,6 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {api} from '../lib/api';
+import {uuid} from "../lib/uuid";
 
 type Handover={id:string;site_id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type Participant={id:string;participant_role:string;user_id:string|null;employee_id:string|null;state:string};
@@ -20,7 +21,7 @@ export function Handovers(){
   const create=async(event:FormEvent)=>{
     event.preventDefault();
     try{
-      await api('/handover-protocols',{method:'POST',body:JSON.stringify({...createForm,shift_id:createForm.shift_id||null,client_mutation_id:crypto.randomUUID()})});
+      await api('/handover-protocols',{method:'POST',body:JSON.stringify({...createForm,shift_id:createForm.shift_id||null,client_mutation_id:uuid()})});
       setCreateForm({site_id:'',shift_id:'',title:''});await load();
     }catch(e){setError((e as Error).message);}
   };
@@ -33,7 +34,7 @@ export function Handovers(){
     if(!selected)return;
     try{
       await api(`/handover-protocols/${selected.id}/participants`,{method:'POST',body:JSON.stringify({
-        participant_role:participantForm.participant_role,user_id:participantForm.user_id||null,employee_id:participantForm.employee_id||null,client_mutation_id:crypto.randomUUID(),
+        participant_role:participantForm.participant_role,user_id:participantForm.user_id||null,employee_id:participantForm.employee_id||null,client_mutation_id:uuid(),
       })});
       setParticipantForm({participant_role:'outgoing',user_id:'',employee_id:''});await open(selected.id);await load();
     }catch(e){setError((e as Error).message);}
@@ -41,7 +42,7 @@ export function Handovers(){
   const confirm=async()=>{
     if(!selected||!confirmationParticipant)return;
     try{
-      await api(`/handover-protocols/${selected.id}/confirmations`,{method:'POST',body:JSON.stringify({participant_id:confirmationParticipant,client_mutation_id:crypto.randomUUID()})});
+      await api(`/handover-protocols/${selected.id}/confirmations`,{method:'POST',body:JSON.stringify({participant_id:confirmationParticipant,client_mutation_id:uuid()})});
       setConfirmationParticipant('');await open(selected.id);await load();
     }catch(e){setError((e as Error).message);}
   };

@@ -1,8 +1,8 @@
 import {useEffect,useState} from 'react';
+import {uuid} from "../lib/uuid";
 import {api} from '../lib/api';
 import {enqueue,listOutbox,syncOutbox,watchConnection,type MobileOutboxItem} from '../lib/offline';
 
-const uuid=()=>crypto.randomUUID();
 export function MobileGuard(){
   const [routeId,setRouteId]=useState('');
   const [employeeId,setEmployeeId]=useState('');
