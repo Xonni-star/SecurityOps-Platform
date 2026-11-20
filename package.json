@@ -7,18 +7,21 @@
   ],
   "scripts": {
     "build": "npm run build -w backend && npm run build -w frontend",
-    "migrate": "npm run migrate -w backend",
-    "loadtest": "npm run loadtest -w backend",
-    "loadtest:fixture": "npm run loadtest:fixture -w backend",
-    "e2e": "playwright test",
-    "e2e:fixture": "npm run e2e:fixture -w backend",
     "test": "npm test -w backend && npm test -w frontend",
     "test:coverage": "npm test -w backend -- --coverage && npm test -w frontend -- --coverage",
     "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend",
-    "format": "prettier --write ."
+    "test:e2e": "playwright test",
+    "format": "prettier --write .",
+    "cap:sync": "npm run build -w frontend && npx cap sync",
+    "android:debug": "npm run cap:sync && cd android && ./gradlew assembleDebug"
   },
   "devDependencies": {
-    "prettier": "^3.5.3",
-    "@playwright/test": "^1.52.0"
+    "@capacitor/cli": "^8.6.2",
+    "@playwright/test": "^1.65.1",
+    "prettier": "^3.5.3"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2"
   }
 }
