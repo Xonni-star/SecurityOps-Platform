@@ -20,19 +20,65 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
+          mc_version="RELEASE.2025-08-13T08-35-41Z"
+          mc_url="https://github.com/minio/mc/releases/download/${mc_version}/mc.linux-amd64.${mc_version}"
+          mc_sha256="01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891"
           curl --fail --silent --show-error --location \
-            https://dl.min.io/client/mc/release/linux-amd64/mc \
+            "$mc_url" \
             --output mc
+          printf '%s  %s\n' "$mc_sha256" mc | sha256sum --check --status
           chmod +x mc
           sudo install -m 0755 mc /usr/local/bin/mc
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.8'
+      - name: Build pinned MinIO server binary
+        run: |
+          minio_version="RELEASE.2025-10-15T17-29-55Z"
+          minio_url="https://github.com/minio/minio/archive/refs/tags/${minio_version}.tar.gz"
+          minio_sha256="be6d0bd3696c3a13a35f02d3a0280b64319c67918b4501c5c3d87f96d000085c"
+          curl --fail --silent --show-error --location \
+            "$minio_url" \
+            --output "$RUNNER_TEMP/minio-source.tar.gz"
+          printf '%s  %s\n' "$minio_sha256" "$RUNNER_TEMP/minio-source.tar.gz" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/minio-source"
+          tar --extract --gzip --file "$RUNNER_TEMP/minio-source.tar.gz" \
+            --strip-components=1 --directory "$RUNNER_TEMP/minio-source"
+          (cd "$RUNNER_TEMP/minio-source" && go build -trimpath -o "$RUNNER_TEMP/minio" .)
+          chmod 0755 "$RUNNER_TEMP/minio"
       - name: Start isolated drill services
-        run: docker compose up -d db minio
+        run: |
+          docker run --detach \
+            --name restore-drill-postgres \
+            --env POSTGRES_USER=securityops \
+            --env POSTGRES_PASSWORD=securityops \
+            --env POSTGRES_DB=securityops \
+            --publish 5432:5432 \
+            postgres:16-alpine
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=restore-drill \
+          MINIO_ROOT_PASSWORD=restore-drill-secret \
+          "$RUNNER_TEMP/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 \
+            --console-address 127.0.0.1:9001 \
+            >"$RUNNER_TEMP/minio.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/minio.pid"
       - name: Wait for services
         run: |
-          until docker compose exec -T db pg_isready -U securityops -d securityops; do sleep 2; done
+          until pg_isready --host 127.0.0.1 --username securityops --dbname securityops; do sleep 2; done
           until curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; do sleep 2; done
       - name: Apply schema
-        run: docker compose run --rm backend npm run migrate
+        env:
+          PGPASSWORD: securityops
+        run: |
+          for migration in backend/migrations/*.sql; do
+            psql \
+              --host 127.0.0.1 \
+              --username securityops \
+              --dbname securityops \
+              --set ON_ERROR_STOP=1 \
+              --file "$migration"
+          done
       - name: Create isolated restore database
         env:
           PGPASSWORD: securityops
@@ -49,7 +95,15 @@ jobs:
         run: ./scripts/restore-drill.sh
       - name: Tear down isolated drill services
         if: always()
-        run: docker compose down -v
+        run: |
+          if [[ -f "$RUNNER_TEMP/minio.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null || true
+          fi
+          rm -rf "$RUNNER_TEMP/minio-data" "$RUNNER_TEMP/minio-source" \
+            "$RUNNER_TEMP/minio-source.tar.gz" "$RUNNER_TEMP/minio" \
+            "$RUNNER_TEMP/minio.log" "$RUNNER_TEMP/minio.pid"
+          docker rm --force restore-drill-postgres 2>/dev/null || true
+          docker compose down -v
   browser-e2e:
     runs-on: ubuntu-latest
     env:

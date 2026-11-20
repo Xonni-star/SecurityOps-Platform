@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: securityops
       POSTGRES_DB: securityops
     ports: ["5432:5432"]
-    volumes: ["postgres-data:/var/lib/postgresql/data", "./backend/migrations:/docker-entrypoint-initdb.d:ro"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
     healthcheck: {test: ["CMD-SHELL", "pg_isready -U securityops -d securityops"], interval: 5s, timeout: 5s, retries: 10}
   minio:
     image: minio/minio:RELEASE.2024-06-13T22-53-53Z
