@@ -16,6 +16,9 @@ export async function sendEmail(recipient:string,subject:string,body:string){
   const transport=nodemailer.createTransport({
     host:env.SMTP_HOST,port:env.SMTP_PORT,secure:env.SMTP_PORT===465,
     auth:env.SMTP_USER?{user:env.SMTP_USER,password:env.SMTP_PASSWORD}:undefined,
+    connectionTimeout:10000,
+    greetingTimeout:10000,
+    socketTimeout:15000,
   });
   await transport.sendMail({from:env.NOTIFICATION_FROM,to:recipient,subject,text:body});
 }
@@ -26,6 +29,7 @@ export async function sendSms(recipient:string,body:string){
     method:'POST',
     headers:{'content-type':'application/json',...(env.SMS_GATEWAY_TOKEN?{authorization:`Bearer ${env.SMS_GATEWAY_TOKEN}`}:{})},
     body:JSON.stringify({to:recipient,message:body}),
+    signal:AbortSignal.timeout(10000),
   });
   if(!response.ok)throw new Error(`SMS gateway returned ${response.status}`);
 }

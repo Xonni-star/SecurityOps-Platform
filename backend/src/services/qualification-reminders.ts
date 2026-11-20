@@ -1,6 +1,7 @@
 import {query} from '../db/pool.js';
 import {queueNotificationEvent} from './notifications.js';
 import {recordAudit} from './audit.js';
+import {releaseWorkerLease,tryAcquireWorkerLease} from './worker-lease.js';
 
 export async function processQualificationReminders(now=new Date()){
   const rows=(await query<{tenant_id:string;qualification_id:string;employee_id:string;employee_name:string;code:string;name:string;valid_until:string;days_left:number}>(
@@ -24,7 +25,9 @@ export async function processQualificationReminders(now=new Date()){
 let timer:NodeJS.Timeout|undefined;
 export function startQualificationReminderWorker(intervalMs=86400000){
   if(timer)return stopQualificationReminderWorker;
-  timer=setInterval(()=>{void processQualificationReminders().catch(()=>undefined);},intervalMs);
+  const tick=async()=>{if(!await tryAcquireWorkerLease('qualification-reminders-worker',Math.max(60000,intervalMs*2)))return;try{await processQualificationReminders();}catch{}finally{await releaseWorkerLease('qualification-reminders-worker');}};
+  timer=setInterval(()=>{void tick();},intervalMs);
+  void tick();
   timer.unref();
   return stopQualificationReminderWorker;
 }

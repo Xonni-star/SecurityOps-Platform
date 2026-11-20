@@ -39,6 +39,12 @@ remains `not_configured` or `configured` until a real verification succeeds.
 `/api/v1/backups/status` exposes the worker state, last run, target outcomes and
 recent errors without secret payloads.
 
+Scheduled backup, escalation, forwarding and qualification workers use
+PostgreSQL-backed leases. The lease is short-lived and released after each
+tick; if an instance is terminated, another healthy instance can take over
+after expiry. Verify the `worker_leases` table exists after migrations when
+deploying multiple backend instances.
+
 Operational verification requires a successful run with database and DMS
 artifact hashes, followed by the existing isolated `scripts/restore-drill.sh`.
 If PostgreSQL, MinIO, provider credentials or required CLIs are unavailable,
