@@ -53,6 +53,9 @@ jobs:
           MINIO_BUCKET: securityops-dms-restore-drill
           RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES: YES
         run: ./scripts/restore-drill.sh
+      - name: Dump isolated service logs on failure
+        if: failure()
+        run: docker compose logs --no-color db minio
       - name: Tear down isolated drill services
         if: always()
         run: docker compose down -v
