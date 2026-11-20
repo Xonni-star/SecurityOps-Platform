@@ -99,4 +99,12 @@ describe('WebSocket authentication',()=>{
     const unauthenticated=await authenticateWebSocketRequest({headers:{cookie:''}} as never);
     expect(unauthenticated).toBeNull();
   });
+
+  it('applies the same origin allowlist to WebSocket handshakes',async()=>{
+    queryMock.mockResolvedValue(result([sessionUser]));
+    const allowed=await authenticateWebSocketRequest({headers:{origin:'http://localhost:5173',cookie:'securityops_session=opaque'}} as never);
+    expect(allowed?.id).toBe('user-1');
+    const denied=await authenticateWebSocketRequest({headers:{origin:'https://evil.example',cookie:'securityops_session=opaque'}} as never);
+    expect(denied).toBeNull();
+  });
 });

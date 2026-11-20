@@ -12,6 +12,12 @@ jobs:
       - run: npm test -w backend
       - run: npm test -w frontend
       - run: npm run build
+  production-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run real production Compose integration
+        run: npm run test:production-compose
   restore-drill:
     runs-on: ubuntu-latest
     steps:

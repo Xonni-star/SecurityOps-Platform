@@ -6,7 +6,7 @@ const schema=z.object({
   NODE_ENV:z.string().default('development'),
   PORT:z.coerce.number().default(3000),
   DATABASE_URL:z.string().default('postgres://securityops:securityops@localhost:5432/securityops'),
-  CORS_ORIGIN:z.string().default('http://localhost:5173'),
+  CORS_ORIGIN:z.preprocess(value=>value===''?undefined:value,z.string().optional()),
   SESSION_TTL_HOURS:z.coerce.number().int().positive().max(168).default(8),
   LOGIN_MAX_FAILURES:z.coerce.number().int().positive().max(20).default(5),
   LOGIN_LOCK_MINUTES:z.coerce.number().int().positive().max(1440).default(15),
@@ -42,8 +42,25 @@ const schema=z.object({
   DMS_BLOB_BACKUP_STATUS:z.enum(['unknown','healthy','degraded','failed']).default('unknown'),
   LOG_LEVEL:z.string().default('info'),
 });
-export const env=schema.parse(process.env);
-export const allowedOrigins=env.CORS_ORIGIN.split(',').map(origin=>origin.trim()).filter(Boolean);
-if(env.NODE_ENV==='production'&&allowedOrigins.some(origin=>origin.includes('localhost')||origin.includes('127.0.0.1'))){
-  throw new Error('Production CORS_ORIGIN must not allow localhost');
+const parsedEnv=schema.parse(process.env);
+
+export function parseAllowedOrigins(nodeEnv:string,configuredOrigin:string|undefined):string[]{
+  if(nodeEnv==='production'&&!configuredOrigin)throw new Error('Production CORS_ORIGIN is required and must list explicit external origins');
+  const rawOrigins=(configuredOrigin??'http://localhost:5173').split(',').map(origin=>origin.trim()).filter(Boolean);
+  if(rawOrigins.length===0)throw new Error('CORS_ORIGIN must contain at least one origin');
+  return rawOrigins.map(origin=>{
+    if(origin==='*'||origin.includes('*'))throw new Error('CORS_ORIGIN must not contain wildcards');
+    let parsed:URL;
+    try{parsed=new URL(origin);}catch{throw new Error(`CORS_ORIGIN contains an invalid origin: ${origin}`);}
+    if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash){
+      throw new Error(`CORS_ORIGIN must contain origins only: ${origin}`);
+    }
+    if(nodeEnv==='production'&&['localhost','127.0.0.1','::1','0.0.0.0'].includes(parsed.hostname)){
+      throw new Error('Production CORS_ORIGIN must not allow localhost or loopback');
+    }
+    return parsed.origin;
+  });
 }
+
+export const allowedOrigins=parseAllowedOrigins(parsedEnv.NODE_ENV,parsedEnv.CORS_ORIGIN);
+export const env={...parsedEnv,CORS_ORIGIN:allowedOrigins.join(',')};
