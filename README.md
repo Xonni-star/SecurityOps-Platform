@@ -102,7 +102,15 @@ Opaque server-side sessions are issued in an httpOnly, same-site cookie; only a 
 
 Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, and tenant-specific retention/legal-review settings. The production backend runs the migration runner before starting the API.
 
-Production deployment uses a secret-managed environment file:
+Production deployment uses a secret-managed environment file. For an interactive first-time setup, run:
+
+```bash
+./scripts/install-production.sh
+```
+
+The installer validates the HTTPS frontend origin, rejects localhost/loopback and wildcard CORS values, asks for ports and database settings, reads secrets without echo, generates a strong database password when omitted, writes `.env.production` with mode `0600`, starts the Compose stack, and verifies `/ready`. It never prints configured secrets.
+
+For unattended or existing managed deployments, configure `.env.production` separately and run:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
