@@ -65,6 +65,7 @@ jobs:
           MINIO_SECRET_KEY: restore-drill-secret
           MINIO_BUCKET: securityops-dms-restore-drill
           RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES: YES
+          RESTORE_DRILL_WORK_DIRECTORY: ${{ github.workspace }}/.restore-drill
         run: ./scripts/restore-drill.sh
       - name: Tear down isolated drill services
         if: always()
