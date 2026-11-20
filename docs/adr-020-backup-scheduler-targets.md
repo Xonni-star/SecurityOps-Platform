@@ -13,7 +13,7 @@ are read through the existing blob adapter and referenced by object key,
 size and SHA-256 in a manifest. A run is successful only when at least one
 enabled target received every artifact.
 
-Targets support local files, SMB/CIFS, FTP/FTPS, SFTP and S3-compatible
+Targets support local files, SMB/CIFS, SFTP and S3-compatible storage. Unencrypted FTP is not supported; any future FTPS support must remain a separate encrypted adapter and API type.
 providers. Target secrets are encrypted with `BACKUP_SECRET_KEY` or represented
 by an external `secret_ref`; secrets are never returned by the API or logged.
 Retries and failed target runs remain explicit evidence.

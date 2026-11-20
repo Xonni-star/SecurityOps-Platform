@@ -16,21 +16,24 @@ export interface BackupSchedule {
 export function scheduleIsValid(schedule:BackupSchedule){
   if(!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(schedule.time))return false;
   if(schedule.kind==='weekly'&&(!Number.isInteger(schedule.weekday)||Number(schedule.weekday)<0||Number(schedule.weekday)>6))return false;
+  try{new Intl.DateTimeFormat('en-GB',{timeZone:schedule.timezone}).format();}catch{return false;}
   return schedule.kind==='daily'||schedule.kind==='weekly';
 }
 
 export function isScheduleDue(schedule:BackupSchedule,now=new Date()){
   if(!schedule.enabled||!scheduleIsValid(schedule))return false;
   const [hours,minutes]=schedule.time.split(':').map(Number);
-  const local=new Intl.DateTimeFormat('en-GB',{timeZone:schedule.timezone,hour:'2-digit',minute:'2-digit',weekday:'short',hourCycle:'h23'}).formatToParts(now);
+  const local=new Intl.DateTimeFormat('en-GB',{timeZone:schedule.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short',hourCycle:'h23'}).formatToParts(now);
   const values=Object.fromEntries(local.map(part=>[part.type,part.value]));
   const weekdayMap:Record<string,number>={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6};
-  const matchesTime=Number(values.hour)===hours&&Number(values.minute)===minutes;
+  const matchesTime=Number(values.hour)>hours||(Number(values.hour)===hours&&Number(values.minute)>=minutes);
   const matchesDay=schedule.kind==='daily'||weekdayMap[values.weekday]===schedule.weekday;
   if(!matchesTime||!matchesDay)return false;
-  if(!schedule.lastRunAt)return true;
+  if(!schedule.lastRunAt)return Number(values.hour)===hours&&Number(values.minute)===minutes;
   const last=new Date(schedule.lastRunAt);
-  return now.getTime()-last.getTime()>=60_000;
+  const lastLocal=new Intl.DateTimeFormat('en-GB',{timeZone:schedule.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(last);
+  const lastValues=Object.fromEntries(lastLocal.map(part=>[part.type,part.value]));
+  return `${values.year}-${values.month}-${values.day}`!==`${lastValues.year}-${lastValues.month}-${lastValues.day}`;
 }
 
 export function retentionDue(createdAt:string|Date,retentionDays:number|undefined|null,now=new Date()){

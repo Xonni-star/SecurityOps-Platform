@@ -126,7 +126,13 @@ schedulingRouter.post('/scheduling/shifts/:shiftId/assignments',requirePermissio
       permission(req,'scheduling:write',shift.site_id);
       const row=(await tx.query(`INSERT INTO schedule_assignments(tenant_id,shift_id,employee_id,created_by,created_session_id,client_mutation_id)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[req.user!.tenantId,shift.id,body.employee_id,req.user!.id,sessionId,body.client_mutation_id])).rows[0];
-      const quals=(await tx.query('SELECT code FROM employee_qualifications WHERE tenant_id=$1 AND employee_id=$2 AND (valid_until IS NULL OR valid_until>=CURRENT_DATE) AND (valid_from IS NULL OR valid_from<=CURRENT_DATE)',[req.user!.tenantId,body.employee_id])).rows.map(item=>item.code);
+      const qualificationRows=(await tx.query<{code:string;valid_from:string|null;valid_until:string|null;status:string}>(
+        'SELECT code,valid_from,valid_until,status FROM employee_qualifications WHERE tenant_id=$1 AND employee_id=$2',[req.user!.tenantId,body.employee_id],
+      )).rows;
+      const shiftStart=new Date(shift.starts_at).getTime();const shiftEnd=new Date(shift.ends_at).getTime();
+      const quals=qualificationRows.filter(item=>item.status==='valid'
+        &&(!item.valid_from||new Date(`${item.valid_from}T00:00:00Z`).getTime()<=shiftStart)
+        &&(!item.valid_until||new Date(`${item.valid_until}T23:59:59.999Z`).getTime()>=shiftEnd)).map(item=>item.code);
       const absences=(await tx.query('SELECT starts_at,ends_at FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2',[req.user!.tenantId,body.employee_id])).rows;
       const existing=(await tx.query(`SELECT sh.starts_at,sh.ends_at FROM schedule_assignments a JOIN schedule_shifts sh ON sh.tenant_id=a.tenant_id AND sh.id=a.shift_id
         WHERE a.tenant_id=$1 AND a.employee_id=$2 AND a.id<>$3 AND a.status='assigned'`,[req.user!.tenantId,body.employee_id,row.id])).rows;

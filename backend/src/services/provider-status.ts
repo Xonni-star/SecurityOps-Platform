@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import {env} from '../config/env.js';
 import {createTimeScanAdapter} from './timescan.js';
+import {resolveSecret} from './secrets.js';
 
 export type ProviderStatusValue='not_configured'|'configured'|'verified'|'failed';
 export type ProviderStatus={
@@ -64,8 +65,9 @@ export async function checkPersistedProviderStatus(config:PersistedProviderConfi
 
 export async function checkTimeScanStatus(connection?:{base_url:string;account_ref:string;secret_ref:string;enabled:boolean}):Promise<ProviderStatus>{
   if(!connection||!connection.enabled)return result('timescan','not_configured','TimeScan is not configured or disabled');
-  const secret=process.env[connection.secret_ref];
-  if(!secret)return result('timescan','configured','TimeScan configured; referenced secret is unavailable');
+  let secret:string|undefined;
+  try{secret=await resolveSecret(connection.secret_ref);}catch{return result('timescan','failed','TimeScan secret is unavailable');}
+  if(!secret)return result('timescan','configured','TimeScan configured; no secret reference provided');
   try{
     await createTimeScanAdapter(connection.base_url,connection.account_ref,secret).verify();
     return result('timescan','verified','TimeScan connection verified');

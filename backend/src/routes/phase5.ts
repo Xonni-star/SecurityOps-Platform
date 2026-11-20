@@ -6,6 +6,7 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
 import {checkSmsStatus,checkSmtpStatus,checkTimeScanStatus} from '../services/provider-status.js';
+import {resolveSecret} from '../services/secrets.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -121,7 +122,7 @@ phase5Router.post('/timescan/sync',requirePermission('timescan:write'),async(req
   try{
     const {from,to}=range(req);const config=(await query('SELECT * FROM timescan_connections WHERE tenant_id=$1 AND enabled=true',[req.user!.tenantId])).rows[0];
     if(!config)return res.status(409).json({error:'TimeScan is not configured'});
-    const secret=process.env[config.secret_ref];if(!secret)return res.status(500).json({error:'Referenced TimeScan secret is unavailable'});
+    let secret:string|undefined;try{secret=await resolveSecret(config.secret_ref);}catch{return res.status(502).json({error:'Referenced TimeScan secret is unavailable'});}if(!secret)return res.status(502).json({error:'Referenced TimeScan secret is unavailable'});
     const run=(await query(`INSERT INTO timescan_sync_runs(tenant_id,status) VALUES($1,'running') RETURNING id`,[req.user!.tenantId])).rows[0];
     try{
       const entries=await createTimeScanAdapter(config.base_url,config.account_ref,secret).listWorkTimes(from,to);
