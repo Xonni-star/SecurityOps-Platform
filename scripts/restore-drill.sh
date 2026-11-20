@@ -99,10 +99,12 @@ assert_equals 1 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until > now() AND lifecycle_state <> 'available'")" "future retention state"
 
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE restore_drill_rls;
+SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
 DO $$
 DECLARE visible_count integer;
 BEGIN
-  PERFORM set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
   SELECT count(*) INTO visible_count
   FROM dms_versions
   WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
@@ -110,6 +112,7 @@ BEGIN
     RAISE EXCEPTION 'tenant isolation failed: % foreign rows visible', visible_count;
   END IF;
 END $$;
+ROLLBACK;
 SQL
 
 while IFS=$'\t' read -r object_key expected_hash expected_size; do
