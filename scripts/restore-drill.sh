@@ -26,10 +26,10 @@ if [[ "$MINIO_BUCKET" == "$RESTORE_BUCKET" ]]; then
   exit 2
 fi
 
-BACKUP_FILE="${BACKUP_FILE:-$(mktemp -t securityops-restore-drill).dump}"
+BACKUP_FILE="${BACKUP_FILE:-$(mktemp -t securityops-restore-drill.XXXXXX).dump}"
 FIXTURE_SQL="${FIXTURE_SQL:-$(dirname "$0")/restore-drill-fixture.sql}"
 FIXTURE_BLOB_DIRECTORY="${FIXTURE_BLOB_DIRECTORY:-$(dirname "$0")/restore-drill-fixture-blobs}"
-WORK_DIRECTORY="${RESTORE_DRILL_WORK_DIRECTORY:-$(mktemp -d -t securityops-restore-drill)}"
+WORK_DIRECTORY="${RESTORE_DRILL_WORK_DIRECTORY:-$(mktemp -d -t securityops-restore-drill.XXXXXX)}"
 MC_ALIAS="${MC_ALIAS:-restore-drill}"
 MC="${MC:-mc}"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
