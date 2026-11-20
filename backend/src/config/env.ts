@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { z } from 'zod';
 const optionalString=z.preprocess(value=>value===''?undefined:value,z.string().min(1).optional());
+const optionalUrl=z.preprocess(value=>value===''?undefined:value,z.string().url().optional());
 const schema=z.object({
   NODE_ENV:z.string().default('development'),
   PORT:z.coerce.number().default(3000),
@@ -17,7 +18,8 @@ const schema=z.object({
   SMTP_USER:z.string().optional(),
   SMTP_PASSWORD:z.string().optional(),
   NOTIFICATION_FROM:z.string().email().default('notifications@securityops.local'),
-  SMS_GATEWAY_URL:z.string().url().optional(),
+  SMS_GATEWAY_URL:optionalUrl,
+  SMS_GATEWAY_HEALTH_URL:optionalUrl,
   SMS_GATEWAY_TOKEN:z.string().optional(),
   BACKUP_DIRECTORY:z.string().default('./backups'),
   DMS_STORAGE_PROVIDER:z.enum(['minio']).default('minio'),
