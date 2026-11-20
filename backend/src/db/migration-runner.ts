@@ -28,7 +28,6 @@ const schemaRequirements=(migrationFiles:MigrationFile[]):{table:string;column?:
     {table},
     ...Array.from(columns).map(column=>({table,column})),
   ]);
-  if(checks.length===0) throw new Error('No schema requirements could be derived from migration files');
   return checks;
 };
 
@@ -84,6 +83,7 @@ async function validateBaseline(client:Queryable,migrationsDir:string,migrationF
 
 async function isSchemaPresent(client:Queryable,migration:MigrationFile):Promise<boolean>{
   const checks=schemaRequirements([migration]);
+  if(checks.length===0)return true;
   for(const check of checks){
     const result=check.column
       ? await client.query<{exists:boolean}>(
