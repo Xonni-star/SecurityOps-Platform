@@ -16,6 +16,7 @@ if [[ "$RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES" != "YES" ]]; then
   echo "OFFEN: RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES must be YES; no resources were changed" >&2
   exit 2
 fi
+RESTORE_BUCKET="${RESTORE_BUCKET:-${MINIO_BUCKET}-restore-$(date -u +%Y%m%d%H%M%S)-$$}"
 if [[ "$DATABASE_URL" == "$RESTORE_DATABASE_URL" ]]; then
   echo "OFFEN: source and restore database URLs must be different isolated resources" >&2
   exit 2
@@ -29,7 +30,6 @@ BACKUP_FILE="${BACKUP_FILE:-$(mktemp -t securityops-restore-drill).dump}"
 FIXTURE_SQL="${FIXTURE_SQL:-$(dirname "$0")/restore-drill-fixture.sql}"
 FIXTURE_BLOB_DIRECTORY="${FIXTURE_BLOB_DIRECTORY:-$(dirname "$0")/restore-drill-fixture-blobs}"
 WORK_DIRECTORY="${RESTORE_DRILL_WORK_DIRECTORY:-$(mktemp -d -t securityops-restore-drill)}"
-RESTORE_BUCKET="${RESTORE_BUCKET:-${MINIO_BUCKET}-restore-$(date -u +%Y%m%d%H%M%S)-$$}"
 MC_ALIAS="${MC_ALIAS:-restore-drill}"
 MC="${MC:-mc}"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
