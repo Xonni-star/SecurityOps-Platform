@@ -97,14 +97,12 @@ assert_equals 2 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 assert_equals 1 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until <= now() AND lifecycle_state='available'")" "expired retention candidate"
 assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until > now() AND lifecycle_state <> 'available'")" "future retention state"
 
-tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL'
-BEGIN;
+tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL' | tail -n 1
 SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
 SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
-ROLLBACK;
 SQL
 )"
-assert_equals 0 "$(printf '%s\n' "$tenant_a_visibility" | tail -n 1)" "tenant isolation"
+assert_equals 0 "$tenant_a_visibility" "tenant isolation"
 
 while IFS=$'\t' read -r object_key expected_hash expected_size; do
   [[ -n "$object_key" ]] || continue
