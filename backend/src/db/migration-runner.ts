@@ -79,7 +79,7 @@ async function validateBaseline(client:Queryable,migrationsDir:string,migrationF
     if(!result.rows[0]?.exists) missing.push(check.column?`${check.table}.${check.column}`:check.table);
   }
 
-  if(missing.length>0) throw new Error(`Existing database is not the expected 9-migration baseline; missing ${missing.join(', ')}`);
+  if(missing.length>0) throw new Error(`Existing database is not the expected migration baseline; missing ${missing.join(', ')}`);
 }
 
 async function isSchemaPresent(client:Queryable,migration:MigrationFile):Promise<boolean>{

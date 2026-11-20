@@ -9,8 +9,8 @@ const itemPath=(name:string)=>({
 export const openapi={
   openapi:'3.0.3',info:{title:'SecurityOps Platform API',version:'1.0.0'},servers:[{url:'/api/v1'}],
   paths:{
-    '/auth/login':{post:{summary:'Create session',description:'Verifies an Argon2id password and sets an opaque securityops_session httpOnly cookie plus a readable securityops_csrf cookie.',responses:{'200':{description:'Session created'},'401':{description:'Invalid credentials'}}}},
-    '/auth/logout':{post:{summary:'Destroy session',security:[{sessionCookie:[],csrfToken:[]}],responses:{'204':{description:'Logged out'},'403':{description:'Invalid CSRF token'}}}},
+    '/auth/login':{post:{summary:'Create session',description:'Verifies an Argon2id password and sets an opaque, expiring securityops_session httpOnly cookie plus a readable securityops_csrf cookie. Login attempts are rate limited.',responses:{'200':{description:'Session created'},'401':{description:'Invalid credentials'},'403':{description:'Origin not allowed'},'429':{description:'Too many login attempts'}}}},
+    '/auth/logout':{post:{summary:'Revoke session',security:[{sessionCookie:[],csrfToken:[]}],responses:{'204':{description:'Logged out and revoked'},'403':{description:'Invalid CSRF token or Origin'}}}},
     '/auth/me':{get:{summary:'Get current user and permissions',security:[{sessionCookie:[]}],responses:{'200':{description:'Authenticated user'}}}},
     '/employees':crudPath('employees'),'/employees/{id}':itemPath('employees'),
     '/customers':crudPath('customers'),'/customers/{id}':itemPath('customers'),

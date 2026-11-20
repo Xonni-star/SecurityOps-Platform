@@ -10,7 +10,9 @@ Tenant-isolated security operations platform. Phases 1-5 provide alarm operation
 4. `npm run migrate`
 5. `npm run dev -w backend` and `npm run dev -w frontend`
 
-API: http://localhost:3000 (seed login `admin@example.com` / `password`; change immediately). UI: http://localhost:5173. PostgreSQL migrations are mounted into the database image for first startup. For a reset, `docker compose down -v` then start again.
+API: http://localhost:3000. UI: http://localhost:5173. PostgreSQL migrations are mounted into the database image for first startup. For a reset, `docker compose down -v` then start again.
+
+For an explicitly configured local development account, set `DEV_SEED_ENABLED=true`, `DEV_SEED_EMAIL`, `DEV_SEED_PASSWORD` (at least 12 characters), and `DEV_SEED_TENANT_NAME` in an untracked `.env`, then run `npm run seed:dev -w backend`. No development credentials are stored in the repository, and production disables this bootstrap path.
 
 Migration execution, checksum validation, baseline handling, and deployment upgrades are documented in [`docs/migrations.md`](docs/migrations.md).
 
@@ -33,7 +35,7 @@ require an operator-provided Web Push delivery service and public key.
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 
 ## Security
-Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id password hashes and a session-bound double-submit CSRF token for state-changing requests. Granular permissions are loaded from PostgreSQL role mappings; tenant-scoped SQL predicates, Helmet, CORS allow-list, rate limiting, structured logging, and a WebSocket heartbeat authenticated by the session cookie are included. Alarm history stores purpose-specific state transitions, and patrol scans retain only operational evidence needed for deviation detection. Never use development secrets in production.
+Opaque server-side sessions are issued in an httpOnly, same-site cookie; only a SHA-256 token hash is stored, sessions expire and can be revoked on logout, and the CSRF double-submit check is timing-safe. State-changing browser requests require an explicit configured Origin allowlist, and login has a dedicated rate limit. Rotate `SESSION_TTL_HOURS`, database credentials, and all provider secrets through the deployment secret manager; revoke active sessions during incident response by setting `sessions.revoked_at`. Never use development secrets in production.
 
 ## Production readiness
 
