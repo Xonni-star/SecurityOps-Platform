@@ -9,9 +9,11 @@ const itemPath=(name:string)=>({
 export const openapi={
   openapi:'3.0.3',info:{title:'SecurityOps Platform API',version:'1.0.0'},servers:[{url:'/api/v1'}],
   paths:{
-    '/auth/login':{post:{summary:'Create session',description:'Verifies an Argon2id password and sets an opaque, expiring securityops_session httpOnly cookie plus a readable securityops_csrf cookie. Login attempts are rate limited.',responses:{'200':{description:'Session created'},'401':{description:'Invalid credentials'},'403':{description:'Origin not allowed'},'429':{description:'Too many login attempts'}}}},
+    '/auth/login':{post:{summary:'Create device-bound session',description:'Verifies an Argon2id password, registers the client-generated UUID as a tenant device, and binds the opaque session to it. Client tenant values are never trusted.',requestBody:{required:true,content:{'application/json':{schema:{type:'object',required:['email','password','device_id'],properties:{email:{type:'string',format:'email'},password:{type:'string'},device_id:{type:'string',format:'uuid'},metadata:{type:'object',properties:{platform:{type:'string',maxLength:64},app_version:{type:'string',maxLength:32}},additionalProperties:false}}}}}},responses:{'200':{description:'Device-bound session created'},'401':{description:'Invalid credentials'},'403':{description:'Origin not allowed or device revoked'},'409':{description:'Device identity conflict'},'429':{description:'Too many login attempts'}}}},
     '/auth/logout':{post:{summary:'Revoke session',security:[{sessionCookie:[],csrfToken:[]}],responses:{'204':{description:'Logged out and revoked'},'403':{description:'Invalid CSRF token or Origin'}}}},
     '/auth/me':{get:{summary:'Get current user and permissions',security:[{sessionCookie:[]}],responses:{'200':{description:'Authenticated user'}}}},
+    '/auth/devices':{get:{summary:'List authenticated tenant devices',security:[{sessionCookie:[]}] }},
+    '/auth/devices/{id}/revoke':{post:{summary:'Revoke a device and all bound sessions atomically',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/employees':crudPath('employees'),'/employees/{id}':itemPath('employees'),
     '/customers':crudPath('customers'),'/customers/{id}':itemPath('customers'),
     '/sites':crudPath('sites'),'/sites/{id}':itemPath('sites'),
@@ -48,6 +50,10 @@ export const openapi={
     '/privacy/export':{post:{summary:'Export data subject records',security:[{sessionCookie:[],csrfToken:[]}] }},'/privacy/delete':{post:{summary:'Anonymize a data subject',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/backups/status':{get:{summary:'List local backup artifacts',security:[{sessionCookie:[]}] }},
     '/nfc-devices':crudPath('nfc-devices'),'/nfc-devices/{id}':itemPath('nfc-devices'),
+    '/watchbook/categories':crudPath('watchbook-categories'),'/watchbook/priorities':crudPath('watchbook-priorities'),
+    '/watchbook/entries':{get:{summary:'List current digital watchbook entries',security:[{sessionCookie:[]}]},post:{summary:'Create an idempotent append-only watchbook entry',security:[{sessionCookie:[],csrfToken:[]}]}},
+    '/watchbook/entries/{id}/history':{get:{summary:'List immutable watchbook revision history',security:[{sessionCookie:[]}] }},
+    '/watchbook/entries/{id}/corrections':{post:{summary:'Append an author-bound watchbook correction',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}

@@ -68,3 +68,27 @@ RLS transaction context (`app.tenant_id`). The API stores a canonical SHA-256
 payload hash and completes the receipt and mobile mutation in one transaction.
 It is safe to retry the same mutation after a lost response; a changed payload
 or action is rejected with HTTP 409.
+
+## Phase 2, step 7: authenticated devices
+
+Migration 014 is additive. It extends the existing tenant-scoped `devices`
+table with authenticated-device metadata, `revoked_at`, and binds `sessions`
+through `(tenant_id,device_id)`. It requires PostgreSQL `pgcrypto`, the
+Phase-1 RLS and composite-FK setup, and PostgreSQL transactional DML.
+Existing unbound sessions are no longer accepted by the auth middleware; users
+must sign in again with a client-generated device UUID.
+
+## Phase 3, step 8: digital watchbook
+
+Migration 015 adds tenant-scoped watchbook categories, priorities, immutable
+entries, and append-only revisions. PostgreSQL RLS, composite foreign keys,
+and an immutable-history trigger enforce tenant isolation and prevent update or
+delete of revisions. Corrections must reference the prior revision and are
+bound to the authenticated user session and device.
+
+The initial category and priority set is inserted for existing tenants and can
+be extended only with the corresponding scoped permissions. New mobile entries
+use `client_entry_id` or `Idempotency-Key` with the existing sync receipts;
+there is no delta, pull, or cross-device synchronization contract. Retention
+and deletion of watchbook history require a separately approved operational
+policy; the API exposes no history deletion operation.

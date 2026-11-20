@@ -6,6 +6,7 @@ jest.unstable_mockModule('../src/db/pool.js',()=>({
   withLoginContext:async (_value:string,work:()=>Promise<unknown>)=>work(),
   withSessionContext:async (_value:string,work:()=>Promise<unknown>)=>work(),
   withTenantContext:async (_value:string,work:()=>Promise<unknown>)=>work(),
+  withTransaction:async (work:(client:{query:typeof queryMock})=>Promise<unknown>)=>work({query:queryMock}),
 }));
 
 const {logout,generateOpaqueToken}=await import('../src/services/auth.js');
