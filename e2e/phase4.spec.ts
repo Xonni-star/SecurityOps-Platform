@@ -18,7 +18,7 @@ test.beforeAll(async ({ request }) => {
     data: {
       email,
       password,
-      device_id: "00000000-0000-0000-0000-000000000201",
+      device_id: "00000000-0000-4000-8000-000000000201",
       metadata: { platform: "playwright", app_version: "e2e" },
     },
   });
@@ -114,10 +114,10 @@ test("runs the mobile PWA offline outbox and reconciles the server receipt", asy
   );
   expect(sw).toBeTruthy();
   await expect(page.getByText(/Online/)).toBeVisible();
-  await page.getByLabel("Route").fill("00000000-0000-0000-0000-000000000106");
+  await page.getByLabel("Route").fill("00000000-0000-4000-8000-000000000106");
   await page
     .getByLabel("Mitarbeiter-ID")
-    .fill("00000000-0000-0000-0000-000000000104");
+    .fill("00000000-0000-4000-8000-000000000104");
   await page.getByLabel("NFC-/Barcode-Kennung").fill("e2e-nfc-01");
   await context.setOffline(true);
   await page.getByRole("button", { name: "Kontrollpunkt bestätigen" }).click();
