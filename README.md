@@ -23,6 +23,19 @@ Phase 3 API highlights: authenticated `POST /api/v1/telemetry` for fall, posture
 Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, active incidents, latest positions, and patrol progress; alarm reports export as CSV/PDF; handovers, direct messages, in-app notifications, subscriptions, and audit events are tenant-scoped. Alarm and incident events are queued in an idempotent outbox and delivered asynchronously through SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATION_FROM`) and an HTTP SMS adapter (`SMS_GATEWAY_URL`, optional `SMS_GATEWAY_TOKEN`). The notification worker retries failed deliveries up to five times and starts with the backend. See `docs/adr-004-phase-4-notifications-nsl.md`.
 
 Phase 5 API highlights: filtered management statistics and employee/site/patrol/alarm/incident/work-time reports under `/api/v1/reports`; idempotent TimeScan synchronization under `/api/v1/timescan`; tenant audit query/export; retention policies; data-subject export/anonymization; and backup status. TimeScan credentials are referenced by an environment variable name in `secret_ref`, never stored as a credential. Use `scripts/backup-db.sh` and `scripts/restore-db.sh`; the complete procedure is in `docs/backup-and-restore.md` and the design in `docs/adr-005-phase-5-reporting-timescan-security.md`.
+Provider acceptance status is available to authorized administrators at `/api/v1/admin/provider-status` and in the Admin page. Status is never `verified` when a provider is unconfigured; SMS requires the separate `SMS_GATEWAY_HEALTH_URL` for a non-mutating health check. See `docs/adr-018-phase-4-step-13b-provider-acceptance.md`.
+
+The administration UI also exposes weekly backup weekday selection, external
+alarm forwarding, customer evidence exports/read-only portal access, and
+account-lockout administration. Forwarding and report routes remain tenant
+scoped and audit every configuration/export action. `DIN-77200` is shown only
+as a documentation profile, never as a certification or legal guarantee.
+
+Backup targets are local, SMB/CIFS, SFTP, or S3-compatible only; unencrypted
+FTP is deliberately unavailable. SFTP host-key fingerprints are mandatory.
+Use `secret_ref` with deployment-managed JSON payloads for SFTP, S3, SMB,
+SMTP, SMS, and forwarding credentials. See `docs/backup-runbook.md` for
+formats, worker behavior, restore verification, and rollback.
 
 Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
 written to an encrypted IndexedDB outbox when offline and sent with a stable
@@ -31,8 +44,56 @@ idempotent. Conflicts remain visible for manual review and are never presented
 as server-confirmed. Push subscriptions use `/api/v1/push-subscriptions` and
 require an operator-provided Web Push delivery service and public key.
 
+Phase 3, step 10 adds `/dms` and the `/api/v1/dms/*` API. Document metadata and
+immutable versions are tenant/RLS scoped. Uploads are size/content-type/hash
+validated, stored through the MinIO/S3 adapter in quarantine, scanned through
+the ClamAV adapter, and become downloadable only in `available` state. The API
+never exposes provider URLs or object paths. Binary content is intentionally
+not part of the generic offline sync protocol; only metadata/lifecycle actions
+may be synchronized by a future explicit contract.
+
+Configure `MINIO_*` and `CLAMAV_*` for providers. PostgreSQL/DB backups do not
+back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
+`DMS_BLOB_BACKUP_STATUS`, and `/api/v1/dms/backup/status` contract separately.
+
 ## Commands
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
+
+Playwright E2E requires PostgreSQL 16 plus the backend and frontend dev servers:
+
+```bash
+docker compose up -d db
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+`npm run test:e2e` starts the backend on port 3000 and Vite on port 5173 through
+`playwright.config.ts`. The suite covers unauthenticated redirects, admin login
+with both session/CSRF cookies, the four NSL dashboard areas, panic alarm
+visibility, acknowledge/resolve lifecycle, report CSV/PDF responses, and the
+mobile scan/panic/offline-outbox surface. Reset the database with
+`docker compose down -v` when a clean seeded database is needed.
+
+## Android debug APK
+
+The mobile WebView is configured with Capacitor (`de.example.securityops`) and
+uses the built PWA from `frontend/dist`:
+
+```bash
+npm run android:debug
+```
+
+The APK is written to
+`android/app/build/outputs/apk/debug/app-debug.apk`. Install it with
+`adb install -r android/app/build/outputs/apk/debug/app-debug.apk` and calculate
+the delivery checksum with
+`shasum -a 256 android/app/build/outputs/apk/debug/app-debug.apk`.
+
+The app supports the existing IndexedDB AES-GCM outbox, service worker,
+manifest, scan and panic workflows. NFC/BLE hardware access is intentionally not
+simulated: the current UI accepts a scanned/entered NFC identifier, and native
+NFC/BLE plugins still need to be selected and integrated for hardware access.
 
 ## Security
 Opaque server-side sessions are issued in an httpOnly, same-site cookie; only a SHA-256 token hash is stored, sessions expire and can be revoked on logout, and the CSRF double-submit check is timing-safe. State-changing browser requests require an explicit configured Origin allowlist, and login has a dedicated rate limit. Rotate `SESSION_TTL_HOURS`, database credentials, and all provider secrets through the deployment secret manager; revoke active sessions during incident response by setting `sessions.revoked_at`. Never use development secrets in production.
@@ -47,7 +108,36 @@ Production deployment uses a secret-managed environment file:
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 ```
 
+Set `CORS_ORIGIN` to the exact browser origin(s) that users will use, separated
+by commas; production rejects missing values, localhost/loopback origins and
+wildcards. For a Pi on a LAN without a public DNS name:
+
+```dotenv
+HTTP_PORT=8080
+API_PORT=3000
+CORS_ORIGIN=https://192.168.1.50
+```
+
+For DNS behind a reverse proxy, terminate TLS at the proxy and forward the
+same host to the frontend port while keeping the API port bound to loopback:
+
+```dotenv
+HTTP_PORT=8080
+API_PORT=3000
+CORS_ORIGIN=https://securityops.example.com
+```
+
+The proxy must preserve `Host`, `Origin`, `X-Forwarded-For` and WebSocket
+upgrade headers, and must provide a valid certificate for the configured DNS
+name. The deployment host must provide Docker Compose, persistent storage for
+`postgres-data`, an externally managed production secret file, DNS/LAN routing,
+TLS certificates, and configured SMTP/SMS/TimeScan and backup targets.
+Verify both `http://127.0.0.1:${API_PORT}/ready` and
+`https://securityops.example.com/ready`; the latter is the frontend proxy's
+database-backed readiness check, not a static HTTP 200.
+
 Phase 7 operating procedures are documented in `docs/phase7-runbook.md`. The production
 readiness endpoint is `/ready` and checks PostgreSQL; `/health` only confirms that the
 HTTP process is alive. Use `scripts/restore-drill.sh` for an isolated restore validation
-and complete `docs/phase7-uat-checklist.md` before operational sign-off.
+and complete [`docs/production-readiness-checklist.md`](docs/production-readiness-checklist.md)
+and `docs/phase7-uat-checklist.md` before operational sign-off.

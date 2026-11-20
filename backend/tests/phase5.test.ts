@@ -8,7 +8,7 @@ jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withTransacti
 jest.unstable_mockModule('../src/services/timescan.js',()=>({createTimeScanAdapter:jest.fn(()=>({listWorkTimes}))}));
 const {app}=await import('../src/app.js');
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount} as unknown as QueryResult);
-const user={id:'00000000-0000-0000-0000-000000000001',tenantId:'00000000-0000-0000-0000-000000000010',email:'admin@example.com',role:'admin',permissions:['reports:read','timescan:read','timescan:write','audit:read','privacy:write','backup:read']};
+const user={id:'00000000-0000-0000-0000-000000000001',tenantId:'00000000-0000-0000-0000-000000000010',email:'admin@example.com',role:'admin',permissions:['reports:read','timescan:read','timescan:write','audit:read','privacy:write','backup:read','backup:manage','providers:read','settings:read','settings:write']};
 const session={...user,session_id:'session-1',csrf_token:'csrf-value',expires_at:'2099-01-01'};
 const csrf={Cookie:['securityops_session=session-1','securityops_csrf=csrf-value'],'x-csrf-token':'csrf-value'};
 
@@ -40,6 +40,21 @@ describe('phase 5 reporting',()=>{
 });
 
 describe('phase 5 TimeScan and privacy',()=>{
+  it('reports provider status without treating unconfigured providers as verified',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      return result([]);
+    });
+    const response=await request(app).get('/api/v1/admin/provider-status').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({provider:'smtp',status:'not_configured'}),
+      expect.objectContaining({provider:'sms',status:'not_configured'}),
+      expect.objectContaining({provider:'timescan',status:'not_configured'}),
+    ]));
+    expect(response.body.providers.some((provider:{status:string})=>provider.status==='verified')).toBe(false);
+  });
+
   it('syncs work time idempotently through the adapter',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([session]);
@@ -61,5 +76,35 @@ describe('phase 5 TimeScan and privacy',()=>{
     });
     const response=await request(app).post('/api/v1/privacy/export').set(csrf).send({user_id:user.id});
     expect(response.status).toBe(200);expect(response.body.user.email).toBe(user.email);
+  });
+
+  it('requires an audit reason for backup settings changes',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      return result([]);
+    });
+    const response=await request(app).put('/api/v1/settings/backups').set(csrf).send({enabled:true,schedule_kind:'daily',schedule_time:'02:00',schedule_timezone:'UTC'});
+    expect(response.status).toBe(400);
+  });
+
+  it('does not expose provider secret storage',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('FROM provider_settings'))return result([{provider:'smtp',config:{host:'smtp.example'},secret_ref:'SMTP_SECRET',encrypted_secret:'PLAINTEXT-MUST-NOT-LEAK',enabled:true}]);
+      return result([]);
+    });
+    const response=await request(app).get('/api/v1/settings/providers').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(response.body)).not.toContain('PLAINTEXT-MUST-NOT-LEAK');
+    expect(response.body.providers[0].secret_ref).toBe('SMTP_SECRET');
+  });
+
+  it('rejects unencrypted FTP target types',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      return result([]);
+    });
+    const response=await request(app).post('/api/v1/backups/targets').set(csrf).send({name:'legacy',target_kind:'ftp',config:{host:'example'},secret_ref:'FTP_SECRET',reason:'Remove insecure target'});
+    expect(response.status).toBe(400);
   });
 });

@@ -6,20 +6,34 @@ services:
       POSTGRES_PASSWORD: securityops
       POSTGRES_DB: securityops
     ports: ["5432:5432"]
-    volumes: ["postgres-data:/var/lib/postgresql/data", "./backend/migrations:/docker-entrypoint-initdb.d:ro"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
     healthcheck: {test: ["CMD-SHELL", "pg_isready -U securityops -d securityops"], interval: 5s, timeout: 5s, retries: 10}
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: restore-drill
+      MINIO_ROOT_PASSWORD: restore-drill-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio-data:/data"]
+    healthcheck: {test: ["CMD", "mc", "ready", "local"], interval: 5s, timeout: 5s, retries: 12}
   backend:
     build: ./backend
     environment:
       DATABASE_URL: postgres://securityops:securityops@db:5432/securityops
       CORS_ORIGIN: http://localhost:5173
       DEV_SEED_ENABLED: "false"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: restore-drill
+      MINIO_SECRET_KEY: restore-drill-secret
     ports: ["3000:3000"]
-    depends_on: {db: {condition: service_healthy}}
+    depends_on: {db: {condition: service_healthy}, minio: {condition: service_healthy}}
   frontend:
     build:
       context: ./frontend
       target: development
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:3000
     ports: ["5173:5173"]
     depends_on: [backend]
-volumes: {postgres-data: {}}
+volumes: {postgres-data: {}, minio-data: {}}

@@ -57,4 +57,5 @@ jobs:
           ssh -o StrictHostKeyChecking=yes -i deploy_key -o UserKnownHostsFile=known_hosts "$DEPLOY_USER@$DEPLOY_HOST" \
             "cd '$DEPLOY_PATH' && git fetch --tags origin && git checkout '$DEPLOY_REF' && \
              docker compose --env-file .env.production -f docker-compose.production.yml up -d --build && \
-             curl --fail --silent --show-error http://localhost/ready >/dev/null"
+             frontend_port=\$(docker compose --env-file .env.production -f docker-compose.production.yml port frontend 80 | tail -n1 | sed 's/.*://') && \
+             curl --fail --silent --show-error http://127.0.0.1:\$frontend_port/ready >/dev/null"

@@ -54,9 +54,13 @@ fachliche Alarm-Outbox.
 
 `scripts/backup-db.sh` erstellt Custom-Format-Dumps. Backups werden verschlüsselt,
 off-site repliziert und mit einer Aufbewahrung gemäß Retention-Policy versehen.
-Wöchentlich wird ein isolierter Restore mit `scripts/restore-drill.sh` ausgeführt;
-das Ergebnis wird als Betriebsnachweis mit Datum, Commit, Backup-ID und Prüfer
-aufbewahrt. Ein Restore in Produktion erfolgt nur nach Freigabe und Wartungsfenster.
+Wöchentlich wird der reproduzierbare isolierte PostgreSQL-plus-MinIO-Drill mit
+`scripts/restore-drill.sh` ausgeführt; er darf nur mit
+`RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES=YES` auf Testressourcen laufen. Der
+Nachweis enthält UTC-Zeitstempel, Backup-/Restore-Dauer, RPO/RTO, Tenant-Isolation,
+DMS-Metadaten/Blob-Verknüpfungen, Retention und Hashes. Fehlende Infrastruktur
+wird als OFFEN dokumentiert. Ein Restore in Produktion erfolgt nur nach Freigabe
+und Wartungsfenster.
 
 ## Incident Response
 
