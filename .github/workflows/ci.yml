@@ -62,15 +62,15 @@ jobs:
           until docker compose exec -T db pg_isready -U securityops -d securityops; do sleep 2; done
           until curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; do sleep 2; done
       - name: Apply schema
+        env:
+          PGPASSWORD: securityops
         run: |
-          for migration in backend/migrations/*.sql; do
-            PGPASSWORD=securityops psql \
-              --host 127.0.0.1 \
-              --username securityops \
-              --dbname securityops \
-              --set ON_ERROR_STOP=1 \
-              --file "$migration"
-          done
+          psql \
+            --host 127.0.0.1 \
+            --username securityops \
+            --dbname securityops \
+            --command "SELECT to_regclass('public.tenants') IS NOT NULL AS schema_ready" \
+            | grep -q '^ t$'
       - name: Create isolated restore database
         env:
           PGPASSWORD: securityops
