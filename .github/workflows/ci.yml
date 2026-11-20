@@ -25,6 +25,7 @@ jobs:
             cat > "$RUNNER_TEMP/$client" <<EOF
           #!/usr/bin/env bash
           exec docker run --rm --network host \
+            --env PGPASSWORD="\${PGPASSWORD:-}" \
             -v "\${GITHUB_WORKSPACE}:\${GITHUB_WORKSPACE}" \
             -w "\${GITHUB_WORKSPACE}" \
             postgres:16-alpine $client "\$@"
