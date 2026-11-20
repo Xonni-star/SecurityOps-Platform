@@ -59,6 +59,12 @@ export const openapi={
     '/dms/documents/{documentId}/versions/{versionId}/download':{get:{summary:'Download an authorized available version',description:'Blob bytes are fetched through the storage adapter and integrity-checked; provider URLs and object paths are never returned.',security:[{sessionCookie:[]}] }},
     '/dms/retention/apply':{post:{summary:'Apply expired DMS retention entries',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/dms/backup/status':{get:{summary:'Read the separate DMS blob backup/restore contract status',security:[{sessionCookie:[]}] }},
+    '/keys':{get:{summary:'List tenant/site-scoped keys',security:[{sessionCookie:[]}]},post:{summary:'Create an available key with an idempotent mutation',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/keys/{id}/history':{get:{summary:'List immutable key issue/return/loss/deactivation history',security:[{sessionCookie:[]}] }},
+    '/keys/{id}/issue':{post:{summary:'Atomically issue a key to one user or employee',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/keys/{id}/return':{post:{summary:'Atomically return a key by its holder or an operator',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/keys/{id}/lost':{post:{summary:'Mark an issued key as lost',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/keys/{id}/deactivate':{post:{summary:'Deactivate a key without overwriting movement history',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}
