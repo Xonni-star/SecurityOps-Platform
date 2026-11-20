@@ -82,7 +82,8 @@ async function reportRequest(req:Request,res:any,next:any,portal=false){
     const siteId=typeof req.query.site_id==='string'?uuid.parse(req.query.site_id):undefined;
     if(Number.isNaN(from.valueOf())||Number.isNaN(to.valueOf())||from>to)throw Object.assign(new Error('Invalid date range'),{status:400});
     scopeSite(req,siteId,portal?'customer_portal:read':'customer_reports:read');
-    const rows=await rowsFor(req,kind,from,to,siteId);
+    const rawRows=await rowsFor(req,kind,from,to,siteId);
+    const rows=portal?rawRows.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!['content','description','author_email'].includes(key)))):rawRows;
     await recordAudit(req.user!.tenantId,req.user!.id,portal?'customer.portal.viewed':'customer.report.exported',portal?'customer_portal':'customer_report',undefined,{kind,site_id:siteId??null,from:from.toISOString(),to:to.toISOString(),count:rows.length,format:portal?'json':req.query.format==='pdf'?'pdf':'csv',documentation_profile:'DIN-77200'});
     if(portal)return res.json({kind,documentation_profile:'DIN-77200 documentation profile; not a legal or certification statement.',from,to,rows});
     if(req.query.format==='pdf')return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-evidence.pdf"`).send(pdf(kind,rows));
