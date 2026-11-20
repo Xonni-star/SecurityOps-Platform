@@ -20,9 +20,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
+          mc_version="RELEASE.2025-08-13T08-35-41Z"
+          mc_url="https://github.com/minio/mc/releases/download/${mc_version}/mc.linux-amd64.${mc_version}"
+          mc_sha256="01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891"
           curl --fail --silent --show-error --location \
-            https://dl.min.io/client/mc/release/linux-amd64/mc \
+            "$mc_url" \
             --output mc
+          printf '%s  %s\n' "$mc_sha256" mc | sha256sum --check --status
           chmod +x mc
           sudo install -m 0755 mc /usr/local/bin/mc
       - name: Start isolated drill services
