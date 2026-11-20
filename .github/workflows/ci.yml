@@ -39,13 +39,11 @@ jobs:
             -v ON_ERROR_STOP=1 \
             -c "SELECT to_regclass('public.dms_documents'), to_regclass('public.dms_versions'), to_regclass('public.dms_blob_backup_status');"
       - name: Create isolated restore database
-        env:
-          PGPASSWORD: securityops
-        run: createdb --host 127.0.0.1 --username securityops --maintenance-db securityops securityops_restore
+        run: docker compose exec -T db createdb -U securityops -d securityops securityops_restore
       - name: Execute PostgreSQL and MinIO restore drill
         env:
-          DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops
-          RESTORE_DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops_restore
+          DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops?sslmode=disable
+          RESTORE_DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops_restore?sslmode=disable
           MINIO_ENDPOINT: http://127.0.0.1:9000
           MINIO_ACCESS_KEY: restore-drill
           MINIO_SECRET_KEY: restore-drill-secret
