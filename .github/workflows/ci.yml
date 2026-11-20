@@ -65,7 +65,8 @@ jobs:
         run: |
           docker compose run --rm --no-deps \
             -v "$GITHUB_WORKSPACE/backend/migrations:/app/migrations:ro" \
-            backend node dist/migrate.js
+            backend node --input-type=module -e \
+            "import {pool} from './dist/db/pool.js'; import {runMigrations} from './dist/db/migration-runner.js'; try { const result = await runMigrations(pool, '/app/migrations'); console.log(result.baselined ? 'Migration baseline recorded' : 'Applied ' + result.applied.length + ' migration(s)'); } finally { await pool.end(); }"
       - name: Create isolated restore database
         env:
           PGPASSWORD: securityops
