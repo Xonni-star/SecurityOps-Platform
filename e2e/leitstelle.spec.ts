@@ -1,5 +1,13 @@
 import {expect,test} from '@playwright/test';
 
+const email=process.env.E2E_EMAIL;
+const password=process.env.E2E_PASSWORD;
+
+function requireFixtureCredentials() {
+  if (!email || !password) throw new Error('OPEN: E2E_EMAIL and E2E_PASSWORD are required');
+  return {email,password};
+}
+
 test.describe('NSL-Leitstelle',()=>{
   test('redirects unauthenticated users to login',async({page})=>{
     await page.goto('/');
@@ -8,10 +16,12 @@ test.describe('NSL-Leitstelle',()=>{
   });
 
   test('logs in, shows dashboard areas, creates and resolves a panic alarm',async({page})=>{
+    const credentials=requireFixtureCredentials();
     await page.goto('/login');
-    await page.getByLabel('Email').fill('admin@example.com');
-    await page.getByLabel('Password').fill('password');
+    await page.getByLabel('Email').fill(credentials.email);
+    await page.getByLabel('Password').fill(credentials.password);
     await page.getByRole('button',{name:'Sign in'}).click();
+    await expect(page).toHaveURL('/');
     await expect(page).toHaveURL('/');
     const cookies=await page.context().cookies();
     expect(cookies.find(cookie=>cookie.name==='securityops_session')?.httpOnly).toBe(true);
@@ -39,8 +49,12 @@ test.describe('NSL-Leitstelle',()=>{
   });
 
   test('mobile workflow exposes scan, panic and offline outbox controls',async({page})=>{
+    const credentials=requireFixtureCredentials();
     await page.goto('/login');
+    await page.getByLabel('Email').fill(credentials.email);
+    await page.getByLabel('Password').fill(credentials.password);
     await page.getByRole('button',{name:'Sign in'}).click();
+    await expect(page).toHaveURL('/');
     await page.goto('/mobile');
     await expect(page.getByRole('heading',{name:'Wächter-App'})).toBeVisible();
     await expect(page.getByRole('button',{name:'PANIK'})).toBeVisible();
