@@ -19,7 +19,7 @@ test.beforeAll(async ({ request }) => {
       email,
       password,
       device_id: "00000000-0000-4000-8000-000000000201",
-      metadata: { source: "playwright-e2e" },
+      metadata: { platform: "playwright", app_version: "phase-4" },
     },
   });
   if (!response.ok())
