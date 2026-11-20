@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type pg from 'pg';
 
 export type SyncConflictStrategy='USE_LOCAL'|'USE_SERVER'|'RECORD_AS_EXCEPTION';
-export type SyncMutationAction='alarms.panic'|'patrol.scan';
+export type SyncMutationAction='alarms.panic'|'patrol.scan'|'watchbook.entry';
 
 export interface SyncMutationInput {
   tenantId:string;
