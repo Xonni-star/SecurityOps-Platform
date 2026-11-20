@@ -133,3 +133,4 @@ payload-hash mismatches. Site grants limit site-bound access, while the
 authenticated user identity. No direct task/attachment contract, delta/pull
 feed, or cross-device synchronization is introduced. Retention and DSGVO
 deletion require a separately approved policy.
+Migration `020_mfa.sql` adds encrypted TOTP fields, pending-MFA session state, tenant role policy, hashed recovery codes, RLS policies, and MFA permissions. Apply it with the normal migration runner. Set `MFA_ENCRYPTION_KEY` only in the deployment secret store; never commit it.

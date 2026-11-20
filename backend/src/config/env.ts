@@ -7,6 +7,7 @@ const schema=z.object({
   DATABASE_URL:z.string().default('postgres://securityops:securityops@localhost:5432/securityops'),
   CORS_ORIGIN:z.string().default('http://localhost:5173'),
   SESSION_TTL_HOURS:z.coerce.number().int().positive().max(168).default(8),
+  MFA_ENCRYPTION_KEY:optionalString,
   DEV_SEED_ENABLED:z.enum(['true','false']).default('false').transform(value=>value==='true'),
   DEV_SEED_EMAIL:z.preprocess(value=>value===''?undefined:value,z.string().email().optional()),
   DEV_SEED_PASSWORD:z.preprocess(value=>value===''?undefined:value,z.string().min(12).optional()),
