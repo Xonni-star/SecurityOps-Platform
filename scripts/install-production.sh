@@ -55,6 +55,16 @@ if [ -z "$postgres_password" ]; then
 fi
 [ ${#postgres_password} -ge 16 ] || fail "PostgreSQL password must contain at least 16 characters"
 
+mfa_key=""
+if [ -f "$env_file" ]; then
+  mfa_key="$(sed -n 's/^MFA_ENCRYPTION_KEY=//p' "$env_file" | head -1)"
+fi
+if [ -z "$mfa_key" ]; then
+  need openssl
+  mfa_key="$(openssl rand -hex 32)"
+  echo "A strong MFA encryption key was generated and stored in $env_file."
+fi
+
 read -r -p "SMTP host (optional): " smtp_host
 read -r -p "SMS gateway URL (optional): " sms_gateway_url
 read -r -s -p "TimeScan API token (leave blank if unused): " timescan_token
@@ -67,6 +77,7 @@ cat >"$tmp_env" <<EOF
 POSTGRES_USER=$postgres_user
 POSTGRES_PASSWORD=$postgres_password
 POSTGRES_DB=$postgres_db
+MFA_ENCRYPTION_KEY=$mfa_key
 CORS_ORIGIN=$cors_origin
 HTTP_PORT=$http_port
 API_PORT=$api_port
