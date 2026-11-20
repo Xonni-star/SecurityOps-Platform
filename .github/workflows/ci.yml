@@ -122,7 +122,7 @@ jobs:
           echo "E2E_EMAIL=e2e-${GITHUB_RUN_ID}@example.invalid" >> "$GITHUB_ENV"
           echo "E2E_PASSWORD=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
       - name: Start isolated backend and dependencies
-        run: docker compose up -d --build backend
+        run: docker compose up -d --build backend frontend
       - name: Wait for backend and schema
         run: |
           for attempt in {1..90}; do
@@ -136,8 +136,6 @@ jobs:
           exit 1
       - name: Create isolated browser fixture
         run: npm run e2e:fixture
-      - name: Start isolated frontend
-        run: docker compose up -d frontend
       - name: Wait for frontend
         run: |
           until curl --fail --silent http://127.0.0.1:5173/login >/dev/null; do sleep 2; done
