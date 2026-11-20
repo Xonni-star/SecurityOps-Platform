@@ -5,8 +5,8 @@ item complete only with the evidence named in the row.
 
 | Area | Evidence required | Repository status |
 | --- | --- | --- |
-| Database migrations | `npm run migrate` succeeds against the target database and migration checksums are recorded | Implemented; execute per deployment |
-| Health/readiness | `/health` is reachable and `/ready` reports PostgreSQL readiness | Implemented |
+| Database migrations | `npm run migrate` succeeds against the target database and migration checksums are recorded | Implemented; production Compose runs migrations only in the backend image |
+| Health/readiness | Backend `/ready` and frontend `/ready` both report database-backed readiness, including after restart | Implemented; execute `npm run test:production-compose` |
 | Tenant isolation | RLS integration tests plus negative API, WebSocket, report/export, DMS, offline and admin tests | Implemented in CI; run `POSTGRES_TEST_DATABASE_URL` integration tests for the target image |
 | Authentication | Session, CSRF, origin allow-list, lockout and MFA tests are green | Implemented; configure production origins and keys |
 | DMS uploads | ClamAV is reachable; rejected, provider-error and integrity checks are exercised | Code/tests implemented; ClamAV endpoint is an external prerequisite |

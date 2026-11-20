@@ -36,7 +36,7 @@ test('orders migrations and rejects gaps',async()=>{
 });
 
 test('runs migrations transactionally with an advisory lock and is idempotent',async()=>{
-  const dir=await fixture({'001_first.sql':'select 1;','002_second.sql':'select 2;'});
+  const dir=await fixture({'001_first.sql':'CREATE TABLE IF NOT EXISTS tenants (id integer);','002_second.sql':'INSERT INTO tenants(id) VALUES (1) ON CONFLICT DO NOTHING;'});
   const client=new FakeClient();
   const first=await runMigrations(makePool(client),dir);
   const second=await runMigrations(makePool(client),dir);
@@ -44,6 +44,15 @@ test('runs migrations transactionally with an advisory lock and is idempotent',a
   expect(second.applied).toEqual([]);
   expect(client.calls).toContain('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))');
   expect(client.calls.filter(call=>call==='BEGIN')).toHaveLength(2);
+  await rm(dir,{recursive:true,force:true});
+});
+
+test('accepts a data-only migration without schema requirements',async()=>{
+  const dir=await fixture({'001_first.sql':'CREATE TABLE IF NOT EXISTS tenants (id integer);','002_seed.sql':'INSERT INTO tenants(id) VALUES (1) ON CONFLICT DO NOTHING;'});
+  const client=new FakeClient();
+  const result=await runMigrations(makePool(client),dir);
+  expect(result.applied).toEqual(['001_first.sql','002_seed.sql']);
+  expect(client.calls).toContain('INSERT INTO tenants(id) VALUES (1) ON CONFLICT DO NOTHING;');
   await rm(dir,{recursive:true,force:true});
 });
 
@@ -65,12 +74,26 @@ test('rejects a recorded migration history gap',async()=>{
   await rm(dir,{recursive:true,force:true});
 });
 
-test('baselines an existing nine-migration schema after validation',async()=>{
+test('baselines an existing schema after validation',async()=>{
   const dir=await fixture({'001_first.sql':'CREATE TABLE IF NOT EXISTS tenants (id integer);'});
   const client=new FakeClient();
   client.tenantsExists=true;
   const result=await runMigrations(makePool(client),dir);
   expect(result).toEqual({applied:[],baselined:true});
   expect(client.records[0]?.baseline).toBe(true);
+  await rm(dir,{recursive:true,force:true});
+});
+
+test('baselines a schema prefix that includes a data-only migration',async()=>{
+  const dir=await fixture({
+    '001_first.sql':'CREATE TABLE IF NOT EXISTS tenants (id integer);',
+    '002_seed.sql':'INSERT INTO tenants(id) VALUES (1) ON CONFLICT DO NOTHING;',
+    '003_second.sql':'ALTER TABLE tenants ADD COLUMN IF NOT EXISTS name text;',
+  });
+  const client=new FakeClient();
+  client.tenantsExists=true;
+  const result=await runMigrations(makePool(client),dir);
+  expect(result).toEqual({applied:[],baselined:true});
+  expect(client.records).toHaveLength(3);
   await rm(dir,{recursive:true,force:true});
 });

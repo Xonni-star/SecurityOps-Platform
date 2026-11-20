@@ -18,20 +18,23 @@ their checksums are verified.
 
 ## Deployments and upgrades
 
-The production backend image runs the runner before starting Express. The
-existing Docker PostgreSQL init mount is intentionally retained for fresh
-volumes; when that init path has already created the schema, the runner validates
-the schema and records all nine existing migrations as a baseline instead of
-executing them again. Subsequent migrations are applied normally.
+The production backend image runs the runner before starting Express. PostgreSQL
+does not mount or execute migration files; this leaves one migration authority
+and avoids the init container running seed/data migrations outside the runner.
+When the runner finds a pre-existing schema, it validates the longest complete
+schema prefix and records it as a baseline instead of executing it again.
+DDL-free seed/data migrations are valid runner migrations and are executed on a
+fresh database while remaining safe to baseline on an already provisioned
+database. Subsequent migrations are applied normally.
 
 Never edit an applied migration. Add the next contiguous `NNN_description.sql`
 file. A missing sequence, unknown recorded migration, or checksum change fails
 the deployment with an explicit error and rolls back the current transaction.
 
 Baseline validation checks the longest complete prefix of the migration set.
-This matters when a database predates the runner: the nine existing migrations
-are recorded as a baseline and `010_tenant_rls_and_composite_fks.sql` is then
-executed normally instead of being silently skipped.
+This matters when a database predates the runner: the complete schema prefix
+already present in that database is recorded as a baseline and the next
+migration is then executed normally instead of being silently skipped.
 
 ## Phase 1, step 3: tenant isolation
 

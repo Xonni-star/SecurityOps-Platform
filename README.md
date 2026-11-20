@@ -108,6 +108,34 @@ Production deployment uses a secret-managed environment file:
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 ```
 
+Set `CORS_ORIGIN` to the exact browser origin(s) that users will use, separated
+by commas; production rejects missing values, localhost/loopback origins and
+wildcards. For a Pi on a LAN without a public DNS name:
+
+```dotenv
+HTTP_PORT=8080
+API_PORT=3000
+CORS_ORIGIN=https://192.168.1.50
+```
+
+For DNS behind a reverse proxy, terminate TLS at the proxy and forward the
+same host to the frontend port while keeping the API port bound to loopback:
+
+```dotenv
+HTTP_PORT=8080
+API_PORT=3000
+CORS_ORIGIN=https://securityops.example.com
+```
+
+The proxy must preserve `Host`, `Origin`, `X-Forwarded-For` and WebSocket
+upgrade headers, and must provide a valid certificate for the configured DNS
+name. The deployment host must provide Docker Compose, persistent storage for
+`postgres-data`, an externally managed production secret file, DNS/LAN routing,
+TLS certificates, and configured SMTP/SMS/TimeScan and backup targets.
+Verify both `http://127.0.0.1:${API_PORT}/ready` and
+`https://securityops.example.com/ready`; the latter is the frontend proxy's
+database-backed readiness check, not a static HTTP 200.
+
 Phase 7 operating procedures are documented in `docs/phase7-runbook.md`. The production
 readiness endpoint is `/ready` and checks PostgreSQL; `/health` only confirms that the
 HTTP process is alive. Use `scripts/restore-drill.sh` for an isolated restore validation
