@@ -9,7 +9,7 @@ services:
     volumes: ["postgres-data:/var/lib/postgresql/data", "./backend/migrations:/docker-entrypoint-initdb.d:ro"]
     healthcheck: {test: ["CMD-SHELL", "pg_isready -U securityops -d securityops"], interval: 5s, timeout: 5s, retries: 10}
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: cgr.dev/chainguard/minio@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     command: server /data --console-address :9001
     environment:
       MINIO_ROOT_USER: restore-drill
