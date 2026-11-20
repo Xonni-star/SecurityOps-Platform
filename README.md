@@ -59,6 +59,42 @@ back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
 ## Commands
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 
+Playwright E2E requires PostgreSQL 16 plus the backend and frontend dev servers:
+
+```bash
+docker compose up -d db
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+`npm run test:e2e` starts the backend on port 3000 and Vite on port 5173 through
+`playwright.config.ts`. The suite covers unauthenticated redirects, admin login
+with both session/CSRF cookies, the four NSL dashboard areas, panic alarm
+visibility, acknowledge/resolve lifecycle, report CSV/PDF responses, and the
+mobile scan/panic/offline-outbox surface. Reset the database with
+`docker compose down -v` when a clean seeded database is needed.
+
+## Android debug APK
+
+The mobile WebView is configured with Capacitor (`de.example.securityops`) and
+uses the built PWA from `frontend/dist`:
+
+```bash
+npm run android:debug
+```
+
+The APK is written to
+`android/app/build/outputs/apk/debug/app-debug.apk`. Install it with
+`adb install -r android/app/build/outputs/apk/debug/app-debug.apk` and calculate
+the delivery checksum with
+`shasum -a 256 android/app/build/outputs/apk/debug/app-debug.apk`.
+
+The app supports the existing IndexedDB AES-GCM outbox, service worker,
+manifest, scan and panic workflows. NFC/BLE hardware access is intentionally not
+simulated: the current UI accepts a scanned/entered NFC identifier, and native
+NFC/BLE plugins still need to be selected and integrated for hardware access.
+
 ## Security
 Opaque server-side sessions are issued in an httpOnly, same-site cookie; only a SHA-256 token hash is stored, sessions expire and can be revoked on logout, and the CSRF double-submit check is timing-safe. State-changing browser requests require an explicit configured Origin allowlist, and login has a dedicated rate limit. Rotate `SESSION_TTL_HOURS`, database credentials, and all provider secrets through the deployment secret manager; revoke active sessions during incident response by setting `sessions.revoked_at`. Never use development secrets in production.
 

@@ -27,6 +27,7 @@ const ids = {
   point: "00000000-0000-4000-8000-000000000105",
   route: "00000000-0000-4000-8000-000000000106",
   priority: "00000000-0000-4000-8000-000000000107",
+  criticalPriority: "00000000-0000-4000-8000-000000000109",
   device: "00000000-0000-4000-8000-000000000108",
 };
 
@@ -65,6 +66,11 @@ try {
     `INSERT INTO alarm_priorities(id,tenant_id,name,code,rank,color) VALUES($1,$2,'E2E Hoch','high',2,'#ea580c')
      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,name=EXCLUDED.name,code=EXCLUDED.code,rank=EXCLUDED.rank,updated_at=now()`,
     [ids.priority, ids.tenant],
+  );
+  await client.query(
+    `INSERT INTO alarm_priorities(id,tenant_id,name,code,rank,color) VALUES($1,$2,'E2E Kritisch','critical',1,'#dc2626')
+     ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,name=EXCLUDED.name,code=EXCLUDED.code,rank=EXCLUDED.rank,updated_at=now()`,
+    [ids.criticalPriority, ids.tenant],
   );
   await client.query(
     `INSERT INTO control_points(id,tenant_id,site_id,name,nfc_uid,sequence) VALUES($1,$2,$3,'E2E Eingang','e2e-nfc-01',1)
