@@ -23,6 +23,11 @@ RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES=YES \
 ./scripts/restore-drill.sh
 ```
 
+Der CI-Restore-Drill verwendet für den isolierten S3-Testdienst ein fest
+digest-gepinntes LocalStack-S3-Image. Damit bleibt der Ablauf S3-kompatibel,
+ohne von einer authentifizierungspflichtigen MinIO-Registry abhängig zu sein;
+Produktions-Provider und Produktionspfade werden dadurch nicht verändert.
+
 The CI job starts disposable PostgreSQL and MinIO services, applies the schema,
 creates a separate restore database, and executes the same drill. Restore
 order is PostgreSQL dump/restore first, then MinIO bucket restore. The result
