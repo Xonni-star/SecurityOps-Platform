@@ -23,6 +23,7 @@ Phase 3 API highlights: authenticated `POST /api/v1/telemetry` for fall, posture
 Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, active incidents, latest positions, and patrol progress; alarm reports export as CSV/PDF; handovers, direct messages, in-app notifications, subscriptions, and audit events are tenant-scoped. Alarm and incident events are queued in an idempotent outbox and delivered asynchronously through SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATION_FROM`) and an HTTP SMS adapter (`SMS_GATEWAY_URL`, optional `SMS_GATEWAY_TOKEN`). The notification worker retries failed deliveries up to five times and starts with the backend. See `docs/adr-004-phase-4-notifications-nsl.md`.
 
 Phase 5 API highlights: filtered management statistics and employee/site/patrol/alarm/incident/work-time reports under `/api/v1/reports`; idempotent TimeScan synchronization under `/api/v1/timescan`; tenant audit query/export; retention policies; data-subject export/anonymization; and backup status. TimeScan credentials are referenced by an environment variable name in `secret_ref`, never stored as a credential. Use `scripts/backup-db.sh` and `scripts/restore-db.sh`; the complete procedure is in `docs/backup-and-restore.md` and the design in `docs/adr-005-phase-5-reporting-timescan-security.md`.
+Provider acceptance status is available to authorized administrators at `/api/v1/admin/provider-status` and in the Admin page. Status is never `verified` when a provider is unconfigured; SMS requires the separate `SMS_GATEWAY_HEALTH_URL` for a non-mutating health check. See `docs/adr-018-phase-4-step-13b-provider-acceptance.md`.
 
 Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
 written to an encrypted IndexedDB outbox when offline and sent with a stable
@@ -30,6 +31,18 @@ written to an encrypted IndexedDB outbox when offline and sent with a stable
 idempotent. Conflicts remain visible for manual review and are never presented
 as server-confirmed. Push subscriptions use `/api/v1/push-subscriptions` and
 require an operator-provided Web Push delivery service and public key.
+
+Phase 3, step 10 adds `/dms` and the `/api/v1/dms/*` API. Document metadata and
+immutable versions are tenant/RLS scoped. Uploads are size/content-type/hash
+validated, stored through the MinIO/S3 adapter in quarantine, scanned through
+the ClamAV adapter, and become downloadable only in `available` state. The API
+never exposes provider URLs or object paths. Binary content is intentionally
+not part of the generic offline sync protocol; only metadata/lifecycle actions
+may be synchronized by a future explicit contract.
+
+Configure `MINIO_*` and `CLAMAV_*` for providers. PostgreSQL/DB backups do not
+back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
+`DMS_BLOB_BACKUP_STATUS`, and `/api/v1/dms/backup/status` contract separately.
 
 ## Commands
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
