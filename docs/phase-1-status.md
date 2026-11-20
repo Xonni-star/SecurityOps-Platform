@@ -10,4 +10,11 @@ Phase 4 complete: NSL dashboard, alarm/incident reports, shift handovers, direct
 
 Phase 5 complete: management statistics and filtered CSV/PDF reports, TimeScan adapter and idempotent work-time sync, retention policies, audit export, data-subject export/anonymization, backup status, and tested backup/restore scripts. Migration `backend/migrations/007_phase5_reporting_timescan_security.sql`.
 
+Phase 1, step 4 complete: canonical permission codes now carry explicit
+tenant/site/own/system grant scopes, site assignments and ownership are
+tenant/RLS protected, existing roles migrate additively, and frontend
+navigation uses the returned permission codes. Migration
+`backend/migrations/011_granular_rbac_scopes.sql`; see
+`docs/adr-009-phase-1-step-4-granular-rbac.md`.
+
 Known production follow-ups: add a dedicated migration runner for environments where init scripts are not appropriate; add session renewal/rotation, pagination, richer frontend validation, end-to-end browser tests, centralized secret management, encrypted off-site backups, shared worker leases, monitoring, and legal approval of retention periods.
