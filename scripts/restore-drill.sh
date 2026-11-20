@@ -79,7 +79,13 @@ pg_dump --format=custom --file="$BACKUP_FILE" "$DATABASE_URL"
 backup_finished="$(date +%s)"
 
 restore_started="$(date +%s)"
-pg_restore --clean --if-exists --no-owner --dbname="$RESTORE_DATABASE_URL" "$BACKUP_FILE"
+restore_log="$WORK_DIRECTORY/pg-restore.log"
+if ! pg_restore --clean --if-exists --no-owner --dbname="$RESTORE_DATABASE_URL" "$BACKUP_FILE" 2>"$restore_log"; then
+  if grep -E '^pg_restore: error:' "$restore_log" | grep -vF 'unrecognized configuration parameter "transaction_timeout"' >/dev/null; then
+    cat "$restore_log" >&2
+    exit 1
+  fi
+fi
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
 "$MC" mb --ignore-existing "$MC_ALIAS/$RESTORE_BUCKET" >/dev/null
 "$MC" mirror --overwrite "$WORK_DIRECTORY/source-blobs" "$MC_ALIAS/$RESTORE_BUCKET"
