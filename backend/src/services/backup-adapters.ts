@@ -22,6 +22,11 @@ function remotePath(config:BackupTargetConfig,key:string){
   const root=config.remotePath?.replace(/^\/+|\/+$/g,'');
   return [root,safeKey(key)].filter(Boolean).join('/');
 }
+function safeAdapterError(error:unknown,secret:Record<string,string>){
+  let message=error instanceof Error?error.message:'Backup target operation failed';
+  for(const value of Object.values(secret).filter(Boolean))message=message.split(value).join('[redacted]');
+  return new Error(message.slice(0,500));
+}
 
 export class LocalBackupTargetAdapter implements BackupTargetAdapter {
   constructor(private readonly root:string){}
@@ -81,6 +86,7 @@ export class SftpBackupTargetAdapter implements BackupTargetAdapter {
     if(!this.config.host||!this.secret.username)throw new Error('SFTP requires host and username');
     if(!this.secret.password&&!this.secret.privateKey)throw new Error('SFTP requires a password or private key');
     if(this.config.hostKeyPolicy==='disabled'||!this.config.hostKeyFingerprint)throw new Error('SFTP host-key fingerprint is required');
+    if(!Number.isInteger(this.config.port??22)||Number(this.config.port??22)<1||Number(this.config.port??22)>65535)throw new Error('SFTP port must be between 1 and 65535');
     const client=new SftpClient();
     try{
       await client.connect({
@@ -89,7 +95,7 @@ export class SftpBackupTargetAdapter implements BackupTargetAdapter {
         hostVerifier:key=>`SHA256-${createHash('sha256').update(key).digest('base64').replace(/=+$/,'')}`===this.config.hostKeyFingerprint,
       });
       return await work(client);
-    }finally{await client.end().catch(()=>undefined);}
+    }catch(error){throw safeAdapterError(error,this.secret);}finally{await client.end().catch(()=>undefined);}
   }
   async upload(upload:BackupUpload){return this.withClient(client=>client.put(upload.content,remotePath(this.config,upload.key)));}
   async delete(key:string){return this.withClient(client=>client.delete(remotePath(this.config,key)));}

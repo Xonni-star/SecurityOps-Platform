@@ -18,15 +18,19 @@ export async function resolveSecretPayload(secretRef:string|undefined,encryptedS
     if(!raw)throw new Error(`Referenced secret ${secretRef} is unavailable`);
     try{
       const parsed=JSON.parse(raw) as unknown;
-      if(parsed&&typeof parsed==='object')return Object.fromEntries(Object.entries(parsed).filter((entry):entry is [string,string]=>typeof entry[1]==='string'&&entry[1].length>0));
+      if(parsed&&typeof parsed==='object'){
+        const payload=Object.fromEntries(Object.entries(parsed).filter((entry):entry is [string,string]=>typeof entry[1]==='string'&&entry[1].length>0));
+        if(Object.keys(payload).length>0)return payload;
+      }
     }catch{
       return {value:raw};
     }
     throw new Error(`Referenced secret ${secretRef} has an invalid payload`);
   }
   if(encryptedSecret){
-    if(!env.BACKUP_SECRET_KEY)throw new Error('Encrypted secret key is unavailable');
-    const decrypted=decryptSecretPayload(encryptedSecret,env.BACKUP_SECRET_KEY);
+    const encryptionKey=env.BACKUP_SECRET_KEY??process.env.BACKUP_SECRET_KEY;
+    if(!encryptionKey)throw new Error('Encrypted secret key is unavailable');
+    const decrypted=decryptSecretPayload(encryptedSecret,encryptionKey);
     if(typeof decrypted==='string')return {value:decrypted};
     return Object.fromEntries(Object.entries(decrypted??{}).filter((entry):entry is [string,string]=>typeof entry[1]==='string'));
   }
