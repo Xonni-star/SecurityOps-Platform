@@ -7,9 +7,12 @@ Tenant-isolated security operations platform. Phases 1-5 provide alarm operation
 1. `cp .env.example .env`
 2. `docker compose up -d db`
 3. `npm install`
-4. `npm run dev -w backend` and `npm run dev -w frontend`
+4. `npm run migrate`
+5. `npm run dev -w backend` and `npm run dev -w frontend`
 
 API: http://localhost:3000 (seed login `admin@example.com` / `password`; change immediately). UI: http://localhost:5173. PostgreSQL migrations are mounted into the database image for first startup. For a reset, `docker compose down -v` then start again.
+
+Migration execution, checksum validation, baseline handling, and deployment upgrades are documented in [`docs/migrations.md`](docs/migrations.md).
 
 Phase 2 API highlights: `POST /api/v1/alarms/panic`, `POST /api/v1/alarms/:id/acknowledge`, `POST /api/v1/alarms/:id/resolve`, `GET /api/v1/alarms/:id/history`, priority CRUD, escalation-rule CRUD, control-point/route CRUD, and `POST /api/v1/patrol-routes/:routeId/scans`. WebSocket clients authenticated with the session cookie receive `alarm.created`, `alarm.acknowledged`, `alarm.escalated`, and `alarm.resolved` events. The backend runs a documented 30-second escalation worker on `npm run start`; it checks enabled rules and escalates open alarms after the configured delay.
 
@@ -34,7 +37,7 @@ Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id pass
 
 ## Production readiness
 
-Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, migration execution outside first-start initialization, and tenant-specific retention/legal-review settings.
+Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, and tenant-specific retention/legal-review settings. The production backend runs the migration runner before starting the API.
 
 Production deployment uses a secret-managed environment file:
 
