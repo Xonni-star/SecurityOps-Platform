@@ -19,7 +19,8 @@ jobs:
       - name: Install PostgreSQL client and MinIO client
         run: |
           sudo apt-get update
-          sudo apt-get install --yes postgresql-client
+          sudo apt-get install --yes postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
           mc_version=RELEASE.2025-08-13T08-35-41Z
           curl --fail --silent --show-error --location \
             "https://github.com/minio/mc/releases/download/${mc_version}/mc.linux-amd64.${mc_version}" \
