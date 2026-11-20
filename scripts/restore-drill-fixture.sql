@@ -16,7 +16,7 @@ INSERT INTO dms_documents (id, tenant_id, site_id, title, created_by, created_se
 VALUES ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a3', 'Restore Drill A', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a4');
 INSERT INTO dms_versions (id, tenant_id, document_id, version_no, object_key, size_bytes, content_type, sha256, lifecycle_state, uploaded_by, uploaded_session_id, retention_until)
 VALUES
-  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a5', 1, 'tenant-a/restore-drill-a.txt', 35, 'text/plain', 'dcef73c7525be08f21e2d18b8131c40f4bb6f031c8bceeb4a4d6cede9be71409', 'available', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a4', now() - interval '1 hour');
+  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a5', 1, 'tenant-a/restore-drill-a.txt', 32, 'text/plain', 'dcef73c7525be08f21e2d18b8131c40f4bb6f031c8bceeb4a4d6cede9be71409', 'available', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a4', now() - interval '1 hour');
 INSERT INTO dms_retention_policies (id, tenant_id, name, retention_days, created_by)
 VALUES ('00000000-0000-0000-0000-0000000000a7', '00000000-0000-0000-0000-0000000000a1', 'restore-drill', 30, '00000000-0000-0000-0000-0000000000a2');
 INSERT INTO dms_blob_backup_status (tenant_id, provider, contract_version, last_backup_at, last_restore_test_at, status, details)
