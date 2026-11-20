@@ -65,6 +65,13 @@ export const openapi={
     '/keys/{id}/return':{post:{summary:'Atomically return a key by its holder or an operator',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/keys/{id}/lost':{post:{summary:'Mark an issued key as lost',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/keys/{id}/deactivate':{post:{summary:'Deactivate a key without overwriting movement history',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/handover-protocols':{get:{summary:'List site-scoped shift handover protocols',security:[{sessionCookie:[]}]},post:{summary:'Create an idempotent handover protocol',security:[{sessionCookie:[],csrfToken:[]}]}},
+    '/handover-protocols/{id}':{get:{summary:'Read participants, confirmations and immutable event history',security:[{sessionCookie:[]}]}},
+    '/handover-protocols/{id}/participants':{post:{summary:'Append a participant identity binding',security:[{sessionCookie:[],csrfToken:[]}]}},
+    '/handover-protocols/{id}/participants/{participantId}/revoke':{post:{summary:'Revoke a participant with an append-only event',security:[{sessionCookie:[],csrfToken:[]}]}},
+    '/handover-protocols/{id}/confirmations':{post:{summary:'Record a participant-bound confirmation with session and device evidence',security:[{sessionCookie:[],csrfToken:[]}]}},
+    '/handover-protocols/{id}/confirmations/{confirmationId}/revoke':{post:{summary:'Revoke a confirmation without mutating prior history',security:[{sessionCookie:[],csrfToken:[]}]}},
+    '/handover-protocols/{id}/corrections':{post:{summary:'Append a traceable handover correction event',security:[{sessionCookie:[],csrfToken:[]}]}},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}
