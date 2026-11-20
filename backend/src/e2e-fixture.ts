@@ -77,9 +77,9 @@ try {
     [ids.route, ids.tenant, ids.site],
   );
   await client.query(
-    `INSERT INTO patrol_route_points(route_id,control_point_id,sequence,expected_offset_seconds)
-     VALUES($1,$2,1,0) ON CONFLICT(route_id,control_point_id) DO UPDATE SET sequence=1,expected_offset_seconds=0`,
-    [ids.route, ids.point],
+    `INSERT INTO patrol_route_points(tenant_id,route_id,control_point_id,sequence,expected_offset_seconds)
+     VALUES($1,$2,$3,1,0) ON CONFLICT(route_id,control_point_id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,sequence=1,expected_offset_seconds=0`,
+    [ids.tenant, ids.route, ids.point],
   );
   await client.query("COMMIT");
   console.log(

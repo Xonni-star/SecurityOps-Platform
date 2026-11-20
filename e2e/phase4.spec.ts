@@ -18,7 +18,7 @@ test.beforeAll(async ({ request }) => {
     data: {
       email,
       password,
-      device_id: "00000000-0000-0000-0000-000000000201",
+      device_id: "00000000-0000-4000-8000-000000000201",
       metadata: { source: "playwright-e2e" },
     },
   });
