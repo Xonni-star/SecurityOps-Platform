@@ -39,6 +39,15 @@ jobs:
             postgres:16-alpine pg_restore "$@"
           EOF
           chmod +x restore-drill-bin/pg_restore
+          cat > restore-drill-bin/pg_dump <<'EOF'
+          #!/usr/bin/env bash
+          exec docker run --rm --network host \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v /tmp:/tmp \
+            -w "$GITHUB_WORKSPACE" \
+            postgres:16-alpine pg_dump "$@"
+          EOF
+          chmod +x restore-drill-bin/pg_dump
           echo "$GITHUB_WORKSPACE/restore-drill-bin" >> "$GITHUB_PATH"
       - name: Start isolated drill services
         run: docker compose up -d db minio
