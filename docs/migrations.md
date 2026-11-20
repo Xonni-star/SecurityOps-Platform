@@ -92,3 +92,18 @@ use `client_entry_id` or `Idempotency-Key` with the existing sync receipts;
 there is no delta, pull, or cross-device synchronization contract. Retention
 and deletion of watchbook history require a separately approved operational
 policy; the API exposes no history deletion operation.
+
+## Phase 3, step 9: duty scheduling
+
+Migration 016 adds tenant-scoped rule profile versions, schedule periods,
+shifts, employee assignments, qualifications, absences, and persisted conflict
+findings. All mutations use the existing authenticated session, CSRF, RBAC,
+audit, and offline idempotency mechanisms. Site-scoped grants are enforced for
+site-bound schedule operations.
+
+Rule profiles are configurable JSON parameters owned by the tenant. The
+implementation deliberately contains no hardcoded tariff, labor-law, or other
+legal rule and makes no legal or tariff statement. Legal/tariff acceptance is
+explicitly open. Overlaps, missing qualifications, absences, and configured
+parameter deviations are recorded as explainable conflict findings rather than
+silently rejected.
