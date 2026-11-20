@@ -22,8 +22,18 @@ describe('session authentication and CSRF',()=>{
     const response=await request(app).post('/api/v1/auth/login').send({email:'admin@example.com',password:'password'});
     expect(response.status).toBe(200);
     const cookies=response.headers['set-cookie'] as string[];
-    expect(cookies).toEqual(expect.arrayContaining([expect.stringContaining('securityops_session=opaque-session; Path=/; HttpOnly'),expect.stringContaining('securityops_csrf=csrf-value; Path=/')]));
+    expect(cookies).toEqual(expect.arrayContaining([expect.stringContaining('securityops_session=opaque-session;'),expect.stringContaining('securityops_csrf=csrf-value;')]));
+    expect(cookies.find((cookie:string)=>cookie.startsWith('securityops_session='))).toContain('HttpOnly');
     expect(cookies.find((cookie:string)=>cookie.startsWith('securityops_csrf='))).not.toContain('HttpOnly');
+    expect(response.body).not.toHaveProperty('sessionId');
+    expect(response.body).not.toHaveProperty('csrfToken');
+  });
+
+  it('rejects state-changing requests from an unlisted origin',async()=>{
+    loginMock.mockResolvedValue({sessionId:'opaque-session',csrfToken:'csrf-value',user:{id:'user-1',tenantId:'tenant-a',email:'admin@example.com',role:'admin',permissions:[]}});
+    const response=await request(app).post('/api/v1/auth/login').set('Origin','https://evil.example').send({email:'admin@example.com',password:'password'});
+    expect(response.status).toBe(403);
+    expect(loginMock).not.toHaveBeenCalled();
   });
 
   it('requires the session-bound CSRF token for logout',async()=>{

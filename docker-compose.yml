@@ -13,6 +13,7 @@ services:
     environment:
       DATABASE_URL: postgres://securityops:securityops@db:5432/securityops
       CORS_ORIGIN: http://localhost:5173
+      DEV_SEED_ENABLED: "false"
     ports: ["3000:3000"]
     depends_on: {db: {condition: service_healthy}}
   frontend:

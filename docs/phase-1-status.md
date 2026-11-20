@@ -17,4 +17,13 @@ navigation uses the returned permission codes. Migration
 `backend/migrations/011_granular_rbac_scopes.sql`; see
 `docs/adr-009-phase-1-step-4-granular-rbac.md`.
 
-Known production follow-ups: add a dedicated migration runner for environments where init scripts are not appropriate; add session renewal/rotation, pagination, richer frontend validation, end-to-end browser tests, centralized secret management, encrypted off-site backups, shared worker leases, monitoring, and legal approval of retention periods.
+Phase 1, step 5 complete: session tokens remain opaque and are stored only as
+hashes; active sessions enforce expiry and logout revocation, state-changing
+browser requests enforce timing-safe CSRF plus an explicit Origin allowlist,
+WebSocket handshakes use the same session and Origin checks, and login has a
+dedicated rate limit. Migration `backend/migrations/012_session_security_and_seed_cleanup.sql`
+is additive and removes only the historical known default seed credential.
+Local development accounts require explicit untracked bootstrap variables and
+production disables that path.
+
+Known production follow-ups: add session renewal/rotation, pagination, richer frontend validation, end-to-end browser tests, centralized secret management, encrypted off-site backups, shared worker leases, monitoring, and legal approval of retention periods.
