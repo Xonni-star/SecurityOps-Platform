@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: 22, cache: npm}
+        with: { node-version: 22, cache: npm }
       - run: npm install
       - run: npm run typecheck
       - run: npm test -w backend
@@ -31,7 +31,7 @@ jobs:
           sudo install -m 0755 mc /usr/local/bin/mc
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.8'
+          go-version: "1.24.8"
       - name: Build pinned MinIO server binary
         run: |
           minio_version="RELEASE.2025-10-15T17-29-55Z"
@@ -104,3 +104,52 @@ jobs:
             "$RUNNER_TEMP/minio.log" "$RUNNER_TEMP/minio.pid"
           docker rm --force restore-drill-postgres 2>/dev/null || true
           docker compose down -v
+  browser-e2e:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops
+      E2E_API_BASE_URL: http://localhost:3000
+      E2E_BASE_URL: http://localhost:5173
+      E2E_FIXTURE: isolated
+      E2E_TENANT_NAME: e2e-phase-4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm install
+      - name: Generate isolated fixture credentials
+        run: |
+          echo "E2E_EMAIL=e2e-${GITHUB_RUN_ID}@example.invalid" >> "$GITHUB_ENV"
+          echo "E2E_PASSWORD=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - name: Start isolated backend and dependencies
+        run: docker compose up -d --build backend frontend
+      - name: Wait for backend and schema
+        run: |
+          for attempt in {1..90}; do
+            if curl --fail --silent http://127.0.0.1:3000/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs --no-color backend db minio
+          exit 1
+      - name: Create isolated browser fixture
+        run: npm run e2e:fixture
+      - name: Wait for frontend
+        run: |
+          until curl --fail --silent http://127.0.0.1:5173/login >/dev/null; do sleep 2; done
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run real browser E2E
+        run: npm run e2e
+      - name: Upload real-run browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-4-browser-e2e-${{ github.run_id }}
+          path: e2e-results/
+          if-no-files-found: warn
+      - name: Tear down isolated browser stack
+        if: always()
+        run: docker compose down -v
