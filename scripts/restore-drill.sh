@@ -97,8 +97,21 @@ assert_equals 2 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 assert_equals 1 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until <= now() AND lifecycle_state='available'")" "expired retention candidate"
 assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until > now() AND lifecycle_state <> 'available'")" "future retention state"
 
+psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_app') THEN
+    CREATE ROLE restore_drill_app NOLOGIN;
+  END IF;
+END
+$$;
+GRANT USAGE ON SCHEMA public TO restore_drill_app;
+GRANT SELECT ON dms_versions TO restore_drill_app;
+SQL
+
 tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
+SET LOCAL ROLE restore_drill_app;
 SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
 SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
 ROLLBACK;
