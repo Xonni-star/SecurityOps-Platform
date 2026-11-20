@@ -34,7 +34,7 @@ jobs:
           until docker compose exec -T db pg_isready -U securityops -d securityops; do sleep 2; done
           until curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; do sleep 2; done
       - name: Apply schema
-        run: docker compose run --rm backend npm run migrate
+        run: docker compose run --rm backend node dist/migrate.js
       - name: Create isolated restore database
         env:
           PGPASSWORD: securityops
