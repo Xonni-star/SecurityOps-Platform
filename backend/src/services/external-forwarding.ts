@@ -13,7 +13,7 @@ function secret(destination:Destination):Promise<Record<string,string>|undefined
 
 let workerTimer:NodeJS.Timeout|undefined;
 export async function processDueForwardingDeliveries(limit=50){
-  const rows=(await query<Delivery>(`SELECT id,tenant_id,alarm_id,rule_id,destination_id,attempts,status,next_attempt_at,max_attempts
+  const rows=(await query<Delivery>(`SELECT id,tenant_id,alarm_id,rule_id,destination_id,attempts,status,next_attempt_at
     FROM alarm_forwarding_deliveries WHERE status IN ('queued','retrying') AND next_attempt_at<=now() ORDER BY next_attempt_at LIMIT $1`,[limit])).rows;
   for(const row of rows)await processForwardingDelivery(row.id);
   return rows.length;
