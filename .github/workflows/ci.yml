@@ -50,10 +50,17 @@ jobs:
             -v ON_ERROR_STOP=1 -c "SELECT 1" >/dev/null 2>&1; do sleep 2; done
           until curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; do sleep 2; done
       - name: Apply schema
+        env:
+          PGPASSWORD: securityops
         run: |
-          docker compose exec -T db psql -U securityops -d securityops \
-            -v ON_ERROR_STOP=1 \
-            -c "SELECT to_regclass('public.dms_documents'), to_regclass('public.dms_versions'), to_regclass('public.dms_blob_backup_status');"
+          for migration in backend/migrations/*.sql; do
+            psql \
+              --host 127.0.0.1 \
+              --username securityops \
+              --dbname securityops \
+              --set ON_ERROR_STOP=1 \
+              --file "$migration"
+          done
       - name: Create isolated restore database
         run: |
           PGPASSWORD=securityops psql \
