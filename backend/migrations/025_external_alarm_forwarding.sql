@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS alarm_forwarding_destinations (
   CHECK (encrypted_secret IS NOT NULL OR secret_ref IS NOT NULL OR channel IN ('email','sms'))
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS alarm_forwarding_destinations_tenant_id_uidx
+  ON alarm_forwarding_destinations(tenant_id, id);
+
 CREATE TABLE IF NOT EXISTS alarm_forwarding_rules (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -32,6 +35,9 @@ CREATE TABLE IF NOT EXISTS alarm_forwarding_rules (
   FOREIGN KEY (tenant_id, destination_id) REFERENCES alarm_forwarding_destinations(tenant_id, id) ON DELETE CASCADE,
   CHECK (alarm_type IS NOT NULL OR priority_code IS NOT NULL)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS alarm_forwarding_rules_tenant_id_uidx
+  ON alarm_forwarding_rules(tenant_id, id);
 
 CREATE TABLE IF NOT EXISTS alarm_forwarding_deliveries (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
