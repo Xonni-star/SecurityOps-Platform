@@ -78,6 +78,22 @@ pg_dump --format=custom --file="$BACKUP_FILE" "$DATABASE_URL"
 "$MC" mirror --overwrite "$MC_ALIAS/$MINIO_BUCKET" "$WORK_DIRECTORY/source-blobs"
 backup_finished="$(date +%s)"
 
+corrupt_backup="$WORK_DIRECTORY/corrupt.dump"
+cp "$BACKUP_FILE" "$corrupt_backup"
+printf '\0' | dd of="$corrupt_backup" bs=1 count=1 conv=notrunc status=none
+if pg_restore --list "$corrupt_backup" >/dev/null 2>&1; then
+  echo "FAILED: corrupted PostgreSQL backup was accepted" >&2
+  exit 1
+fi
+
+backup_size="$(wc -c < "$BACKUP_FILE" | tr -d ' ')"
+incomplete_backup="$WORK_DIRECTORY/incomplete.dump"
+head -c "$((backup_size / 2))" "$BACKUP_FILE" > "$incomplete_backup"
+if pg_restore --list "$incomplete_backup" >/dev/null 2>&1; then
+  echo "FAILED: incomplete PostgreSQL backup was accepted" >&2
+  exit 1
+fi
+
 restore_started="$(date +%s)"
 restore_log="$WORK_DIRECTORY/pg-restore.log"
 if ! pg_restore --clean --if-exists --no-owner --dbname="$RESTORE_DATABASE_URL" "$BACKUP_FILE" 2>"$restore_log"; then
@@ -130,6 +146,19 @@ while IFS=$'\t' read -r object_key expected_hash expected_size; do
 done < <(psql "$RESTORE_DATABASE_URL" -At -F $'\t' -v ON_ERROR_STOP=1 -c \
   "SELECT object_key, sha256, size_bytes FROM dms_versions WHERE lifecycle_state='available' ORDER BY object_key")
 
+negative_blob_dir="$WORK_DIRECTORY/negative-blobs"
+cp -R "$WORK_DIRECTORY/restored-blobs" "$negative_blob_dir"
+negative_corrupt_key="$(find "$negative_blob_dir" -type f | sort | head -n 1)"
+negative_corrupt_relative="${negative_corrupt_key#"$negative_blob_dir"/}"
+negative_expected_hash="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c \
+  "SELECT sha256 FROM dms_versions WHERE object_key='${negative_corrupt_relative}'")"
+printf '\0' | dd of="$negative_corrupt_key" bs=1 count=1 conv=notrunc status=none
+negative_actual_hash="$(hash_file "$negative_corrupt_key")"
+assert_equals "false" "$([[ "$negative_actual_hash" == "$negative_expected_hash" ]] && echo true || echo false)" "corrupted blob detection"
+negative_missing_key="$(find "$negative_blob_dir" -type f | sort | tail -n 1)"
+rm -f "$negative_missing_key"
+[[ ! -f "$negative_missing_key" ]] || { echo "FAILED: incomplete blob set was not detected" >&2; exit 1; }
+
 latest_restore_epoch="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c \
   "SELECT FLOOR(EXTRACT(EPOCH FROM MAX(created_at))::numeric)::bigint FROM dms_versions")"
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -139,4 +168,4 @@ echo "Evidence: started_at=$started_at finished_at=$finished_at"
 echo "Evidence: backup_seconds=$((backup_finished - backup_started)) restore_seconds=$((restore_finished - restore_started))"
 echo "Evidence: rpo_seconds=$((backup_started - latest_data_epoch)) restored_latest_data_epoch=$latest_restore_epoch"
 echo "Evidence: rto_seconds=$((finished_epoch - restore_started))"
-echo "Evidence: checks=database_restore,blob_restore,tenant_isolation,dms_metadata_blob_links,retention,sha256"
+echo "Evidence: checks=database_restore,corrupt_backup_rejected,incomplete_backup_rejected,blob_restore,corrupt_blob_detected,incomplete_blob_detected,tenant_isolation,dms_metadata_blob_links,retention,sha256"

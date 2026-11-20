@@ -10,6 +10,7 @@ import {isScheduleDue,selectRetentionRuns} from './backup-domain.js';
 import {spawnFile} from './backup-process.js';
 import {queueNotificationEvent} from './notifications.js';
 import {resolveSecretPayload} from './secrets.js';
+import {releaseWorkerLease,tryAcquireWorkerLease} from './worker-lease.js';
 
 type BackupSettingsRow={tenant_id:string;enabled:boolean;schedule_kind:'daily'|'weekly';schedule_time:string;schedule_weekday:number|null;schedule_timezone:string;retention_count:number|null;retention_days:number|null;last_run_at:string|null};
 type TargetRow={id:string;tenant_id:string;target_kind:'local'|'smb'|'sftp'|'s3';config:Record<string,unknown>;encrypted_secret:string|null;secret_ref:string|null};
@@ -138,6 +139,11 @@ export async function applyRetention(tenantId:string,actorUserId?:string){
 export async function runDueBackups(){
   if(workerRunning)return;
   workerRunning=true;
+  const leaseName='backup-scheduler';
+  if(!await tryAcquireWorkerLease(leaseName,Math.max(30000,Number(process.env.BACKUP_WORKER_INTERVAL_MS??60000)*2))){
+    workerRunning=false;
+    return;
+  }
   try{
     const settings=(await query<BackupSettingsRow>('SELECT * FROM backup_settings WHERE enabled=true')).rows;
     for(const setting of settings){
@@ -147,7 +153,10 @@ export async function runDueBackups(){
         await recordAudit(setting.tenant_id,null,'backup.scheduler.failed','backup_settings',setting.tenant_id,{error:message}).catch(()=>undefined);
       }
     }
-  }finally{workerRunning=false;}
+  }finally{
+    await releaseWorkerLease(leaseName);
+    workerRunning=false;
+  }
 }
 
 export function startBackupWorker(intervalMs=Number(process.env.BACKUP_WORKER_INTERVAL_MS??60000)){

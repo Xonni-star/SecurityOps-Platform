@@ -7,14 +7,17 @@ Implemented additively on top of the Phase 4 load-test baseline.
 ## Decision
 
 The in-process worker is lifecycle-safe (`startBackupWorker` is idempotent) and
+uses the PostgreSQL `worker_leases` table so only one instance executes each
+scheduled worker tick in a horizontally scaled deployment. Leases expire
+automatically after a bounded TTL, allowing another instance to take over
+after a crash or restart.
 persists tenant-scoped settings, runs, target attempts and artifact hashes.
 PostgreSQL backup execution delegates to `scripts/backup-db.sh`; DMS objects
 are read through the existing blob adapter and referenced by object key,
 size and SHA-256 in a manifest. A run is successful only when at least one
 enabled target received every artifact.
 
-Targets support local files, SMB/CIFS, SFTP and S3-compatible storage. Unencrypted FTP is not supported; any future FTPS support must remain a separate encrypted adapter and API type.
-providers. Target secrets are encrypted with `BACKUP_SECRET_KEY` or represented
+Targets support local files, SMB/CIFS, SFTP and S3-compatible storage. Unencrypted FTP is not supported; any future FTPS support must remain a separate encrypted adapter and API type. Target secrets are encrypted with `BACKUP_SECRET_KEY` or represented
 by an external `secret_ref`; secrets are never returned by the API or logged.
 Retries and failed target runs remain explicit evidence.
 

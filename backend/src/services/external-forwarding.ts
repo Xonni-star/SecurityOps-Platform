@@ -3,6 +3,7 @@ import {query} from '../db/pool.js';
 import {recordAudit} from './audit.js';
 import {sendEmail,sendSms} from './notifications.js';
 import {resolveSecretPayload} from './secrets.js';
+import {releaseWorkerLease,tryAcquireWorkerLease} from './worker-lease.js';
 
 type Destination={id:string;tenant_id:string;channel:'webhook'|'email'|'sms';endpoint:string|null;recipient:string|null;secret_ref:string|null;encrypted_secret:string|null;enabled:boolean};
 type Delivery={id:string;tenant_id:string;alarm_id:string;rule_id:string;destination_id:string;attempts:number;status:string;next_attempt_at:string;max_attempts:number};
@@ -20,8 +21,9 @@ export async function processDueForwardingDeliveries(limit=50){
 }
 export function startForwardingWorker(intervalMs=10000){
   if(workerTimer)return stopForwardingWorker;
-  workerTimer=setInterval(()=>{void processDueForwardingDeliveries().catch(()=>undefined);},intervalMs);
-  void processDueForwardingDeliveries();
+  const tick=async()=>{if(!await tryAcquireWorkerLease('alarm-forwarding-worker',Math.max(30000,intervalMs*3)))return;try{await processDueForwardingDeliveries();}catch{}finally{await releaseWorkerLease('alarm-forwarding-worker');}};
+  workerTimer=setInterval(()=>{void tick();},intervalMs);
+  void tick();
   return stopForwardingWorker;
 }
 export function stopForwardingWorker(){if(workerTimer){clearInterval(workerTimer);workerTimer=undefined;}}

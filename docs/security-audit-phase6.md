@@ -20,5 +20,6 @@
 ## Residual production actions
 
 Configure TLS/reverse proxy, a centralized secret manager, encrypted off-site backups and restore drills,
-monitoring/alerting, database migration execution outside first-start initialization, shared leases for
-background workers, dependency vulnerability scanning and legal approval of retention periods.
+monitoring/alerting, database migration execution outside first-start initialization and legal approval of
+retention periods. CI now runs the lockfile-based dependency install and high-severity npm audit; container,
+secret and code scanning still require organization-approved tooling and policy configuration.
