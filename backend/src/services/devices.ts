@@ -15,6 +15,7 @@ export async function registerAuthenticatedDevice(
   sessionTokenHash:string,
   csrfToken:string,
   expiresInHours:number,
+  mfaPending=false,
 ){
   return withTenantContext(tenantId,()=>withTransaction(async client=>{
     const device=(await client.query(
@@ -34,7 +35,12 @@ export async function registerAuthenticatedDevice(
       if(current?.revoked_at)throw deviceError('Device has been revoked.',403,'DEVICE_REVOKED');
       throw deviceError('Device identity is already in use.',409,'DEVICE_ID_CONFLICT');
     }
-    await client.query(
+    if(mfaPending)await client.query(
+      `INSERT INTO sessions(tenant_id,user_id,device_id,token_hash,csrf_token,expires_at,mfa_pending)
+       VALUES($1,$2,$3,$4,$5,now()+($6 * interval '1 hour'),true)`,
+      [tenantId,userId,deviceId,sessionTokenHash,csrfToken,expiresInHours],
+    );
+    else await client.query(
       `INSERT INTO sessions(tenant_id,user_id,device_id,token_hash,csrf_token,expires_at)
        VALUES($1,$2,$3,$4,$5,now()+($6 * interval '1 hour'))`,
       [tenantId,userId,deviceId,sessionTokenHash,csrfToken,expiresInHours],
