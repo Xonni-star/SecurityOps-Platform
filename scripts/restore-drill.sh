@@ -97,12 +97,19 @@ assert_equals 2 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 assert_equals 1 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until <= now() AND lifecycle_state='available'")" "expired retention candidate"
 assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until > now() AND lifecycle_state <> 'available'")" "future retention state"
 
-tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL' | tail -n 1
-SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
-SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
+psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE visible_count integer;
+BEGIN
+  PERFORM set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
+  SELECT count(*) INTO visible_count
+  FROM dms_versions
+  WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
+  IF visible_count <> 0 THEN
+    RAISE EXCEPTION 'tenant isolation failed: % foreign rows visible', visible_count;
+  END IF;
+END $$;
 SQL
-)"
-assert_equals 0 "$tenant_a_visibility" "tenant isolation"
 
 while IFS=$'\t' read -r object_key expected_hash expected_size; do
   [[ -n "$object_key" ]] || continue
