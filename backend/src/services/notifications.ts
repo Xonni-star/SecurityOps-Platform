@@ -6,6 +6,10 @@ import {publish} from './realtime.js';
 
 type Channel='email'|'sms';
 type Delivery={id:string;tenant_id:string;channel:Channel;recipient:string;subject:string;body:string;attempts:number};
+function safeDeliveryError(error:unknown){
+  const message=error instanceof Error?error.message:'Delivery failed';
+  return message.replace(/(authorization|password|token|secret)(\s*[:=]\s*)[^\s,;]+/gi,'$1$2[redacted]').slice(0,500);
+}
 
 export async function sendEmail(recipient:string,subject:string,body:string){
   if(!env.SMTP_HOST)throw new Error('SMTP_HOST is not configured');
@@ -70,11 +74,17 @@ export async function processNotificationQueue(limit=20){
     }catch(error){
       const attempts=delivery.attempts;
       const terminal=attempts>=5;
+      const safeError=safeDeliveryError(error);
       await query(
         `UPDATE notification_deliveries SET status=$1,last_error=$2,next_attempt_at=now()+($3 || ' seconds')::interval WHERE id=$4`,
-        [terminal?'failed':'pending',error instanceof Error?error.message:'Delivery failed',Math.min(3600,2**attempts*30),delivery.id],
+        [terminal?'failed':'pending',safeError,Math.min(3600,2**attempts*30),delivery.id],
       );
-      logger.error({deliveryId:delivery.id,error},'Notification delivery failed');
+      await query(
+        `INSERT INTO audit_events(tenant_id,event_type,entity_type,entity_id,details)
+         VALUES($1,'notification.delivery.failed','notification_delivery',$2,$3)`,
+        [delivery.tenant_id,delivery.id,{channel:delivery.channel,attempts,error:safeError,retry_scheduled:!terminal}],
+      );
+      logger.error({deliveryId:delivery.id,error:safeError},'Notification delivery failed');
     }
   }
   });

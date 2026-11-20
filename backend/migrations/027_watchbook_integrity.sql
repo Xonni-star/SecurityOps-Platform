@@ -1,0 +1,10 @@
+ALTER TABLE watchbook_entries ADD COLUMN IF NOT EXISTS previous_entry_hash text;
+ALTER TABLE watchbook_entries ADD COLUMN IF NOT EXISTS entry_hash text;
+ALTER TABLE watchbook_entries ADD COLUMN IF NOT EXISTS entry_content_hash text;
+ALTER TABLE watchbook_entries ADD COLUMN IF NOT EXISTS entry_hmac text;
+ALTER TABLE watchbook_revisions ADD COLUMN IF NOT EXISTS previous_hash text;
+ALTER TABLE watchbook_revisions ADD COLUMN IF NOT EXISTS chain_hash text;
+ALTER TABLE watchbook_revisions ADD COLUMN IF NOT EXISTS content_hash text;
+ALTER TABLE watchbook_revisions ADD COLUMN IF NOT EXISTS integrity_hmac text;
+CREATE INDEX IF NOT EXISTS watchbook_entries_hash_idx ON watchbook_entries(tenant_id,created_at,id);
+CREATE INDEX IF NOT EXISTS watchbook_revisions_hash_idx ON watchbook_revisions(tenant_id,entry_id,revision_no);

@@ -1,0 +1,11 @@
+import {useEffect,useState} from 'react';
+import {api,hasPermission} from '../lib/api';
+type Account={id:string;email:string;failed_login_attempts:number;locked_until:string|null;locked_permanently:boolean;last_failed_login_at:string|null};
+export function AccountSecurity(){
+  const [accounts,setAccounts]=useState<Account[]>([]);const [error,setError]=useState('');
+  const load=async()=>{try{setAccounts(await api<Account[]>('/auth/lockout/accounts')||[]);}catch(e){setError((e as Error).message);}};useEffect(()=>{if(hasPermission('account_security:read'))void load();},[]);
+  async function unlock(id:string){const reason=window.prompt('Begründung für die Entsperrung');if(!reason||reason.trim().length<3)return;try{await api(`/auth/lockout/accounts/${id}/unlock`,{method:'POST',body:JSON.stringify({reason})});await load();}catch(e){setError((e as Error).message);}}
+  async function lock(id:string){const reason=window.prompt('Begründung für die dauerhafte Sperre');if(!reason||reason.trim().length<3)return;try{await api(`/auth/lockout/accounts/${id}/lock`,{method:'POST',body:JSON.stringify({reason})});await load();}catch(e){setError((e as Error).message);}}
+  if(!hasPermission('account_security:read'))return <section><h1>Account-Sicherheit</h1><p>Keine Berechtigung.</p></section>;
+  return <section><h1>Account-Lockout</h1>{error&&<p role="alert">{error}</p>}<p>Fehlgeschlagene Anmeldungen werden pro Konto gezählt; Passwörter und Hashes werden nicht angezeigt.</p><ul>{accounts.map(account=><li key={account.id}><strong>{account.email}</strong> · Fehlversuche: {account.failed_login_attempts} · {account.locked_permanently?'dauerhaft gesperrt':account.locked_until?`gesperrt bis ${new Date(account.locked_until).toLocaleString('de-DE')}`:'nicht gesperrt'} · {account.last_failed_login_at?`letzter Fehler ${new Date(account.last_failed_login_at).toLocaleString('de-DE')}`:'keine Fehler'} {hasPermission('account_security:manage')&&(account.locked_until||account.locked_permanently)&&<button onClick={()=>unlock(account.id)}>Entsperren</button>} {hasPermission('account_security:manage')&&!account.locked_permanently&&<button onClick={()=>lock(account.id)}>Dauerhaft sperren</button>}</li>)}</ul></section>;
+}
