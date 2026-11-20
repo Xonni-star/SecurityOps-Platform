@@ -63,10 +63,14 @@ jobs:
           until curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; do sleep 2; done
       - name: Apply schema
         run: |
-          docker compose run --rm --no-deps \
-            -v "$GITHUB_WORKSPACE/backend/migrations:/app/migrations:ro" \
-            backend node --input-type=module -e \
-            "import {pool} from './dist/db/pool.js'; import {runMigrations} from './dist/db/migration-runner.js'; try { const result = await runMigrations(pool, '/app/migrations'); console.log(result.baselined ? 'Migration baseline recorded' : 'Applied ' + result.applied.length + ' migration(s)'); } finally { await pool.end(); }"
+          for migration in backend/migrations/*.sql; do
+            PGPASSWORD=securityops psql \
+              --host 127.0.0.1 \
+              --username securityops \
+              --dbname securityops \
+              --set ON_ERROR_STOP=1 \
+              --file "$migration"
+          done
       - name: Create isolated restore database
         env:
           PGPASSWORD: securityops
