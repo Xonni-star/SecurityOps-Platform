@@ -31,6 +31,18 @@ idempotent. Conflicts remain visible for manual review and are never presented
 as server-confirmed. Push subscriptions use `/api/v1/push-subscriptions` and
 require an operator-provided Web Push delivery service and public key.
 
+Phase 3, step 10 adds `/dms` and the `/api/v1/dms/*` API. Document metadata and
+immutable versions are tenant/RLS scoped. Uploads are size/content-type/hash
+validated, stored through the MinIO/S3 adapter in quarantine, scanned through
+the ClamAV adapter, and become downloadable only in `available` state. The API
+never exposes provider URLs or object paths. Binary content is intentionally
+not part of the generic offline sync protocol; only metadata/lifecycle actions
+may be synchronized by a future explicit contract.
+
+Configure `MINIO_*` and `CLAMAV_*` for providers. PostgreSQL/DB backups do not
+back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
+`DMS_BLOB_BACKUP_STATUS`, and `/api/v1/dms/backup/status` contract separately.
+
 ## Commands
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 

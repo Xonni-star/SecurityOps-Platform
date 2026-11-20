@@ -54,6 +54,11 @@ export const openapi={
     '/watchbook/entries':{get:{summary:'List current digital watchbook entries',security:[{sessionCookie:[]}]},post:{summary:'Create an idempotent append-only watchbook entry',security:[{sessionCookie:[],csrfToken:[]}]}},
     '/watchbook/entries/{id}/history':{get:{summary:'List immutable watchbook revision history',security:[{sessionCookie:[]}] }},
     '/watchbook/entries/{id}/corrections':{post:{summary:'Append an author-bound watchbook correction',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/dms/documents':{get:{summary:'List tenant-scoped documents and version states',security:[{sessionCookie:[]}]},post:{summary:'Upload, scan and publish a document version',description:'The request carries base64 content for the JSON API. Content is stored in provider quarantine, scanned by ClamAV, hash/size validated, and only available versions can be downloaded.',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/dms/documents/{documentId}/versions':{post:{summary:'Append an immutable document version',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/dms/documents/{documentId}/versions/{versionId}/download':{get:{summary:'Download an authorized available version',description:'Blob bytes are fetched through the storage adapter and integrity-checked; provider URLs and object paths are never returned.',security:[{sessionCookie:[]}] }},
+    '/dms/retention/apply':{post:{summary:'Apply expired DMS retention entries',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/dms/backup/status':{get:{summary:'Read the separate DMS blob backup/restore contract status',security:[{sessionCookie:[]}] }},
     '/ws':{get:{summary:'Authenticated WebSocket heartbeat',description:'Upgrade to WebSocket using the securityops_session cookie. URL tokens are not accepted; the server emits heartbeat messages every 30 seconds.',security:[{sessionCookie:[]}],responses:{'101':{description:'Switching protocols'},'1008':{description:'Unauthorized'}}}}
   },
   components:{securitySchemes:{sessionCookie:{type:'apiKey',in:'cookie',name:'securityops_session'},csrfToken:{type:'apiKey',in:'header',name:'x-csrf-token'}},schemas:{Error:{type:'object',properties:{error:{type:'string'}}}}}
