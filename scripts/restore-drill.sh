@@ -16,11 +16,11 @@ if [[ "$RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES" != "YES" ]]; then
   echo "OFFEN: RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES must be YES; no resources were changed" >&2
   exit 2
 fi
+RESTORE_BUCKET="${RESTORE_BUCKET:-${MINIO_BUCKET}-restore-$(date -u +%Y%m%d%H%M%S)-$$}"
 if [[ "$DATABASE_URL" == "$RESTORE_DATABASE_URL" ]]; then
   echo "OFFEN: source and restore database URLs must be different isolated resources" >&2
   exit 2
 fi
-RESTORE_BUCKET="${RESTORE_BUCKET:-${MINIO_BUCKET}-restore-$(date -u +%Y%m%d%H%M%S)-$$}"
 if [[ "$MINIO_BUCKET" == "$RESTORE_BUCKET" ]]; then
   echo "OFFEN: source and restore buckets must be different isolated resources" >&2
   exit 2
@@ -79,7 +79,13 @@ pg_dump --format=custom --file="$BACKUP_FILE" "$DATABASE_URL"
 backup_finished="$(date +%s)"
 
 restore_started="$(date +%s)"
-pg_restore --clean --if-exists --no-owner --dbname="$RESTORE_DATABASE_URL" "$BACKUP_FILE"
+restore_log="$WORK_DIRECTORY/pg-restore.log"
+if ! pg_restore --clean --if-exists --no-owner --dbname="$RESTORE_DATABASE_URL" "$BACKUP_FILE" 2>"$restore_log"; then
+  if grep -E '^pg_restore: error:' "$restore_log" | grep -vF 'unrecognized configuration parameter "transaction_timeout"' >/dev/null; then
+    cat "$restore_log" >&2
+    exit 1
+  fi
+fi
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
 "$MC" mb --ignore-existing "$MC_ALIAS/$RESTORE_BUCKET" >/dev/null
 "$MC" mirror --overwrite "$WORK_DIRECTORY/source-blobs" "$MC_ALIAS/$RESTORE_BUCKET"
@@ -99,27 +105,19 @@ assert_equals 1 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until > now() AND lifecycle_state <> 'available'")" "future retention state"
 
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_app') THEN
-    CREATE ROLE restore_drill_app NOLOGIN;
-  END IF;
-END
-$$;
-GRANT USAGE ON SCHEMA public TO restore_drill_app;
-GRANT SELECT ON dms_versions TO restore_drill_app;
+CREATE ROLE restore_drill_rls NOLOGIN;
+GRANT USAGE ON SCHEMA public TO restore_drill_rls;
+GRANT SELECT ON dms_versions TO restore_drill_rls;
 SQL
-
 tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
-SET LOCAL ROLE restore_drill_app;
+SET LOCAL ROLE restore_drill_rls;
 SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
 SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
 ROLLBACK;
 SQL
 )"
-tenant_a_visibility_count="$(printf '%s\n' "$tenant_a_visibility" | grep -E '^[0-9]+$' | tail -n 1)"
-assert_equals 0 "$tenant_a_visibility_count" "tenant isolation"
+assert_equals 0 "$(printf '%s\n' "$tenant_a_visibility" | grep -E '^[0-9]+$' | tail -n 1)" "tenant isolation"
 
 while IFS=$'\t' read -r object_key expected_hash expected_size; do
   [[ -n "$object_key" ]] || continue

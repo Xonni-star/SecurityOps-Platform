@@ -23,14 +23,14 @@ RESTORE_DRILL_ALLOW_ISOLATED_RESOURCES=YES \
 ./scripts/restore-drill.sh
 ```
 
-Der CI-Restore-Drill verwendet für den isolierten S3-Testdienst ein fest
-digest-gepinntes LocalStack-S3-Image. Damit bleibt der Ablauf S3-kompatibel,
-ohne von einer authentifizierungspflichtigen MinIO-Registry abhängig zu sein;
-Produktions-Provider und Produktionspfade werden dadurch nicht verändert.
-
-The CI job starts disposable PostgreSQL and MinIO services, applies the schema,
-creates a separate restore database, and executes the same drill. Restore
-order is PostgreSQL dump/restore first, then MinIO bucket restore. The result
+The CI job starts disposable PostgreSQL and builds the pinned official MinIO
+release source from GitHub into a runner-local server binary. The source
+archive URL, release tag, and SHA-256 are pinned in the workflow; no Docker Hub,
+Quay, registry credential, or production service is needed. The binary listens
+only on loopback, and its process and data directory are removed in an
+`if: always()` cleanup step. CI then applies the schema, creates a separate
+restore database, and executes the same drill. Restore order is PostgreSQL
+dump/restore first, then MinIO bucket restore. The result
 prints UTC timestamps, backup/restore durations, RPO (source fixture data to
 backup start), RTO (restore start to completed checks), and each check:
 database restore, tenant isolation through PostgreSQL RLS, DMS metadata and
