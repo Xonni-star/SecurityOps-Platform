@@ -22,10 +22,12 @@ test.beforeAll(async ({ request }) => {
       metadata: { platform: "playwright", app_version: "e2e" },
     },
   });
-  if (!response.ok())
+  if (!response.ok()) {
+    const body = await response.text();
     throw new Error(
-      `OPEN: fixture login failed (${response.status()}); run npm run migrate && E2E_FIXTURE=isolated npm run e2e:fixture`,
+      `OPEN: fixture login failed (${response.status()}): ${body}; run npm run migrate && E2E_FIXTURE=isolated npm run e2e:fixture`,
     );
+  }
   const result = await response.json();
   if (result.mfa_pending || result.mfa_required)
     throw new Error(
