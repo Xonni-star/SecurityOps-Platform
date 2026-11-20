@@ -59,3 +59,12 @@ cross-tenant validation failure output, and monitor migration duration,
 constraint creation locks, RLS-denied errors, and worker throughput. Rollback
 requires restoring the pre-migration database or applying a separately
 reviewed forward migration; do not disable RLS in production.
+
+## Phase 2, step 6: idempotent offline sync
+
+Migration 013 adds the tenant-scoped `sync_receipts` table. It requires
+PostgreSQL `pgcrypto`, the Phase-1 composite user key `(tenant_id,id)`, and
+RLS transaction context (`app.tenant_id`). The API stores a canonical SHA-256
+payload hash and completes the receipt and mobile mutation in one transaction.
+It is safe to retry the same mutation after a lost response; a changed payload
+or action is rejected with HTTP 409.
