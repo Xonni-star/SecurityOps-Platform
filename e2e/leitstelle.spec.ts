@@ -32,16 +32,18 @@ test.describe('NSL-Leitstelle',()=>{
     }
 
     const csrf=await page.evaluate(()=>document.cookie.split('; ').find(value=>value.startsWith('securityops_csrf='))?.split('=').slice(1).join('=')||'');
-    const panic=await page.request.post('/api/v1/alarms/panic',{data:{description:'E2E Panik-Alarm',position:'E2E'},headers:{'x-csrf-token':csrf}});
+    const description=`E2E Panik-Alarm ${Date.now()}`;
+    const panic=await page.request.post('/api/v1/alarms/panic',{data:{description,position:'E2E'},headers:{'x-csrf-token':csrf}});
     expect(panic.status()).toBe(201);
     const alarm=await panic.json() as {id:string};
 
     await page.goto('/alarms');
-    await expect(page.getByText('E2E Panik-Alarm')).toBeVisible();
-    await page.getByRole('button',{name:'Quittieren'}).click();
-    await expect(page.getByText('acknowledged')).toBeVisible();
-    await page.getByRole('button',{name:'Erledigen'}).click();
-    await expect(page.getByText('resolved')).toBeVisible();
+    const row=page.locator('tr').filter({hasText:description});
+    await expect(row).toBeVisible();
+    await row.getByRole('button',{name:'Quittieren'}).click();
+    await expect(row.getByText('acknowledged')).toBeVisible();
+    await row.getByRole('button',{name:'Erledigen'}).click();
+    await expect(row.getByText('resolved')).toBeVisible();
 
     expect((await page.request.get(`/api/v1/alarms/${alarm.id}/history`)).status()).toBe(200);
     expect((await page.request.get('/api/v1/reports/alarms?format=csv')).status()).toBe(200);
