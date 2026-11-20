@@ -22,6 +22,7 @@ const schema=z.object({
   SMS_GATEWAY_HEALTH_URL:optionalUrl,
   SMS_GATEWAY_TOKEN:z.string().optional(),
   BACKUP_DIRECTORY:z.string().default('./backups'),
+  BACKUP_SECRET_KEY:optionalString,
   DMS_STORAGE_PROVIDER:z.enum(['minio']).default('minio'),
   DMS_MAX_BYTES:z.coerce.number().int().positive().max(1073741824).default(52428800),
   DMS_ALLOWED_CONTENT_TYPES:z.string().default('application/pdf,image/jpeg,image/png,text/plain'),
