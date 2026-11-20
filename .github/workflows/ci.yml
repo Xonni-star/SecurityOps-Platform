@@ -19,8 +19,7 @@ jobs:
       - name: Install PostgreSQL client and MinIO client
         run: |
           sudo apt-get update
-          sudo apt-get install --yes postgresql-client-16
-          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+          sudo apt-get install --yes postgresql-client
           mc_version="RELEASE.2025-08-13T08-35-41Z"
           mc_url="https://github.com/minio/mc/releases/download/${mc_version}/mc.linux-amd64.${mc_version}"
           mc_sha256="01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891"
@@ -30,6 +29,17 @@ jobs:
           printf '%s  %s\n' "$mc_sha256" mc | sha256sum --check --status
           chmod +x mc
           sudo install -m 0755 mc /usr/local/bin/mc
+          mkdir -p restore-drill-bin
+          cat > restore-drill-bin/pg_restore <<'EOF'
+          #!/usr/bin/env bash
+          exec docker run --rm --network host \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v /tmp:/tmp \
+            -w "$GITHUB_WORKSPACE" \
+            postgres:16-alpine pg_restore "$@"
+          EOF
+          chmod +x restore-drill-bin/pg_restore
+          echo "$GITHUB_WORKSPACE/restore-drill-bin" >> "$GITHUB_PATH"
       - name: Start isolated drill services
         run: docker compose up -d db minio
       - name: Wait for services
