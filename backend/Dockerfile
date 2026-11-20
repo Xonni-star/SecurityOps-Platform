@@ -9,5 +9,6 @@ WORKDIR /app
 COPY --from=build /app/package*.json ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/migrations ./migrations
 EXPOSE 3000
-CMD ["node","dist/server.js"]
+CMD ["sh","-c","node dist/migrate.js && node dist/server.js"]
