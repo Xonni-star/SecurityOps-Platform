@@ -48,7 +48,13 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/minio"
       - name: Start isolated drill services
         run: |
-          docker compose up -d db
+          docker run --detach \
+            --name restore-drill-postgres \
+            --env POSTGRES_USER=securityops \
+            --env POSTGRES_PASSWORD=securityops \
+            --env POSTGRES_DB=securityops \
+            --publish 5432:5432 \
+            postgres:16-alpine
           mkdir -p "$RUNNER_TEMP/minio-data"
           MINIO_ROOT_USER=restore-drill \
           MINIO_ROOT_PASSWORD=restore-drill-secret \
@@ -59,18 +65,20 @@ jobs:
           echo $! > "$RUNNER_TEMP/minio.pid"
       - name: Wait for services
         run: |
-          until docker compose exec -T db pg_isready -U securityops -d securityops; do sleep 2; done
+          until pg_isready --host 127.0.0.1 --username securityops --dbname securityops; do sleep 2; done
           until curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; do sleep 2; done
       - name: Apply schema
         env:
           PGPASSWORD: securityops
         run: |
-          psql \
-            --host 127.0.0.1 \
-            --username securityops \
-            --dbname securityops \
-            --command "SELECT to_regclass('public.tenants') IS NOT NULL AS schema_ready" \
-            | grep -q '^ t$'
+          for migration in backend/migrations/*.sql; do
+            psql \
+              --host 127.0.0.1 \
+              --username securityops \
+              --dbname securityops \
+              --set ON_ERROR_STOP=1 \
+              --file "$migration"
+          done
       - name: Create isolated restore database
         env:
           PGPASSWORD: securityops
@@ -94,4 +102,5 @@ jobs:
           rm -rf "$RUNNER_TEMP/minio-data" "$RUNNER_TEMP/minio-source" \
             "$RUNNER_TEMP/minio-source.tar.gz" "$RUNNER_TEMP/minio" \
             "$RUNNER_TEMP/minio.log" "$RUNNER_TEMP/minio.pid"
+          docker rm --force restore-drill-postgres 2>/dev/null || true
           docker compose down -v
