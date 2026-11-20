@@ -105,6 +105,7 @@ assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 
 tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
+ALTER TABLE dms_versions FORCE ROW LEVEL SECURITY;
 SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
 SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
 ROLLBACK;
