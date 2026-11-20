@@ -62,7 +62,7 @@ test("real browser login, role/tenant access and NSL dashboard", async ({
   ).toBeVisible();
   const me = await page.request.get("/api/v1/auth/me");
   expect(me.ok()).toBeTruthy();
-  const user = await me.json();
+  const { user } = await me.json();
   expect(user.role).toBe("operator");
   expect(user.permissions).toContain("nsl:read");
   expect(user.permissions).toContain("alarms:write");

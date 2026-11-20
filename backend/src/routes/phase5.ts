@@ -6,6 +6,7 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
 import {checkSmsStatus,checkSmtpStatus,checkTimeScanStatus} from '../services/provider-status.js';
+import {resolveSecret} from '../services/secrets.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -108,10 +109,10 @@ phase5Router.get('/timescan/config',requirePermission('timescan:read'),async(req
 });
 phase5Router.post('/timescan/config',requirePermission('timescan:write'),async(req,res,next)=>{
   try{
-    const body=z.object({base_url:z.string().url(),account_ref:nonempty,secret_ref:z.string().regex(/^[A-Z0-9_]+$/),enabled:z.boolean().default(true)}).strict().parse(req.body);
+    const body=z.object({base_url:z.string().url(),account_ref:nonempty,secret_ref:z.string().regex(/^[A-Z0-9_]+$/),enabled:z.boolean().default(true),reason:nonempty.max(500)}).strict().parse(req.body);
     const row=(await query(`INSERT INTO timescan_connections(tenant_id,base_url,account_ref,secret_ref,enabled)
       VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,account_ref=EXCLUDED.account_ref,secret_ref=EXCLUDED.secret_ref,enabled=EXCLUDED.enabled,updated_at=now() RETURNING id,base_url,account_ref,secret_ref,enabled,last_sync_at`,[req.user!.tenantId,body.base_url,body.account_ref,body.secret_ref,body.enabled])).rows[0];
-    await audit(req,'timescan.configured','timescan',row.id,{account_ref:body.account_ref});res.status(201).json(row);
+    await audit(req,'timescan.configured','timescan',row.id,{reason:body.reason,account_ref:body.account_ref});res.status(201).json(row);
   }catch(error){next(error);}
 });
 phase5Router.get('/timescan/runs',requirePermission('timescan:read'),async(req,res,next)=>{
@@ -121,7 +122,7 @@ phase5Router.post('/timescan/sync',requirePermission('timescan:write'),async(req
   try{
     const {from,to}=range(req);const config=(await query('SELECT * FROM timescan_connections WHERE tenant_id=$1 AND enabled=true',[req.user!.tenantId])).rows[0];
     if(!config)return res.status(409).json({error:'TimeScan is not configured'});
-    const secret=process.env[config.secret_ref];if(!secret)return res.status(500).json({error:'Referenced TimeScan secret is unavailable'});
+    let secret:string|undefined;try{secret=await resolveSecret(config.secret_ref);}catch{return res.status(502).json({error:'Referenced TimeScan secret is unavailable'});}if(!secret)return res.status(502).json({error:'Referenced TimeScan secret is unavailable'});
     const run=(await query(`INSERT INTO timescan_sync_runs(tenant_id,status) VALUES($1,'running') RETURNING id`,[req.user!.tenantId])).rows[0];
     try{
       const entries=await createTimeScanAdapter(config.base_url,config.account_ref,secret).listWorkTimes(from,to);
