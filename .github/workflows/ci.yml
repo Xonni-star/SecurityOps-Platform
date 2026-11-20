@@ -50,3 +50,48 @@ jobs:
       - name: Tear down isolated drill services
         if: always()
         run: docker compose down -v
+  browser-e2e:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops
+      E2E_API_BASE_URL: http://127.0.0.1:3000
+      E2E_BASE_URL: http://127.0.0.1:5173
+      E2E_FIXTURE: isolated
+      E2E_TENANT_NAME: e2e-phase-4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm install
+      - name: Generate isolated fixture credentials
+        run: |
+          echo "E2E_EMAIL=e2e-${GITHUB_RUN_ID}@example.invalid" >> "$GITHUB_ENV"
+          echo "E2E_PASSWORD=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - name: Start isolated PostgreSQL
+        run: docker compose up -d db
+      - name: Wait for PostgreSQL and apply schema
+        run: |
+          until docker compose exec -T db pg_isready -U securityops -d securityops; do sleep 2; done
+          npm run migrate
+      - name: Create isolated browser fixture
+        run: npm run e2e:fixture
+      - name: Start isolated backend and frontend
+        run: docker compose up -d --build backend frontend
+      - name: Wait for application
+        run: |
+          until curl --fail --silent http://127.0.0.1:3000/ready >/dev/null; do sleep 2; done
+          until curl --fail --silent http://127.0.0.1:5173/login >/dev/null; do sleep 2; done
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run real browser E2E
+        run: npm run e2e
+      - name: Upload real-run browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-4-browser-e2e-${{ github.run_id }}
+          path: e2e-results/
+          if-no-files-found: warn
+      - name: Tear down isolated browser stack
+        if: always()
+        run: docker compose down -v

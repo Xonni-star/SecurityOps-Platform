@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "migrate": "tsx src/migrate.ts",
     "seed:dev": "tsx src/dev-seed.ts",
+    "e2e:fixture": "tsx src/e2e-fixture.ts",
     "loadtest:fixture": "tsx src/loadtest-fixture.ts",
     "loadtest": "tsx src/loadtest.ts",
     "start": "node dist/server.js",
