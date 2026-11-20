@@ -9,6 +9,7 @@ export type ProviderStatus={
   message:string;
   checked_at:string;
 };
+export type PersistedProviderConfig={provider:'smtp'|'sms';config:Record<string,unknown>;secret_ref:string|null;enabled:boolean};
 
 function result(provider:ProviderStatus['provider'],status:ProviderStatusValue,message:string):ProviderStatus{
   return {provider,status,message,checked_at:new Date().toISOString()};
@@ -42,6 +43,23 @@ export async function checkSmsStatus():Promise<ProviderStatus>{
       ? result('sms','verified','SMS gateway health endpoint verified')
       : result('sms','failed','SMS gateway health check failed');
   }catch{return result('sms','failed','SMS gateway health check failed');}
+}
+
+export async function checkPersistedProviderStatus(config:PersistedProviderConfig|undefined):Promise<ProviderStatus>{
+  if(!config||!config.enabled)return result(config?.provider??'sms','not_configured',`${config?.provider??'Provider'} is not configured or disabled`);
+  if(config.provider==='smtp'){
+    const host=typeof config.config.host==='string'?config.config.host:'';
+    const port=typeof config.config.port==='number'?config.config.port:587;
+    if(!host)return result('smtp','not_configured','SMTP host is not configured');
+    if(!config.secret_ref && !env.SMTP_PASSWORD)return result('smtp','configured','SMTP configured; credentials are not referenced');
+    const transport=nodemailer.createTransport({host,port,secure:port===465});
+    try{await transport.verify();return result('smtp','verified','SMTP connection verified');}
+    catch{return result('smtp','failed','SMTP verification failed');}
+    finally{transport.close();}
+  }
+  const url=typeof config.config.url==='string'?config.config.url:'';
+  if(!url)return result('sms','not_configured','SMS gateway URL is not configured');
+  return result('sms','configured','SMS gateway configured; verification requires a safe health endpoint');
 }
 
 export async function checkTimeScanStatus(connection?:{base_url:string;account_ref:string;secret_ref:string;enabled:boolean}):Promise<ProviderStatus>{

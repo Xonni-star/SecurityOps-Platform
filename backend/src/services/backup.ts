@@ -8,9 +8,10 @@ import {recordAudit} from './audit.js';
 import {createBackupTargetAdapter,BackupTargetAdapter,BackupUpload} from './backup-adapters.js';
 import {decryptSecretPayload,isScheduleDue,selectRetentionRuns} from './backup-domain.js';
 import {spawnFile} from './backup-process.js';
+import {queueNotificationEvent} from './notifications.js';
 
 type BackupSettingsRow={tenant_id:string;enabled:boolean;schedule_kind:'daily'|'weekly';schedule_time:string;schedule_weekday:number|null;schedule_timezone:string;retention_count:number|null;retention_days:number|null;last_run_at:string|null};
-type TargetRow={id:string;tenant_id:string;target_kind:'local'|'smb'|'ftp'|'ftps'|'sftp'|'s3';config:Record<string,unknown>;encrypted_secret:string|null;secret_ref:string|null};
+type TargetRow={id:string;tenant_id:string;target_kind:'local'|'smb'|'sftp'|'s3';config:Record<string,unknown>;encrypted_secret:string|null;secret_ref:string|null};
 type Artifact={artifact_kind:'database'|'dms_blob'|'manifest';source_key:string;sha256:string;size_bytes:number;content:Buffer};
 
 let workerTimer:NodeJS.Timeout|undefined;
@@ -91,12 +92,14 @@ export async function runBackup(tenantId:string,actorUserId?:string){
         if(actorUserId)await recordAudit(tenantId,actorUserId,'backup.retention.failed','backup_run',runId,{error:message});
       }
       if(actorUserId)await recordAudit(tenantId,actorUserId,'backup.run.succeeded','backup_run',runId,{successful_targets:successfulTargets,artifact_count:artifacts.length});
+      void queueNotificationEvent(tenantId,'backup.succeeded',`backup:${runId}`,'Backup erfolgreich',`Backup-Lauf ${runId} wurde erfolgreich abgeschlossen.`, 'backup_run',runId).catch(error=>recordAudit(tenantId,actorUserId??null,'backup.notification.failed','backup_run',runId,{error:error instanceof Error?error.message:'Notification failed'}));
       return {id:runId,status:'succeeded',successfulTargets,artifactCount:artifacts.length};
     }catch(error){
       const message=error instanceof Error?error.message:'Unknown backup failure';
       await query('UPDATE backup_runs SET status=$3,completed_at=now(),error_message=$4 WHERE tenant_id=$1 AND id=$2',[tenantId,runId,'failed',message]);
       await query('UPDATE backup_settings SET last_status=$2,updated_at=now() WHERE tenant_id=$1',[tenantId,'failed']);
       if(actorUserId)await recordAudit(tenantId,actorUserId,'backup.run.failed','backup_run',runId,{error:message});
+      void queueNotificationEvent(tenantId,'backup.failed',`backup:${runId}`,'Backup fehlgeschlagen',`Backup-Lauf ${runId} ist fehlgeschlagen. Prüfen Sie den Backup-Status.`, 'backup_run',runId).catch(error=>recordAudit(tenantId,actorUserId??null,'backup.notification.failed','backup_run',runId,{error:error instanceof Error?error.message:'Notification failed'}));
       throw error;
     }
 

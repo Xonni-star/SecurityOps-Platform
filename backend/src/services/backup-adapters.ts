@@ -47,14 +47,14 @@ export class CommandBackupTargetAdapter implements BackupTargetAdapter {
       await this.runner('smbclient',[this.config.host??'', '-U', `${this.secret.username??''}%${this.secret.password??''}`, '-c',`put - ${remote}`],upload.content,{});
       return;
     }
-    const scheme=this.kind==='sftp'?'sftp':this.kind;
+    const scheme='sftp';
     const url=`${scheme}://${this.config.host??''}/${remote}`;
     await this.runner('curl',['--fail','--silent','--show-error','--retry','3','--upload-file','-','--user',`${this.secret.username??''}:${this.secret.password??''}`,url],upload.content,{});
   }
   async delete(key:string){
     const remote=[this.config.remotePath,safeKey(key)].filter(Boolean).join('/');
     if(this.kind==='smb'){await this.runner('smbclient',[this.config.host??'', '-U', `${this.secret.username??''}%${this.secret.password??''}`, '-c',`del ${remote}`],Buffer.alloc(0),{});return;}
-    const scheme=this.kind==='sftp'?'sftp':this.kind;
+    const scheme='sftp';
     await this.runner('curl',['--fail','--silent','--show-error','--user',`${this.secret.username??''}:${this.secret.password??''}`,'-X','DELETE',`${scheme}://${this.config.host??''}/${remote}`],Buffer.alloc(0),{});
   }
 }

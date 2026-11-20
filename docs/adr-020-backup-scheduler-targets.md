@@ -25,3 +25,14 @@ Retention is tenant-scoped and must only address artifacts under the generated
 storage, credentials/secret references, provider connectivity and periodic
 restore-drill execution. Existing CI and restore-drill blockers remain open
 when those infrastructure prerequisites are unavailable.
+# Provider settings and backup notifications
+
+Provider settings are tenant-scoped and return only non-secret configuration
+and `secret_ref`. Mutations require `settings:write`, a reason, and an audit
+event. Backup failures use the existing notification subscription/delivery
+tables; admins receive an in-app failure notification by default, while
+success notifications are opt-in. Delivery uses the existing deduplication
+key and retry queue, and never includes credentials in the event body.
+
+Supported targets are local, SMB/CIFS, SFTP and S3-compatible storage
+(including AWS and MinIO). Unencrypted FTP is intentionally rejected.

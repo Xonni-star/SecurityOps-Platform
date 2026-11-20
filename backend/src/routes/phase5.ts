@@ -108,10 +108,10 @@ phase5Router.get('/timescan/config',requirePermission('timescan:read'),async(req
 });
 phase5Router.post('/timescan/config',requirePermission('timescan:write'),async(req,res,next)=>{
   try{
-    const body=z.object({base_url:z.string().url(),account_ref:nonempty,secret_ref:z.string().regex(/^[A-Z0-9_]+$/),enabled:z.boolean().default(true)}).strict().parse(req.body);
+    const body=z.object({base_url:z.string().url(),account_ref:nonempty,secret_ref:z.string().regex(/^[A-Z0-9_]+$/),enabled:z.boolean().default(true),reason:nonempty.max(500)}).strict().parse(req.body);
     const row=(await query(`INSERT INTO timescan_connections(tenant_id,base_url,account_ref,secret_ref,enabled)
       VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,account_ref=EXCLUDED.account_ref,secret_ref=EXCLUDED.secret_ref,enabled=EXCLUDED.enabled,updated_at=now() RETURNING id,base_url,account_ref,secret_ref,enabled,last_sync_at`,[req.user!.tenantId,body.base_url,body.account_ref,body.secret_ref,body.enabled])).rows[0];
-    await audit(req,'timescan.configured','timescan',row.id,{account_ref:body.account_ref});res.status(201).json(row);
+    await audit(req,'timescan.configured','timescan',row.id,{reason:body.reason,account_ref:body.account_ref});res.status(201).json(row);
   }catch(error){next(error);}
 });
 phase5Router.get('/timescan/runs',requirePermission('timescan:read'),async(req,res,next)=>{

@@ -1,7 +1,7 @@
 import {createCipheriv,createDecipheriv,createHash,randomBytes} from 'node:crypto';
 
 export type BackupScheduleKind='daily'|'weekly';
-export type BackupTargetKind='local'|'smb'|'ftp'|'ftps'|'sftp'|'s3';
+export type BackupTargetKind='local'|'smb'|'sftp'|'s3';
 export type BackupStatus='never'|'running'|'succeeded'|'failed';
 
 export interface BackupSchedule {
