@@ -6,12 +6,19 @@ import {publish} from './realtime.js';
 
 type Channel='email'|'sms';
 type Delivery={id:string;tenant_id:string;channel:Channel;recipient:string;subject:string;body:string;attempts:number};
+function safeDeliveryError(error:unknown){
+  const message=error instanceof Error?error.message:'Delivery failed';
+  return message.replace(/(authorization|password|token|secret)(\s*[:=]\s*)[^\s,;]+/gi,'$1$2[redacted]').slice(0,500);
+}
 
 export async function sendEmail(recipient:string,subject:string,body:string){
   if(!env.SMTP_HOST)throw new Error('SMTP_HOST is not configured');
   const transport=nodemailer.createTransport({
     host:env.SMTP_HOST,port:env.SMTP_PORT,secure:env.SMTP_PORT===465,
     auth:env.SMTP_USER?{user:env.SMTP_USER,password:env.SMTP_PASSWORD}:undefined,
+    connectionTimeout:10000,
+    greetingTimeout:10000,
+    socketTimeout:15000,
   });
   await transport.sendMail({from:env.NOTIFICATION_FROM,to:recipient,subject,text:body});
 }
@@ -22,6 +29,7 @@ export async function sendSms(recipient:string,body:string){
     method:'POST',
     headers:{'content-type':'application/json',...(env.SMS_GATEWAY_TOKEN?{authorization:`Bearer ${env.SMS_GATEWAY_TOKEN}`}:{})},
     body:JSON.stringify({to:recipient,message:body}),
+    signal:AbortSignal.timeout(10000),
   });
   if(!response.ok)throw new Error(`SMS gateway returned ${response.status}`);
 }
@@ -70,11 +78,17 @@ export async function processNotificationQueue(limit=20){
     }catch(error){
       const attempts=delivery.attempts;
       const terminal=attempts>=5;
+      const safeError=safeDeliveryError(error);
       await query(
         `UPDATE notification_deliveries SET status=$1,last_error=$2,next_attempt_at=now()+($3 || ' seconds')::interval WHERE id=$4`,
-        [terminal?'failed':'pending',error instanceof Error?error.message:'Delivery failed',Math.min(3600,2**attempts*30),delivery.id],
+        [terminal?'failed':'pending',safeError,Math.min(3600,2**attempts*30),delivery.id],
       );
-      logger.error({deliveryId:delivery.id,error},'Notification delivery failed');
+      await query(
+        `INSERT INTO audit_events(tenant_id,event_type,entity_type,entity_id,details)
+         VALUES($1,'notification.delivery.failed','notification_delivery',$2,$3)`,
+        [delivery.tenant_id,delivery.id,{channel:delivery.channel,attempts,error:safeError,retry_scheduled:!terminal}],
+      );
+      logger.error({deliveryId:delivery.id,error:safeError},'Notification delivery failed');
     }
   }
   });

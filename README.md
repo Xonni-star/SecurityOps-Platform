@@ -25,6 +25,18 @@ Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, ac
 Phase 5 API highlights: filtered management statistics and employee/site/patrol/alarm/incident/work-time reports under `/api/v1/reports`; idempotent TimeScan synchronization under `/api/v1/timescan`; tenant audit query/export; retention policies; data-subject export/anonymization; and backup status. TimeScan credentials are referenced by an environment variable name in `secret_ref`, never stored as a credential. Use `scripts/backup-db.sh` and `scripts/restore-db.sh`; the complete procedure is in `docs/backup-and-restore.md` and the design in `docs/adr-005-phase-5-reporting-timescan-security.md`.
 Provider acceptance status is available to authorized administrators at `/api/v1/admin/provider-status` and in the Admin page. Status is never `verified` when a provider is unconfigured; SMS requires the separate `SMS_GATEWAY_HEALTH_URL` for a non-mutating health check. See `docs/adr-018-phase-4-step-13b-provider-acceptance.md`.
 
+The administration UI also exposes weekly backup weekday selection, external
+alarm forwarding, customer evidence exports/read-only portal access, and
+account-lockout administration. Forwarding and report routes remain tenant
+scoped and audit every configuration/export action. `DIN-77200` is shown only
+as a documentation profile, never as a certification or legal guarantee.
+
+Backup targets are local, SMB/CIFS, SFTP, or S3-compatible only; unencrypted
+FTP is deliberately unavailable. SFTP host-key fingerprints are mandatory.
+Use `secret_ref` with deployment-managed JSON payloads for SFTP, S3, SMB,
+SMTP, SMS, and forwarding credentials. See `docs/backup-runbook.md` for
+formats, worker behavior, restore verification, and rollback.
+
 Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
 written to an encrypted IndexedDB outbox when offline and sent with a stable
 `client_event_id`; the server enforces tenant-scoped uniqueness so retries are
@@ -63,4 +75,5 @@ docker compose --env-file .env.production -f docker-compose.production.yml up -d
 Phase 7 operating procedures are documented in `docs/phase7-runbook.md`. The production
 readiness endpoint is `/ready` and checks PostgreSQL; `/health` only confirms that the
 HTTP process is alive. Use `scripts/restore-drill.sh` for an isolated restore validation
-and complete `docs/phase7-uat-checklist.md` before operational sign-off.
+and complete [`docs/production-readiness-checklist.md`](docs/production-readiness-checklist.md)
+and `docs/phase7-uat-checklist.md` before operational sign-off.

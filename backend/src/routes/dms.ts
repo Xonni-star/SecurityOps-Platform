@@ -94,12 +94,15 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
     siteAccess(req,document.site_id??null,'dms:write');
     const body=z.object({content_base64:z.string(),content_type:z.string().trim().min(1).max(160),retention_until:z.string().datetime({offset:true}).nullable().optional(),client_mutation_id:uuid}).strict().parse(req.body);
     const content=decodeContent(body.content_base64);validateDmsUpload(content,body.content_type,env.DMS_MAX_BYTES,allowedTypes);
-    const versionNo=nextDmsVersion((await query('SELECT MAX(version_no) AS current FROM dms_versions WHERE tenant_id=$1 AND document_id=$2',[req.user!.tenantId,document.id])).rows[0].current as number|undefined);
     const versionId=randomUUID();const objectKey=`${req.user!.tenantId}/${document.id}/${versionId}`;await dmsStorage.put(objectKey,content,body.content_type);
     try{
-      const row=(await query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,'quarantined',$9,$10,(SELECT device_id FROM sessions WHERE id=$10),$11) RETURNING *`,
-        [versionId,req.user!.tenantId,document.id,versionNo,objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
+      const row=await withTransaction(async tx=>{
+        await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`${req.user!.tenantId}:${document.id}`]);
+        const current=(await tx.query<{current:number|null}>('SELECT MAX(version_no) AS current FROM dms_versions WHERE tenant_id=$1 AND document_id=$2',[req.user!.tenantId,document.id])).rows[0]?.current;
+        return (await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,'quarantined',$9,$10,(SELECT device_id FROM sessions WHERE id=$10),$11) RETURNING *`,
+          [versionId,req.user!.tenantId,document.id,nextDmsVersion(current??undefined),objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
+      });
       await query(`UPDATE dms_versions SET lifecycle_state='scanning' WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId]);
       let scan;
       try{scan=await dmsScanner.scan(content);}catch(error){
@@ -109,7 +112,7 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
       const lifecycle=scanLifecycle(scan);
       if(lifecycle.state==='rejected'){await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);await dmsStorage.delete(objectKey);return res.status(422).json({error:'Document rejected by malware scan',state:'rejected'});}
       const available=(await query(`UPDATE dms_versions SET lifecycle_state='available',scanned_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,versionId])).rows[0];
-      await recordAudit(req.user!.tenantId,req.user!.id,'dms.version.uploaded','dms_version',versionId,{document_id:document.id,version_no:versionNo});
+      await recordAudit(req.user!.tenantId,req.user!.id,'dms.version.uploaded','dms_version',versionId,{document_id:document.id,version_no:available.version_no});
       return res.status(201).json(available);
     }catch(error){await dmsStorage.delete(objectKey).catch(()=>undefined);throw error;}
   }catch(error){next(error);}

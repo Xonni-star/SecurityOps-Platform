@@ -8,6 +8,9 @@
     "build": "tsc -p tsconfig.json",
     "migrate": "tsx src/migrate.ts",
     "seed:dev": "tsx src/dev-seed.ts",
+    "e2e:fixture": "tsx src/e2e-fixture.ts",
+    "loadtest:fixture": "tsx src/loadtest-fixture.ts",
+    "loadtest": "tsx src/loadtest.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-vm-modules ../node_modules/jest/bin/jest.js --config jest.config.cjs"
@@ -24,6 +27,7 @@
     "pg": "^8.13.3",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
+    "ssh2-sftp-client": "^11.0.0",
     "ws": "^8.18.0",
     "zod": "^4.6.7"
   },

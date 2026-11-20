@@ -1,0 +1,70 @@
+name: Phase 4 load tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      clients:
+        description: WebSocket clients
+        required: false
+        default: "10"
+      rps:
+        description: Alarm requests per second
+        required: false
+        default: "10"
+      duration_seconds:
+        description: Alarm ingest duration
+        required: false
+        default: "10"
+
+jobs:
+  load-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start isolated PostgreSQL and backend
+        run: docker compose up -d db backend
+      - name: Wait for isolated services
+        run: |
+          until docker compose exec -T db pg_isready -U securityops -d securityops; do sleep 2; done
+          until curl --fail --silent http://127.0.0.1:3000/health >/dev/null; do sleep 2; done
+          until curl --fail --silent http://127.0.0.1:3000/ready >/dev/null; do sleep 2; done
+      - name: Apply schema and isolated fixture
+        env:
+          DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops
+          NODE_ENV: development
+          LOADTEST_FIXTURE: isolated
+          LOADTEST_EMAIL: loadtest@example.invalid
+          LOADTEST_PASSWORD: phase-4-loadtest-local-only
+          LOADTEST_TENANT_NAME: loadtest-phase-4-ci
+        run: |
+          npm run migrate
+          fixture="$(npm run --silent loadtest:fixture)"
+          echo "LOADTEST_DEVICE_ID=$(node -p "JSON.parse(process.argv[1]).deviceId" "$fixture")" >> "$GITHUB_ENV"
+          echo "LOADTEST_PRIORITY_ID=$(node -p "JSON.parse(process.argv[1]).priorityId" "$fixture")" >> "$GITHUB_ENV"
+      - name: Execute all three load-test phases
+        env:
+          LOADTEST_BASE_URL: http://127.0.0.1:3000
+          LOADTEST_EMAIL: loadtest@example.invalid
+          LOADTEST_PASSWORD: phase-4-loadtest-local-only
+          LOADTEST_CLIENTS: ${{ inputs.clients }}
+          LOADTEST_RPS: ${{ inputs.rps }}
+          LOADTEST_DURATION_SECONDS: ${{ inputs.duration_seconds }}
+          LOADTEST_FANOUT_EVENTS: ${{ inputs.rps }}
+          LOADTEST_REQUIRED_INFRA: postgres
+          LOADTEST_OUTPUT: loadtest-results/ci.json
+        run: npm run loadtest
+      - name: Upload measured result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-4-load-test-result
+          path: loadtest-results/ci.json
+      - name: Tear down isolated services
+        if: always()
+        run: docker compose down -v

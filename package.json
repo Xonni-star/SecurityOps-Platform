@@ -8,12 +8,17 @@
   "scripts": {
     "build": "npm run build -w backend && npm run build -w frontend",
     "migrate": "npm run migrate -w backend",
+    "loadtest": "npm run loadtest -w backend",
+    "loadtest:fixture": "npm run loadtest:fixture -w backend",
+    "e2e": "playwright test",
+    "e2e:fixture": "npm run e2e:fixture -w backend",
     "test": "npm test -w backend && npm test -w frontend",
     "test:coverage": "npm test -w backend -- --coverage && npm test -w frontend -- --coverage",
     "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend",
     "format": "prettier --write ."
   },
   "devDependencies": {
-    "prettier": "^3.5.3"
+    "prettier": "^3.5.3",
+    "@playwright/test": "^1.52.0"
   }
 }
