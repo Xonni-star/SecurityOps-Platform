@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import {query} from '../db/pool.js';
+import {query,withTenantContext} from '../db/pool.js';
 import {env} from '../config/env.js';
 import {logger} from '../middleware/errors.js';
 import {publish} from './realtime.js';
@@ -27,7 +27,8 @@ export async function sendSms(recipient:string,body:string){
 }
 
 export async function queueNotificationEvent(tenantId:string,eventType:string,eventKey:string,title:string,body:string,entityType?:string,entityId?:string){
-  await query(
+  await withTenantContext(tenantId,async()=>{
+   await query(
     `INSERT INTO notifications(tenant_id,user_id,event_type,title,body,entity_type,entity_id)
      SELECT DISTINCT ON (u.id) $1,u.id,$2,$3,$4,$5,$6
      FROM users u LEFT JOIN notification_subscriptions s
@@ -36,8 +37,8 @@ export async function queueNotificationEvent(tenantId:string,eventType:string,ev
      WHERE u.tenant_id=$1 AND s.id IS NOT NULL AND s.channel='in_app'
      ON CONFLICT DO NOTHING`,
     [tenantId,eventType,title,body,entityType??null,entityId??null],
-  );
-  await query(
+   );
+   await query(
     `INSERT INTO notification_deliveries(tenant_id,event_key,channel,recipient,subject,body)
      SELECT $1,$2,s.channel,COALESCE(s.recipient,u.email),$3,$4
      FROM notification_subscriptions s JOIN users u ON u.tenant_id=s.tenant_id
@@ -45,11 +46,14 @@ export async function queueNotificationEvent(tenantId:string,eventType:string,ev
        AND (s.user_id=u.id OR s.role=u.role) AND s.channel IN ('email','sms')
      ON CONFLICT(event_key,channel,recipient) DO NOTHING`,
     [tenantId,eventKey,'SecurityOps notification',body,eventType],
-  );
+   );
+  });
   publish(tenantId,'notification.created',{eventType,title,body},'notifications:read');
 }
 
 export async function processNotificationQueue(limit=20){
+  const tenants=(await query<{id:string}>('SELECT id FROM tenants')).rows;
+  for(const tenant of tenants)await withTenantContext(tenant.id,async()=>{
   const deliveries=(await query<Delivery>(
     `UPDATE notification_deliveries SET status='processing',attempts=attempts+1
      WHERE id IN (SELECT id FROM notification_deliveries
@@ -73,6 +77,7 @@ export async function processNotificationQueue(limit=20){
       logger.error({deliveryId:delivery.id,error},'Notification delivery failed');
     }
   }
+  });
 }
 
 export function startNotificationWorker(){

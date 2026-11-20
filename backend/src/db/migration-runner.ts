@@ -12,8 +12,7 @@ export type MigrationResult={applied:string[];baselined:boolean};
 type DbClient=Pick<Pool,'connect'>;
 type Queryable=Pick<PoolClient,'query'>;
 
-const requiredSchema=async(migrationsDir:string):Promise<{table:string;column?:string}[]>=>{
-  const migrationFiles=await loadMigrationFiles(migrationsDir);
+const schemaRequirements=(migrationFiles:MigrationFile[]):{table:string;column?:string}[]=>{
   const requirements=new Map<string,Set<string>>();
   for(const migration of migrationFiles){
     for(const match of migration.sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_][a-z0-9_]*)\s*\(/gi)){
@@ -32,6 +31,8 @@ const requiredSchema=async(migrationsDir:string):Promise<{table:string;column?:s
   if(checks.length===0) throw new Error('No schema requirements could be derived from migration files');
   return checks;
 };
+
+const requiredSchema=async(migrationsDir:string,migrationFiles?:MigrationFile[])=>schemaRequirements(migrationFiles??await loadMigrationFiles(migrationsDir));
 
 export async function loadMigrationFiles(migrationsDir=resolve(process.cwd(),'migrations')):Promise<MigrationFile[]>{
   const names=(await readdir(migrationsDir)).filter(name=>name.endsWith('.sql'));
@@ -62,8 +63,8 @@ export async function loadMigrationFiles(migrationsDir=resolve(process.cwd(),'mi
   return migrations;
 }
 
-async function validateBaseline(client:Queryable,migrationsDir:string):Promise<void>{
-  const checks=await requiredSchema(migrationsDir);
+async function validateBaseline(client:Queryable,migrationsDir:string,migrationFiles?:MigrationFile[]):Promise<void>{
+  const checks=await requiredSchema(migrationsDir,migrationFiles);
   const missing:string[]=[];
   for(const check of checks){
     const result=check.column
@@ -77,7 +78,25 @@ async function validateBaseline(client:Queryable,migrationsDir:string):Promise<v
       );
     if(!result.rows[0]?.exists) missing.push(check.column?`${check.table}.${check.column}`:check.table);
   }
+
   if(missing.length>0) throw new Error(`Existing database is not the expected 9-migration baseline; missing ${missing.join(', ')}`);
+}
+
+async function isSchemaPresent(client:Queryable,migration:MigrationFile):Promise<boolean>{
+  const checks=schemaRequirements([migration]);
+  for(const check of checks){
+    const result=check.column
+      ? await client.query<{exists:boolean}>(
+        'SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name=$3) AS exists',
+        ['public',check.table,check.column],
+      )
+      : await client.query<{exists:boolean}>(
+        'SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2) AS exists',
+        ['public',check.table],
+      );
+    if(!result.rows[0]?.exists)return false;
+  }
+  return true;
 }
 
 async function ensureMetadataTable(client:Queryable):Promise<void>{
@@ -122,8 +141,11 @@ export async function runMigrations(pool:DbClient,migrationsDir=resolve(process.
         ['public','tenants'],
       );
       if(anyBaselineObject.rows[0]?.exists){
-        await validateBaseline(client,migrationsDir);
-        for(const migration of migrations){
+        let baselineCount=0;
+        while(baselineCount<migrations.length&&await isSchemaPresent(client,migrations[baselineCount]))baselineCount++;
+        if(baselineCount===0)throw new Error('Existing database is not the expected migration baseline; no complete migration prefix was found');
+        await validateBaseline(client,migrationsDir,migrations.slice(0,baselineCount));
+        for(const migration of migrations.slice(0,baselineCount)){
           await client.query(
             `INSERT INTO ${METADATA_TABLE} (version,migration_id,checksum,execution_ms,baseline) VALUES ($1,$2,$3,0,true)`,
             [migration.version,migration.id,migration.checksum],

@@ -2,7 +2,7 @@ import request from 'supertest';
 import type {QueryResult} from 'pg';
 import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 const queryMock=jest.fn();
-jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock}));
+jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withLoginContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withSessionContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withTenantContext:async (_value:string,work:()=>Promise<unknown>)=>work()}));
 const {app}=await import('../src/app.js');
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount} as unknown as QueryResult);
 const user={id:'user-1',tenantId:'tenant-a',email:'operator@example.com',role:'operator',permissions:['alarms:read','alarms:write','patrols:read','patrols:write','alarm_priorities:read']};

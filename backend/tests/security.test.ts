@@ -5,7 +5,7 @@ import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 const queryMock=jest.fn();
 const loginMock=jest.fn();
 const logoutMock=jest.fn();
-jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock}));
+jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withLoginContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withSessionContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withTenantContext:async (_value:string,work:()=>Promise<unknown>)=>work()}));
 jest.unstable_mockModule('../src/services/auth.js',()=>({login:loginMock,logout:logoutMock}));
 
 const {app}=await import('../src/app.js');

@@ -28,7 +28,34 @@ Never edit an applied migration. Add the next contiguous `NNN_description.sql`
 file. A missing sequence, unknown recorded migration, or checksum change fails
 the deployment with an explicit error and rolls back the current transaction.
 
-Baseline validation checks all tables declared by the nine existing migration
-files and all columns added with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
-An incomplete or drifted pre-runner database is rejected; it must be repaired
-or restored before upgrading.
+Baseline validation checks the longest complete prefix of the migration set.
+This matters when a database predates the runner: the nine existing migrations
+are recorded as a baseline and `010_tenant_rls_and_composite_fks.sql` is then
+executed normally instead of being silently skipped.
+
+## Phase 1, step 3: tenant isolation
+
+Migration 010 is additive and must not be edited after release. Before adding
+composite foreign keys it validates every tenant-bearing relationship and aborts
+with an explicit error on the first cross-tenant row. It backfills tenant IDs
+for `sessions`, `patrol_route_points`, and `incident_assignments`, then adds
+`(tenant_id,id)`-based references and enables `FORCE ROW LEVEL SECURITY` on all
+tenant data tables.
+
+`tenants`, `permissions`, and `role_permissions` are deliberate global tables.
+Login and session lookup use server-set, short-lived transaction settings;
+authenticated requests use `app.tenant_id`, set by the backend request
+context. The application does not use a superuser or `BYPASSRLS` path.
+
+Run PostgreSQL integration checks against a disposable database with:
+
+```sh
+POSTGRES_TEST_DATABASE_URL=postgres://... npm test -w backend -- rls.integration
+```
+
+The test database role must be able to create a temporary `NOSUPERUSER
+NOBYPASSRLS` role. Roll out first to a restored staging copy, inspect the
+cross-tenant validation failure output, and monitor migration duration,
+constraint creation locks, RLS-denied errors, and worker throughput. Rollback
+requires restoring the pre-migration database or applying a separately
+reviewed forward migration; do not disable RLS in production.
