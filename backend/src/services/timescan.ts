@@ -9,10 +9,17 @@ export type TimeScanEntry={
 
 export interface TimeScanAdapter{
   listWorkTimes(from:Date,to:Date):Promise<TimeScanEntry[]>;
+  verify():Promise<void>;
 }
 
 export function createTimeScanAdapter(baseUrl:string,accountRef:string,secret:string):TimeScanAdapter{
   return {
+    async verify(){
+      const url=new URL('/health',baseUrl);
+      url.searchParams.set('account',accountRef);
+      const response=await fetch(url,{method:'HEAD',headers:{accept:'application/json',authorization:`Bearer ${secret}`},signal:AbortSignal.timeout(5000)});
+      if(!response.ok)throw new Error(`TimeScan health check returned ${response.status}`);
+    },
     async listWorkTimes(from,to){
       const url=new URL('/work-times',baseUrl);
       url.searchParams.set('account',accountRef);

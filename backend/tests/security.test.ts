@@ -5,7 +5,7 @@ import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 const queryMock=jest.fn();
 const loginMock=jest.fn();
 const logoutMock=jest.fn();
-jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock}));
+jest.unstable_mockModule('../src/db/pool.js',()=>({query:queryMock,withTransaction:async (work:(client:unknown)=>Promise<unknown>)=>work({query:queryMock}),withLoginContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withSessionContext:async (_value:string,work:()=>Promise<unknown>)=>work(),withTenantContext:async (_value:string,work:()=>Promise<unknown>)=>work()}));
 jest.unstable_mockModule('../src/services/auth.js',()=>({login:loginMock,logout:logoutMock}));
 
 const {app}=await import('../src/app.js');
@@ -19,11 +19,39 @@ beforeEach(()=>{queryMock.mockReset();loginMock.mockReset();logoutMock.mockReset
 describe('session authentication and CSRF',()=>{
   it('sets opaque httpOnly session and readable CSRF cookies on login',async()=>{
     loginMock.mockResolvedValue({sessionId:'opaque-session',csrfToken:'csrf-value',user:{id:'user-1',tenantId:'tenant-a',email:'admin@example.com',role:'admin',permissions:[]}});
-    const response=await request(app).post('/api/v1/auth/login').send({email:'admin@example.com',password:'password'});
+    const response=await request(app).post('/api/v1/auth/login').send({email:'admin@example.com',password:'password',device_id:'11111111-1111-4111-8111-111111111111'});
     expect(response.status).toBe(200);
     const cookies=response.headers['set-cookie'] as string[];
-    expect(cookies).toEqual(expect.arrayContaining([expect.stringContaining('securityops_session=opaque-session; Path=/; HttpOnly'),expect.stringContaining('securityops_csrf=csrf-value; Path=/')]));
+    expect(cookies).toEqual(expect.arrayContaining([expect.stringContaining('securityops_session=opaque-session;'),expect.stringContaining('securityops_csrf=csrf-value;')]));
+    expect(cookies.find((cookie:string)=>cookie.startsWith('securityops_session='))).toContain('HttpOnly');
     expect(cookies.find((cookie:string)=>cookie.startsWith('securityops_csrf='))).not.toContain('HttpOnly');
+    expect(response.body).not.toHaveProperty('sessionId');
+    expect(response.body).not.toHaveProperty('csrfToken');
+  });
+
+  it('rejects state-changing requests from an unlisted origin',async()=>{
+    loginMock.mockResolvedValue({sessionId:'opaque-session',csrfToken:'csrf-value',user:{id:'user-1',tenantId:'tenant-a',email:'admin@example.com',role:'admin',permissions:[]}});
+    const response=await request(app).post('/api/v1/auth/login').set('Origin','https://evil.example').send({email:'admin@example.com',password:'password'});
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects offline mutations when the bound device or session is no longer active',async()=>{
+    queryMock.mockResolvedValue({rows:[],rowCount:0});
+    const response=await request(app).post('/api/v1/alarms/panic')
+      .set('Cookie','securityops_session=revoked-session; securityops_csrf=csrf-value')
+      .set('x-csrf-token','csrf-value')
+      .send({description:'offline event'});
+    expect(response.status).toBe(401);
+    expect(queryMock.mock.calls[0][0]).toContain("d.revoked_at IS NULL");
+    expect(queryMock.mock.calls[0][0]).toContain('s.revoked_at IS NULL');
+  });
+
+  it('does not accept a client-supplied tenant during device registration',async()=>{
+    const response=await request(app).post('/api/v1/auth/login')
+      .send({email:'admin@example.com',password:'password',device_id:'11111111-1111-4111-8111-111111111111',tenant_id:'tenant-b'});
+    expect(response.status).toBe(400);
+    expect(loginMock).not.toHaveBeenCalled();
+    expect(loginMock).not.toHaveBeenCalled();
   });
 
   it('requires the session-bound CSRF token for logout',async()=>{

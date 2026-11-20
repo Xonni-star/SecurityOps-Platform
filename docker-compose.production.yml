@@ -20,14 +20,17 @@ services:
       target: production
     restart: unless-stopped
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securityops}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      DEV_SEED_ENABLED: "false"
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       NOTIFICATION_FROM: ${NOTIFICATION_FROM:-notifications@securityops.local}
       SMS_GATEWAY_URL: ${SMS_GATEWAY_URL:-}
+      SMS_GATEWAY_HEALTH_URL: ${SMS_GATEWAY_HEALTH_URL:-}
       SMS_GATEWAY_TOKEN: ${SMS_GATEWAY_TOKEN:-}
       BACKUP_DIRECTORY: ${BACKUP_DIRECTORY:-/backups}
       TIMESCAN_API_TOKEN: ${TIMESCAN_API_TOKEN:-}

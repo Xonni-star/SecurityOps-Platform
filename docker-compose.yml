@@ -6,15 +6,32 @@ services:
       POSTGRES_PASSWORD: securityops
       POSTGRES_DB: securityops
     ports: ["5432:5432"]
-    volumes: ["postgres-data:/var/lib/postgresql/data", "./backend/migrations:/docker-entrypoint-initdb.d:ro"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
     healthcheck: {test: ["CMD-SHELL", "pg_isready -U securityops -d securityops"], interval: 5s, timeout: 5s, retries: 10}
+  minio:
+    image: localstack/localstack@sha256:fae7a9a2c3eb86fc102df0fdb78b0a8624617734052bc163cb14ebb64d70a047
+    environment:
+      SERVICES: s3
+      DEBUG: "0"
+      PERSISTENCE: "0"
+      AWS_DEFAULT_REGION: us-east-1
+    ports: ["9000:4566"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:4566/_localstack/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
   backend:
     build: ./backend
     environment:
       DATABASE_URL: postgres://securityops:securityops@db:5432/securityops
       CORS_ORIGIN: http://localhost:5173
+      DEV_SEED_ENABLED: "false"
+      MINIO_ENDPOINT: http://minio:4566
+      MINIO_ACCESS_KEY: restore-drill
+      MINIO_SECRET_KEY: restore-drill-secret
     ports: ["3000:3000"]
-    depends_on: {db: {condition: service_healthy}}
+    depends_on: {db: {condition: service_healthy}, minio: {condition: service_healthy}}
   frontend:
     build:
       context: ./frontend

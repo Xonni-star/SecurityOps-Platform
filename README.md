@@ -7,9 +7,14 @@ Tenant-isolated security operations platform. Phases 1-5 provide alarm operation
 1. `cp .env.example .env`
 2. `docker compose up -d db`
 3. `npm install`
-4. `npm run dev -w backend` and `npm run dev -w frontend`
+4. `npm run migrate`
+5. `npm run dev -w backend` and `npm run dev -w frontend`
 
-API: http://localhost:3000 (seed login `admin@example.com` / `password`; change immediately). UI: http://localhost:5173. PostgreSQL migrations are mounted into the database image for first startup. For a reset, `docker compose down -v` then start again.
+API: http://localhost:3000. UI: http://localhost:5173. PostgreSQL migrations are mounted into the database image for first startup. For a reset, `docker compose down -v` then start again.
+
+For an explicitly configured local development account, set `DEV_SEED_ENABLED=true`, `DEV_SEED_EMAIL`, `DEV_SEED_PASSWORD` (at least 12 characters), and `DEV_SEED_TENANT_NAME` in an untracked `.env`, then run `npm run seed:dev -w backend`. No development credentials are stored in the repository, and production disables this bootstrap path.
+
+Migration execution, checksum validation, baseline handling, and deployment upgrades are documented in [`docs/migrations.md`](docs/migrations.md).
 
 Phase 2 API highlights: `POST /api/v1/alarms/panic`, `POST /api/v1/alarms/:id/acknowledge`, `POST /api/v1/alarms/:id/resolve`, `GET /api/v1/alarms/:id/history`, priority CRUD, escalation-rule CRUD, control-point/route CRUD, and `POST /api/v1/patrol-routes/:routeId/scans`. WebSocket clients authenticated with the session cookie receive `alarm.created`, `alarm.acknowledged`, `alarm.escalated`, and `alarm.resolved` events. The backend runs a documented 30-second escalation worker on `npm run start`; it checks enabled rules and escalates open alarms after the configured delay.
 
@@ -18,6 +23,19 @@ Phase 3 API highlights: authenticated `POST /api/v1/telemetry` for fall, posture
 Phase 4 API highlights: `GET /api/v1/nsl/dashboard` consolidates open alarms, active incidents, latest positions, and patrol progress; alarm reports export as CSV/PDF; handovers, direct messages, in-app notifications, subscriptions, and audit events are tenant-scoped. Alarm and incident events are queued in an idempotent outbox and delivered asynchronously through SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `NOTIFICATION_FROM`) and an HTTP SMS adapter (`SMS_GATEWAY_URL`, optional `SMS_GATEWAY_TOKEN`). The notification worker retries failed deliveries up to five times and starts with the backend. See `docs/adr-004-phase-4-notifications-nsl.md`.
 
 Phase 5 API highlights: filtered management statistics and employee/site/patrol/alarm/incident/work-time reports under `/api/v1/reports`; idempotent TimeScan synchronization under `/api/v1/timescan`; tenant audit query/export; retention policies; data-subject export/anonymization; and backup status. TimeScan credentials are referenced by an environment variable name in `secret_ref`, never stored as a credential. Use `scripts/backup-db.sh` and `scripts/restore-db.sh`; the complete procedure is in `docs/backup-and-restore.md` and the design in `docs/adr-005-phase-5-reporting-timescan-security.md`.
+Provider acceptance status is available to authorized administrators at `/api/v1/admin/provider-status` and in the Admin page. Status is never `verified` when a provider is unconfigured; SMS requires the separate `SMS_GATEWAY_HEALTH_URL` for a non-mutating health check. See `docs/adr-018-phase-4-step-13b-provider-acceptance.md`.
+
+The administration UI also exposes weekly backup weekday selection, external
+alarm forwarding, customer evidence exports/read-only portal access, and
+account-lockout administration. Forwarding and report routes remain tenant
+scoped and audit every configuration/export action. `DIN-77200` is shown only
+as a documentation profile, never as a certification or legal guarantee.
+
+Backup targets are local, SMB/CIFS, SFTP, or S3-compatible only; unencrypted
+FTP is deliberately unavailable. SFTP host-key fingerprints are mandatory.
+Use `secret_ref` with deployment-managed JSON payloads for SFTP, S3, SMB,
+SMTP, SMS, and forwarding credentials. See `docs/backup-runbook.md` for
+formats, worker behavior, restore verification, and rollback.
 
 Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
 written to an encrypted IndexedDB outbox when offline and sent with a stable
@@ -26,15 +44,27 @@ idempotent. Conflicts remain visible for manual review and are never presented
 as server-confirmed. Push subscriptions use `/api/v1/push-subscriptions` and
 require an operator-provided Web Push delivery service and public key.
 
+Phase 3, step 10 adds `/dms` and the `/api/v1/dms/*` API. Document metadata and
+immutable versions are tenant/RLS scoped. Uploads are size/content-type/hash
+validated, stored through the MinIO/S3 adapter in quarantine, scanned through
+the ClamAV adapter, and become downloadable only in `available` state. The API
+never exposes provider URLs or object paths. Binary content is intentionally
+not part of the generic offline sync protocol; only metadata/lifecycle actions
+may be synchronized by a future explicit contract.
+
+Configure `MINIO_*` and `CLAMAV_*` for providers. PostgreSQL/DB backups do not
+back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
+`DMS_BLOB_BACKUP_STATUS`, and `/api/v1/dms/backup/status` contract separately.
+
 ## Commands
 `npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
 
 ## Security
-Opaque server-side sessions are issued in an httpOnly cookie, with Argon2id password hashes and a session-bound double-submit CSRF token for state-changing requests. Granular permissions are loaded from PostgreSQL role mappings; tenant-scoped SQL predicates, Helmet, CORS allow-list, rate limiting, structured logging, and a WebSocket heartbeat authenticated by the session cookie are included. Alarm history stores purpose-specific state transitions, and patrol scans retain only operational evidence needed for deviation detection. Never use development secrets in production.
+Opaque server-side sessions are issued in an httpOnly, same-site cookie; only a SHA-256 token hash is stored, sessions expire and can be revoked on logout, and the CSRF double-submit check is timing-safe. State-changing browser requests require an explicit configured Origin allowlist, and login has a dedicated rate limit. Rotate `SESSION_TTL_HOURS`, database credentials, and all provider secrets through the deployment secret manager; revoke active sessions during incident response by setting `sessions.revoked_at`. Never use development secrets in production.
 
 ## Production readiness
 
-Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, migration execution outside first-start initialization, and tenant-specific retention/legal-review settings.
+Before go-live, configure TLS/reverse proxy, production secrets, SMTP/SMS/TimeScan providers, scheduled encrypted off-site backups and restore drills, a shared worker lease for horizontally scaled workers, monitoring/alerting, and tenant-specific retention/legal-review settings. The production backend runs the migration runner before starting the API.
 
 Production deployment uses a secret-managed environment file:
 

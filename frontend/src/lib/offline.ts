@@ -80,7 +80,8 @@ export async function syncOutbox(){
     try{
       const response=await fetch(item.path,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','x-csrf-token':csrf(),'Idempotency-Key':String(item.body.client_event_id)},body:JSON.stringify(item.body)});
       if(response.status===409){
-        await update({...item,status:'conflict',error:'Server meldet einen Konflikt; manuelle Prüfung erforderlich.'});
+        const detail=await response.json().catch(()=>({}));
+        await update({...item,status:'conflict',error:typeof detail.error==='string'?detail.error:'Server meldet einen Konflikt; manuelle Prüfung erforderlich.'});
         results.conflicts++;
       }else if(!response.ok){
         throw new Error(`Synchronisation fehlgeschlagen (${response.status})`);
