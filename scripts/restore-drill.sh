@@ -125,15 +125,22 @@ CREATE ROLE restore_drill_rls NOLOGIN;
 GRANT USAGE ON SCHEMA public TO restore_drill_rls;
 GRANT SELECT ON dms_versions TO restore_drill_rls;
 SQL
-tenant_a_visibility="$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 <<'SQL'
+psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
 SET LOCAL ROLE restore_drill_rls;
 SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-0000000000a1', false);
-SELECT count(*) FROM dms_versions WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
+DO $$
+DECLARE visible_count integer;
+BEGIN
+  SELECT count(*) INTO visible_count
+  FROM dms_versions
+  WHERE tenant_id = '00000000-0000-0000-0000-0000000000b1';
+  IF visible_count <> 0 THEN
+    RAISE EXCEPTION 'tenant isolation failed: % foreign rows visible', visible_count;
+  END IF;
+END $$;
 ROLLBACK;
 SQL
-)"
-assert_equals 0 "$(printf '%s\n' "$tenant_a_visibility" | grep -E '^[0-9]+$' | tail -n 1)" "tenant isolation"
 
 while IFS=$'\t' read -r object_key expected_hash expected_size; do
   [[ -n "$object_key" ]] || continue
