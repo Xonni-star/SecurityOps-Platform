@@ -1,6 +1,6 @@
 import {Link,useLocation,useNavigate} from 'react-router-dom';
 import {ReactNode,useState} from 'react';
-import {hasPermission,logout,storedUser} from '../lib/api';
+import {hasPermission,logout,storedUser} from '../lib/api'; import '../polish.css';
 type Item=[string,string,string];
 const groups:{label:string;items:Item[]}[]=[
  {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
