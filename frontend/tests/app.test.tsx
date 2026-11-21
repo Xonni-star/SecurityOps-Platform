@@ -17,16 +17,16 @@ describe('login and protected navigation',()=>{
   it('submits credentials and enters the protected area',async()=>{
     loginMock.mockResolvedValue({user:{email:'admin@example.com',role:'admin',permissions:[]},csrfToken:'csrf'});
     render(<MemoryRouter><Login/></MemoryRouter>);
-    fireEvent.change(screen.getByLabelText('Email'),{target:{value:'operator@example.com'}});
-    fireEvent.change(screen.getByLabelText('Password'),{target:{value:'secret'}});
-    fireEvent.click(screen.getByRole('button',{name:'Sign in'}));
+    fireEvent.change(screen.getByLabelText('E-Mail-Adresse'),{target:{value:'operator@example.com'}});
+    fireEvent.change(screen.getByLabelText('Passwort'),{target:{value:'secret'}});
+    fireEvent.click(screen.getByRole('button',{name:'Anmelden'}));
     await waitFor(()=>expect(loginMock).toHaveBeenCalledWith('operator@example.com','secret'));
     expect(localStorage.getItem('securityops_authenticated')).toBe('true');
   });
 
   it('redirects unauthenticated users away from protected navigation',()=>{
     render(<App/>);
-    expect(screen.getByRole('heading',{name:'Sign in'})).toBeTruthy();
+    expect(screen.getByRole('heading',{name:'Willkommen zurück'})).toBeTruthy();
   });
 });
 
