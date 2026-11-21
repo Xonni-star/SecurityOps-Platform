@@ -25,3 +25,14 @@ test('CRM foundation migration does not introduce customer portal identities or 
   expect(sql).not.toMatch(/portal_user|customer_user|external_identity/i);
   expect(sql).not.toMatch(/current_setting\(['"]app\.tenant_id['"]\)[^;]*tenant_id/i);
 });
+
+test('object management migration adds bounded site master data without a second object table',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','034_object_management_foundation.sql'),'utf8');
+  expect(sql).toContain('ALTER TABLE sites');
+  for(const column of ['site_number','status','security_classification','latitude','longitude','object_manager_employee_id']){
+    expect(sql).toContain(`ADD COLUMN IF NOT EXISTS ${column}`);
+  }
+  expect(sql).toContain('sites_status_check');
+  expect(sql).toContain('sites_tenant_object_manager_fk');
+  expect(sql).not.toMatch(/CREATE TABLE IF NOT EXISTS objects/i);
+});
