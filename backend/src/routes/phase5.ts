@@ -81,7 +81,8 @@ phase5Router.get('/admin/provider-status',requirePermission('providers:read'),as
 phase5Router.get('/reports/:kind',requirePermission('reports:read'),async(req,res,next)=>{
   try{
     const kind=String(req.params.kind);const {from,to}=range(req);const rows=await reportRows(kind,req.user!.tenantId,from,to,typeof req.query.site_id==='string'?req.query.site_id:undefined,typeof req.query.employee_id==='string'?req.query.employee_id:undefined) as Record<string,unknown>[];
-    const format=req.query.format==='pdf'?'pdf':'csv';await audit(req,'report.exported',kind,undefined,{format,count:rows.length});
+    const format=req.query.format==='pdf'?'pdf':req.query.format==='json'?'json':'csv';await audit(req,'report.exported',kind,undefined,{format,count:rows.length});
+    if(format==='json')return res.json(rows);
     const output=csv(rows);
     if(format==='csv')return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-report.csv"`).send(output);
     const text=(`${kind} report\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`).replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
