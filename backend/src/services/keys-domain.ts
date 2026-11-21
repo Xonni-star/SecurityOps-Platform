@@ -51,3 +51,8 @@ export function validateBundleReturn(
   });
   return selected.sort((left,right)=>left.id.localeCompare(right.id));
 }
+
+export function bundleStatus(issuedCount:number,totalCount:number):'available'|'issued'|'partial'{
+  if(issuedCount===0)return 'available';
+  return issuedCount===totalCount?'issued':'partial';
+}

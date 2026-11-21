@@ -5,13 +5,11 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 import {runIdempotentMutation} from '../services/offline-sync.js';
 import type {SyncMutationAction} from '../services/offline-sync.js';
-import {canReturnKey,holderIsValid,transitionKeyStatus,validateBundleReturn} from '../services/keys-domain.js';
+import {bundleStatus,canReturnKey,holderIsValid,transitionKeyStatus} from '../services/keys-domain.js';
 
 const uuid=z.string().uuid();
 const movementBody=z.object({client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
 const holderBody=z.object({holder_user_id:uuid.nullable().optional(),holder_employee_id:uuid.nullable().optional(),client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
-const bundleBody=z.object({label:z.string().trim().min(1).max(160),key_ids:z.array(uuid).min(1).refine(ids=>new Set(ids).size===ids.length,'Bundle keys must be unique'),client_mutation_id:uuid}).strict();
-const bundleReturnBody=z.object({key_ids:z.array(uuid).min(1).refine(ids=>new Set(ids).size===ids.length,'Bundle keys must be unique'),client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
 
 function session(req:Request){if(!req.sessionDbId)throw Object.assign(new Error('Session-Identität fehlt.'),{status:401});return req.sessionDbId;}
 function keyPermission(req:Request,code:string,siteId:string|null){
@@ -28,6 +26,7 @@ async function movement(req:Request,keyId:string,movementType:'issued'|'returned
   return withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:`keys.${movementType}` as SyncMutationAction,payload:req.body},async tx=>{
     const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,keyId])).rows[0];
     if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+    if((await tx.query('SELECT 1 FROM key_bundle_items WHERE tenant_id=$1 AND key_id=$2',[req.user!.tenantId,keyId])).rowCount)throw Object.assign(new Error('Bundled keys must be managed through their bundle'),{status:409,code:'KEY_BUNDLE_MANAGED'});
     keyPermission(req,movementType==='issued'?'keys:issue':movementType==='returned'?'keys:return':'keys:manage',key.site_id);
     if(movementType==='returned'&&!canReturnKey({actorUserId:req.user!.id,holderUserId:key.holder_user_id,operator:operator(req)}))throw Object.assign(new Error('Only the valid holder or an operator may return this key'),{status:403});
     const next=transitionKeyStatus(key.status,movementType);
@@ -60,7 +59,7 @@ async function movement(req:Request,keyId:string,movementType:'issued'|'returned
 }
 
 export const keysRouter=Router();
-keysRouter.use((req,res,next)=>/^\/keys/.test(req.path)?requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next()):next());
+keysRouter.use((req,res,next)=>/^\/(?:keys|key-bundles)/.test(req.path)?requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next()):next());
 
 keysRouter.get('/keys',requirePermission('keys:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
@@ -70,6 +69,135 @@ keysRouter.get('/keys',requirePermission('keys:read',{allowedScopes:['tenant','s
     res.json((await query(`SELECT k.id,k.site_id,k.key_code,k.label,k.key_type,k.status,k.holder_user_id,k.holder_employee_id,k.issued_at,k.returned_at,k.lost_at,k.deactivated_at,k.created_at,k.updated_at
       FROM keys k WHERE k.tenant_id=$1${siteFilter} ORDER BY k.label`,values)).rows);
   }catch(error){next(error);}
+});
+
+const bundleBody=z.object({name:z.string().trim().min(1).max(160),site_id:uuid.nullable().optional(),client_mutation_id:uuid}).strict();
+const bundleItemBody=z.object({key_id:uuid,client_mutation_id:uuid}).strict();
+const bundleHolderBody=holderBody;
+const bundleReturnBody=z.object({key_ids:z.array(uuid).min(1),client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
+
+async function bundlePermission(req:Request,code:string,siteId:string|null){keyPermission(req,code,siteId);}
+
+keysRouter.get('/key-bundles',requirePermission('keys:bundle_read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const scope=effectivePermissionScope(normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),'keys:bundle_read',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
+    const siteFilter=scope==='site'?' AND b.site_id = ANY($2::uuid[])':'';
+    const values=siteFilter?[req.user!.tenantId,req.user!.siteIds??[]]:[req.user!.tenantId];
+    res.json((await query(`SELECT b.id,b.site_id,b.name,b.status,b.holder_user_id,b.holder_employee_id,b.created_at,b.updated_at,
+      COUNT(i.key_id)::int item_count,COUNT(i.key_id) FILTER (WHERE k.status='issued')::int issued_count
+      FROM key_bundles b LEFT JOIN key_bundle_items i ON i.tenant_id=b.tenant_id AND i.bundle_id=b.id
+      LEFT JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
+      WHERE b.tenant_id=$1${siteFilter} GROUP BY b.id ORDER BY b.name`,values)).rows);
+  }catch(error){next(error);}
+});
+
+keysRouter.post('/key-bundles',requirePermission('keys:bundle_write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const body=bundleBody.parse(req.body);bundlePermission(req,'keys:bundle_write',body.site_id??null);
+    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle.create',payload:req.body},async tx=>{
+      const row=(await tx.query(`INSERT INTO key_bundles(tenant_id,site_id,name,created_by,created_session_id) VALUES($1,$2,$3,$4,$5) RETURNING *`,
+        [req.user!.tenantId,body.site_id??null,body.name,req.user!.id,session(req)])).rows[0];
+      await tx.query(`INSERT INTO key_bundle_movements(tenant_id,bundle_id,movement_type,to_status,actor_user_id,session_id) VALUES($1,$2,'created','available',$3,$4)`,
+        [req.user!.tenantId,row.id,req.user!.id,session(req)]);
+      await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
+        [req.user!.tenantId,req.user!.id,'keys.bundle.created','key_bundle',row.id,{site_id:row.site_id}]);
+      return row;
+    }));
+    res.status(result.replayed?200:201).json(result.response);
+  }catch(error){next(error);}
+});
+
+keysRouter.get('/key-bundles/:id',requirePermission('keys:bundle_read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const bundle=(await query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,String(req.params.id)])).rows[0];
+    if(!bundle)return res.status(404).json({error:'Key bundle not found'});
+    bundlePermission(req,'keys:bundle_read',bundle.site_id);
+    const items=(await query(`SELECT k.id,k.site_id,k.key_code,k.label,k.key_type,k.status,k.holder_user_id,k.holder_employee_id
+      FROM key_bundle_items i JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
+      WHERE i.tenant_id=$1 AND i.bundle_id=$2 ORDER BY k.label`,[req.user!.tenantId,bundle.id])).rows;
+    res.json({...bundle,items});
+  }catch(error){next(error);}
+});
+
+keysRouter.post('/key-bundles/:id/items',requirePermission('keys:bundle_write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const body=bundleItemBody.parse(req.body);
+    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle.item',payload:req.body},async tx=>{
+      const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0];
+      if(!bundle)return Object.assign(new Error('Key bundle not found'),{status:404});
+      bundlePermission(req,'keys:bundle_write',bundle.site_id);
+      if(bundle.status!=='available')throw Object.assign(new Error('Only available bundles can be changed'),{status:409});
+      const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,body.key_id])).rows[0];
+      if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+      if(key.status!=='available')throw Object.assign(new Error('Only available keys can be added'),{status:409});
+      if(bundle.site_id&&key.site_id!==bundle.site_id)throw Object.assign(new Error('Key and bundle must use the same site'),{status:400});
+      await tx.query('INSERT INTO key_bundle_items(tenant_id,bundle_id,key_id,added_by) VALUES($1,$2,$3,$4)',[req.user!.tenantId,bundle.id,key.id,req.user!.id]);
+      const movement=(await tx.query(`INSERT INTO key_bundle_movements(tenant_id,bundle_id,movement_type,from_status,to_status,actor_user_id,session_id,reason)
+        VALUES($1,$2,'item_added',$3,$3,$4,$5,$6) RETURNING *`,[req.user!.tenantId,bundle.id,bundle.status,req.user!.id,session(req),`key_id=${key.id}`])).rows[0];
+      await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
+        [req.user!.tenantId,req.user!.id,'keys.bundle.item_added','key_bundle',bundle.id,{key_id:key.id,movement_id:movement.id}]);
+      return {bundle,movement};
+    }));
+    res.status(result.replayed?200:201).json(result.response);
+  }catch(error){next(error);}
+});
+
+async function bundleMovement(req:Request,bundleId:string,type:'issue'|'return',body:z.infer<typeof bundleHolderBody>|z.infer<typeof bundleReturnBody>){
+  return withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:`keys.bundle.${type}` as SyncMutationAction,payload:req.body},async tx=>{
+    const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,bundleId])).rows[0];
+    if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+    bundlePermission(req,type==='issue'?'keys:bundle_issue':'keys:bundle_return',bundle.site_id);
+    if(type==='return'&&!canReturnKey({actorUserId:req.user!.id,holderUserId:bundle.holder_user_id,operator:operator(req)}))throw Object.assign(new Error('Only the valid bundle holder or an operator may return it'),{status:403});
+    const items=(await tx.query(`SELECT k.* FROM key_bundle_items i JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
+      WHERE i.tenant_id=$1 AND i.bundle_id=$2 ORDER BY k.id FOR UPDATE`,[req.user!.tenantId,bundle.id])).rows;
+    if(!items.length)throw Object.assign(new Error('A key bundle must contain at least one key'),{status:409});
+    let selected=items;
+    let holderUserId:null|string=null;let holderEmployeeId:null|string=null;
+    if(type==='issue'){
+      const holder=body as z.infer<typeof bundleHolderBody>;
+      if(bundle.status!=='available')throw Object.assign(new Error('Only available bundles can be issued'),{status:409});
+      if(!holderIsValid(holder.holder_user_id,holder.holder_employee_id))throw Object.assign(new Error('Exactly one valid holder is required'),{status:400});
+      for(const item of items)if(item.status!=='available')throw Object.assign(new Error('Every key in the bundle must be available'),{status:409});
+      holderUserId=holder.holder_user_id??null;holderEmployeeId=holder.holder_employee_id??null;
+    }else{
+      const requested=new Set((body as z.infer<typeof bundleReturnBody>).key_ids);
+      selected=items.filter(item=>requested.has(item.id));
+      if(selected.length!==requested.size)throw Object.assign(new Error('Every returned key must belong to this bundle'),{status:400});
+      if(selected.some(item=>item.status!=='issued'))throw Object.assign(new Error('Only issued bundle keys can be returned'),{status:409});
+      if(bundle.status==='available')throw Object.assign(new Error('Bundle is not issued'),{status:409});
+    }
+    for(const item of selected){
+      const next=type==='issue'?'issued':'available';
+      await tx.query(`UPDATE keys SET status=$3,holder_user_id=$4,holder_employee_id=$5,
+        issued_at=CASE WHEN $3='issued' THEN now() ELSE issued_at END,
+        issued_by=CASE WHEN $3='issued' THEN $6 ELSE issued_by END,
+        returned_at=CASE WHEN $3='available' THEN now() ELSE returned_at END,
+        returned_by=CASE WHEN $3='available' THEN $6 ELSE returned_by END,
+        updated_at=now() WHERE tenant_id=$1 AND id=$2`,
+        [req.user!.tenantId,item.id,next,holderUserId,holderEmployeeId,req.user!.id]);
+      await tx.query(`INSERT INTO key_movements(tenant_id,key_id,movement_type,from_status,to_status,holder_user_id,holder_employee_id,actor_user_id,session_id,device_id,reason)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,(SELECT device_id FROM sessions WHERE tenant_id=$1 AND id=$9),$10)`,
+        [req.user!.tenantId,item.id,type==='issue'?'issued':'returned',item.status,next,type==='issue'?holderUserId:item.holder_user_id??null,type==='issue'?holderEmployeeId:item.holder_employee_id??null,req.user!.id,session(req),body.reason??null]);
+    }
+    const issuedCount=items.filter(item=>type==='issue'||(item.status==='issued'&&!selected.some(selectedItem=>selectedItem.id===item.id))).length;
+    const nextStatus=type==='issue'?'issued':bundleStatus(issuedCount,items.length);
+    const movementType=type==='issue'?'issued':issuedCount?'partial_return':'returned';
+    const updated=(await tx.query(`UPDATE key_bundles SET status=$3,holder_user_id=$4,holder_employee_id=$5,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,
+      [req.user!.tenantId,bundle.id,nextStatus,type==='issue'?holderUserId:issuedCount?bundle.holder_user_id:null,type==='issue'?holderEmployeeId:issuedCount?bundle.holder_employee_id:null])).rows[0];
+    const movement=(await tx.query(`INSERT INTO key_bundle_movements(tenant_id,bundle_id,movement_type,from_status,to_status,holder_user_id,holder_employee_id,returned_key_ids,actor_user_id,session_id,reason)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [req.user!.tenantId,bundle.id,movementType,bundle.status,nextStatus,updated.holder_user_id,updated.holder_employee_id,type==='return'?selected.map(item=>item.id):[],req.user!.id,session(req),body.reason??null])).rows[0];
+    await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
+      [req.user!.tenantId,req.user!.id,`keys.bundle.${type}`,'key_bundle',bundle.id,{movement_id:movement.id,key_ids:selected.map(item=>item.id),to_status:nextStatus}]);
+    return {bundle:updated,movement};
+  }));
+}
+
+keysRouter.post('/key-bundles/:id/issue',requirePermission('keys:bundle_issue',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{const body=bundleHolderBody.parse(req.body);const result=await bundleMovement(req,String(req.params.id),'issue',body);res.status(result.replayed?200:201).json(result.response);}catch(error){next(error);}
+});
+keysRouter.post('/key-bundles/:id/return',requirePermission('keys:bundle_return',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{const body=bundleReturnBody.parse(req.body);const result=await bundleMovement(req,String(req.params.id),'return',body);res.status(200).json(result.response);}catch(error){next(error);}
 });
 
 keysRouter.post('/keys',requirePermission('keys:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
@@ -86,62 +214,6 @@ keysRouter.post('/keys',requirePermission('keys:write',{allowedScopes:['tenant',
       return row;
     }));
     res.status(result.replayed?200:201).json(result.response);
-  }catch(error){next(error);}
-});
-
-keysRouter.post('/keys/bundles',requirePermission('keys:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
-  try{
-    const body=bundleBody.parse(req.body);
-    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle_create',payload:req.body},async tx=>{
-      const keys=(await tx.query('SELECT id,site_id,status FROM keys WHERE tenant_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[req.user!.tenantId,body.key_ids])).rows as Array<{id:string;site_id:string|null;status:string}>;
-      if(keys.length!==body.key_ids.length)throw Object.assign(new Error('Every bundle key must exist in the tenant'),{status:404});
-      const siteId=keys[0]?.site_id??null;
-      if(keys.some(key=>key.site_id!==siteId))throw Object.assign(new Error('All bundle keys must belong to one site'),{status:400});
-      if(keys.some(key=>!['available','issued'].includes(key.status)))throw Object.assign(new Error('Only available or issued keys may be bundled'),{status:409});
-      keyPermission(req,'keys:write',siteId);
-      const bundle=(await tx.query(`INSERT INTO key_bundles(tenant_id,site_id,label,created_by,created_session_id) VALUES($1,$2,$3,$4,$5) RETURNING *`,
-        [req.user!.tenantId,siteId,body.label,req.user!.id,session(req)])).rows[0];
-      for(const [index,key] of keys.entries()){
-        await tx.query('INSERT INTO key_bundle_members(tenant_id,bundle_id,key_id,position) VALUES($1,$2,$3,$4)',
-          [req.user!.tenantId,bundle.id,key.id,index+1]);
-      }
-      await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
-        [req.user!.tenantId,req.user!.id,'keys.bundle_created','key_bundle',bundle.id,{site_id:siteId,key_ids:keys.map(key=>key.id)}]);
-      return {...bundle,key_ids:keys.map(key=>key.id)};
-    }));
-    res.status(result.replayed?200:201).json(result.response);
-  }catch(error){next(error);}
-});
-
-keysRouter.post('/keys/bundles/:id/return',requirePermission('keys:return',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
-  try{
-    const body=bundleReturnBody.parse(req.body);
-    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle_return',payload:req.body},async tx=>{
-      const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as {id:string;site_id:string|null;status:string}|undefined;
-      if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
-      if(bundle.status!=='active')throw Object.assign(new Error('Key bundle is not active'),{status:409});
-      keyPermission(req,'keys:return',bundle.site_id);
-      const keys=(await tx.query(`SELECT k.id,k.site_id,k.status,k.holder_user_id,k.holder_employee_id
-        FROM key_bundle_members bm JOIN keys k ON k.tenant_id=bm.tenant_id AND k.id=bm.key_id
-        WHERE bm.tenant_id=$1 AND bm.bundle_id=$2 AND k.id=ANY($3::uuid[])
-        ORDER BY k.id FOR UPDATE OF k`,
-        [req.user!.tenantId,bundle.id,body.key_ids])).rows as Array<{id:string;site_id:string|null;status:'available'|'issued'|'lost'|'deactivated';holder_user_id:string|null;holder_employee_id:string|null}>;
-      const selected=validateBundleReturn(keys,body.key_ids,{actorUserId:req.user!.id,operator:operator(req)});
-      const returned=[];
-      for(const key of selected){
-        keyPermission(req,'keys:return',key.site_id);
-        const updated=(await tx.query(`UPDATE keys SET status='available',holder_user_id=NULL,holder_employee_id=NULL,returned_at=now(),returned_by=$3,updated_at=now()
-          WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,key.id,req.user!.id])).rows[0];
-        const movement=(await tx.query(`INSERT INTO key_movements(tenant_id,key_id,movement_type,from_status,to_status,holder_user_id,holder_employee_id,actor_user_id,session_id,device_id,reason)
-          VALUES($1,$2,'returned','issued','available',$3,$4,$5,$6,(SELECT device_id FROM sessions WHERE tenant_id=$1 AND id=$6),$7) RETURNING *`,
-          [req.user!.tenantId,key.id,key.holder_user_id,key.holder_employee_id,req.user!.id,session(req),body.reason??null])).rows[0];
-        await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
-          [req.user!.tenantId,req.user!.id,'keys.bundle_returned','key',key.id,{bundle_id:bundle.id,movement_id:movement.id}]);
-        returned.push({key:updated,movement});
-      }
-      return {bundle_id:bundle.id,returned_key_ids:selected.map(key=>key.id),returned};
-    }));
-    res.status(200).json(result.response);
   }catch(error){next(error);}
 });
 
