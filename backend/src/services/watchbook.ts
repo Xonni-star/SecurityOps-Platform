@@ -11,7 +11,7 @@ export function mergeCorrection(
   current:WatchbookRevisionState,
   correction:Partial<WatchbookRevisionState>,
 ):WatchbookRevisionState {
-  const next={...current,...correction};
+  const next={...current,...correction,content:correction.content??current.content,status:correction.status??current.status};
   if(current.status==='closed'&&next.status==='open'){
     const error=Object.assign(new Error('Geschlossene Wachbucheinträge können nicht wieder geöffnet werden.'),{
       status:409,
