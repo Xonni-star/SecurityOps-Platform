@@ -16,11 +16,25 @@ describe('phase 4 NSL and reports',()=>{
   it('returns consolidated dashboard data',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('COUNT(*) FILTER'))return result([{
+        unacknowledged_alarms:2,critical_alarms:1,acknowledged_alarms:3,escalated_alarms:1,
+        open_alarms:6,active_incidents:2,on_duty_resources:4,assigned_resources:1,
+        open_handovers:1,technical_issues:1,
+      }]);
       return result([{id:'row-1'}]);
     });
     const response=await request(app).get('/api/v1/nsl/dashboard').set('Cookie',csrf.Cookie);
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({alarms:[{id:'row-1'}],incidents:[{id:'row-1'}],positions:[{id:'row-1'}],patrols:[{id:'row-1'}]});
+    expect(response.body.alarms).toEqual([{id:'row-1'}]);
+    expect(response.body.incidents).toEqual([{id:'row-1'}]);
+    expect(response.body.positions).toEqual([{id:'row-1'}]);
+    expect(response.body.patrols).toEqual([{id:'row-1'}]);
+    expect(response.body.summary).toEqual({
+      unacknowledged_alarms:2,critical_alarms:1,acknowledged_alarms:3,escalated_alarms:1,
+      open_alarms:6,active_incidents:2,on_duty_resources:4,assigned_resources:1,
+      open_handovers:1,technical_issues:1,
+    });
+    expect(response.body.last_updated_at).toEqual(expect.any(String));
   });
 
   it('exports alarm reports as CSV',async()=>{

@@ -18,7 +18,7 @@ async function audit(req:Request,eventType:string,entityType:string|undefined,en
 
 phase4Router.get('/nsl/dashboard',requirePermission('nsl:read'),async(req,res,next)=>{
   try{
-    const [alarms,incidents,positions,patrols]=await Promise.all([
+    const [alarms,incidents,positions,patrols,summary]=await Promise.all([
       query(`SELECT a.*,p.name priority_name,p.code priority_code,p.color,s.name site_name,e.name employee_name,
         EXTRACT(EPOCH FROM (now()-a.triggered_at))::integer age_seconds
         FROM alarms a LEFT JOIN alarm_priorities p ON p.id=a.priority_id LEFT JOIN sites s ON s.id=a.site_id
@@ -36,8 +36,46 @@ phase4Router.get('/nsl/dashboard',requirePermission('nsl:read'),async(req,res,ne
         FROM patrol_routes r JOIN sites s ON s.id=r.site_id LEFT JOIN patrol_assignments pa ON pa.route_id=r.id
         LEFT JOIN employees e ON e.id=pa.employee_id LEFT JOIN patrol_scans ps ON ps.route_id=r.id
         WHERE r.tenant_id=$1 GROUP BY r.id,r.name,r.site_id,s.name,pa.employee_id,e.name ORDER BY r.name`,[req.user!.tenantId]),
+      query(`SELECT
+        COUNT(*) FILTER (WHERE a.status='open')::integer unacknowledged_alarms,
+        COUNT(*) FILTER (WHERE a.status='open' AND p.code='critical')::integer critical_alarms,
+        COUNT(*) FILTER (WHERE a.status='acknowledged')::integer acknowledged_alarms,
+        COUNT(*) FILTER (WHERE a.status='escalated')::integer escalated_alarms,
+        COUNT(*) FILTER (WHERE a.status<>'resolved')::integer open_alarms,
+        (SELECT COUNT(*)::integer FROM incidents i WHERE i.tenant_id=$1 AND i.status<>'completed') active_incidents,
+        (SELECT COUNT(DISTINCT sa.employee_id)::integer
+          FROM schedule_assignments sa
+          JOIN schedule_shifts ss ON ss.tenant_id=sa.tenant_id AND ss.id=sa.shift_id
+          JOIN schedule_periods sp ON sp.tenant_id=ss.tenant_id AND sp.id=ss.period_id
+          WHERE sa.tenant_id=$1 AND sa.status='assigned' AND sp.status='published'
+            AND ss.starts_at<=now() AND ss.ends_at>now()) on_duty_resources,
+        (SELECT COUNT(*)::integer FROM schedule_assignments sa
+          JOIN schedule_shifts ss ON ss.tenant_id=sa.tenant_id AND ss.id=sa.shift_id
+          JOIN schedule_periods sp ON sp.tenant_id=ss.tenant_id AND sp.id=ss.period_id
+          WHERE sa.tenant_id=$1 AND sa.status='assigned' AND sp.status='published'
+            AND ss.starts_at<=now() AND ss.ends_at>now()
+            AND EXISTS (SELECT 1 FROM incident_assignments ia
+              JOIN incidents i ON i.tenant_id=ia.tenant_id AND i.id=ia.incident_id
+              WHERE ia.tenant_id=sa.tenant_id AND ia.employee_id=sa.employee_id AND i.status<>'completed')) assigned_resources,
+        (SELECT COUNT(*)::integer FROM shift_handovers h WHERE h.tenant_id=$1 AND h.status='open')
+          + (SELECT COUNT(*)::integer FROM handover_records h WHERE h.tenant_id=$1 AND h.status='open') open_handovers,
+        (SELECT COUNT(*)::integer FROM devices d WHERE d.tenant_id=$1 AND d.status<>'active') technical_issues
+       FROM alarms a
+       LEFT JOIN alarm_priorities p ON p.tenant_id=a.tenant_id AND p.id=a.priority_id
+       WHERE a.tenant_id=$1`,[req.user!.tenantId]),
     ]);
-    res.json({alarms:alarms.rows,incidents:incidents.rows,positions:positions.rows,patrols:patrols.rows});
+    res.json({
+      alarms:alarms.rows,
+      incidents:incidents.rows,
+      positions:positions.rows,
+      patrols:patrols.rows,
+      summary:summary.rows[0]??{
+        unacknowledged_alarms:0,critical_alarms:0,acknowledged_alarms:0,escalated_alarms:0,
+        open_alarms:0,active_incidents:0,on_duty_resources:0,assigned_resources:0,
+        open_handovers:0,technical_issues:0,
+      },
+      last_updated_at:new Date().toISOString(),
+    });
   }catch(error){next(error);}
 });
 
