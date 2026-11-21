@@ -114,10 +114,14 @@ silently rejected.
 ## Phase 3, step 11: key management
 
 Migration 018 is additive and introduces tenant/site-scoped `keys` plus the
-append-only `key_movements` history. It must not be edited after release.
-Issue, return, loss and deactivation operations lock the current row, enforce
-the explicit status machine, write an audit event and use offline idempotency
-receipts. Holder references are UUID-only and never duplicate personal data.
+append-only `key_movements` history. Migration 035 adds immutable,
+tenant/site-scoped key bundles and explicit membership rows. These migrations
+must not be edited after release. Issue, return, loss and deactivation
+operations lock the current row, enforce the explicit status machine, write an
+audit event and use offline idempotency receipts. Bundle partial returns lock
+the bundle and every requested member, validate every member before mutation,
+and append one movement and audit event per returned key. Holder references are
+UUID-only and never duplicate personal data.
 PostgreSQL integration tests require `POSTGRES_TEST_DATABASE_URL`; without it,
 the RLS suite is skipped and the missing database is reported explicitly by
 the test command.

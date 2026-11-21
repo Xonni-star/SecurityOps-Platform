@@ -5,11 +5,13 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 import {runIdempotentMutation} from '../services/offline-sync.js';
 import type {SyncMutationAction} from '../services/offline-sync.js';
-import {canReturnKey,holderIsValid,transitionKeyStatus} from '../services/keys-domain.js';
+import {canReturnKey,holderIsValid,transitionKeyStatus,validateBundleReturn} from '../services/keys-domain.js';
 
 const uuid=z.string().uuid();
 const movementBody=z.object({client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
 const holderBody=z.object({holder_user_id:uuid.nullable().optional(),holder_employee_id:uuid.nullable().optional(),client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
+const bundleBody=z.object({label:z.string().trim().min(1).max(160),key_ids:z.array(uuid).min(1).refine(ids=>new Set(ids).size===ids.length,'Bundle keys must be unique'),client_mutation_id:uuid}).strict();
+const bundleReturnBody=z.object({key_ids:z.array(uuid).min(1).refine(ids=>new Set(ids).size===ids.length,'Bundle keys must be unique'),client_mutation_id:uuid,reason:z.string().trim().max(1000).nullable().optional()}).strict();
 
 function session(req:Request){if(!req.sessionDbId)throw Object.assign(new Error('Session-Identität fehlt.'),{status:401});return req.sessionDbId;}
 function keyPermission(req:Request,code:string,siteId:string|null){
@@ -84,6 +86,62 @@ keysRouter.post('/keys',requirePermission('keys:write',{allowedScopes:['tenant',
       return row;
     }));
     res.status(result.replayed?200:201).json(result.response);
+  }catch(error){next(error);}
+});
+
+keysRouter.post('/keys/bundles',requirePermission('keys:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const body=bundleBody.parse(req.body);
+    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle_create',payload:req.body},async tx=>{
+      const keys=(await tx.query('SELECT id,site_id,status FROM keys WHERE tenant_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[req.user!.tenantId,body.key_ids])).rows as Array<{id:string;site_id:string|null;status:string}>;
+      if(keys.length!==body.key_ids.length)throw Object.assign(new Error('Every bundle key must exist in the tenant'),{status:404});
+      const siteId=keys[0]?.site_id??null;
+      if(keys.some(key=>key.site_id!==siteId))throw Object.assign(new Error('All bundle keys must belong to one site'),{status:400});
+      if(keys.some(key=>!['available','issued'].includes(key.status)))throw Object.assign(new Error('Only available or issued keys may be bundled'),{status:409});
+      keyPermission(req,'keys:write',siteId);
+      const bundle=(await tx.query(`INSERT INTO key_bundles(tenant_id,site_id,label,created_by,created_session_id) VALUES($1,$2,$3,$4,$5) RETURNING *`,
+        [req.user!.tenantId,siteId,body.label,req.user!.id,session(req)])).rows[0];
+      for(const [index,key] of keys.entries()){
+        await tx.query('INSERT INTO key_bundle_members(tenant_id,bundle_id,key_id,position) VALUES($1,$2,$3,$4)',
+          [req.user!.tenantId,bundle.id,key.id,index+1]);
+      }
+      await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
+        [req.user!.tenantId,req.user!.id,'keys.bundle_created','key_bundle',bundle.id,{site_id:siteId,key_ids:keys.map(key=>key.id)}]);
+      return {...bundle,key_ids:keys.map(key=>key.id)};
+    }));
+    res.status(result.replayed?200:201).json(result.response);
+  }catch(error){next(error);}
+});
+
+keysRouter.post('/keys/bundles/:id/return',requirePermission('keys:return',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const body=bundleReturnBody.parse(req.body);
+    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle_return',payload:req.body},async tx=>{
+      const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as {id:string;site_id:string|null;status:string}|undefined;
+      if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+      if(bundle.status!=='active')throw Object.assign(new Error('Key bundle is not active'),{status:409});
+      keyPermission(req,'keys:return',bundle.site_id);
+      const keys=(await tx.query(`SELECT k.id,k.site_id,k.status,k.holder_user_id,k.holder_employee_id
+        FROM key_bundle_members bm JOIN keys k ON k.tenant_id=bm.tenant_id AND k.id=bm.key_id
+        WHERE bm.tenant_id=$1 AND bm.bundle_id=$2 AND k.id=ANY($3::uuid[])
+        ORDER BY k.id FOR UPDATE OF k`,
+        [req.user!.tenantId,bundle.id,body.key_ids])).rows as Array<{id:string;site_id:string|null;status:'available'|'issued'|'lost'|'deactivated';holder_user_id:string|null;holder_employee_id:string|null}>;
+      const selected=validateBundleReturn(keys,body.key_ids,{actorUserId:req.user!.id,operator:operator(req)});
+      const returned=[];
+      for(const key of selected){
+        keyPermission(req,'keys:return',key.site_id);
+        const updated=(await tx.query(`UPDATE keys SET status='available',holder_user_id=NULL,holder_employee_id=NULL,returned_at=now(),returned_by=$3,updated_at=now()
+          WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,key.id,req.user!.id])).rows[0];
+        const movement=(await tx.query(`INSERT INTO key_movements(tenant_id,key_id,movement_type,from_status,to_status,holder_user_id,holder_employee_id,actor_user_id,session_id,device_id,reason)
+          VALUES($1,$2,'returned','issued','available',$3,$4,$5,$6,(SELECT device_id FROM sessions WHERE tenant_id=$1 AND id=$6),$7) RETURNING *`,
+          [req.user!.tenantId,key.id,key.holder_user_id,key.holder_employee_id,req.user!.id,session(req),body.reason??null])).rows[0];
+        await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',
+          [req.user!.tenantId,req.user!.id,'keys.bundle_returned','key',key.id,{bundle_id:bundle.id,movement_id:movement.id}]);
+        returned.push({key:updated,movement});
+      }
+      return {bundle_id:bundle.id,returned_key_ids:selected.map(key=>key.id),returned};
+    }));
+    res.status(200).json(result.response);
   }catch(error){next(error);}
 });
 

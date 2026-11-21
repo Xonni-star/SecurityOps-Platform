@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type pg from 'pg';
 
 export type SyncConflictStrategy='USE_LOCAL'|'USE_SERVER'|'RECORD_AS_EXCEPTION';
-export type SyncMutationAction='alarms.panic'|'patrol.scan'|'watchbook.entry'|'scheduling.period'|'scheduling.shift'|'scheduling.assignment'|'scheduling.rule_profile'|'dms.document'|'keys.create'|'keys.issue'|'keys.return'|'keys.lost'|'keys.deactivate'|'handover.create'|'handover.participant'|'handover.confirm'|'handover.revoke'|'handover.correct';
+export type SyncMutationAction='alarms.panic'|'patrol.scan'|'watchbook.entry'|'scheduling.period'|'scheduling.shift'|'scheduling.assignment'|'scheduling.rule_profile'|'dms.document'|'keys.create'|'keys.issue'|'keys.return'|'keys.lost'|'keys.deactivate'|'keys.bundle_create'|'keys.bundle_return'|'handover.create'|'handover.participant'|'handover.confirm'|'handover.revoke'|'handover.correct';
 
 export interface SyncMutationInput {
   tenantId:string;

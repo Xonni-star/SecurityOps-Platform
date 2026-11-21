@@ -91,6 +91,8 @@ export const openapi={
     '/dms/retention/apply':{post:{summary:'Apply expired DMS retention entries',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/dms/backup/status':{get:{summary:'Read the separate DMS blob backup/restore contract status',security:[{sessionCookie:[]}] }},
     '/keys':{get:{summary:'List tenant/site-scoped keys',security:[{sessionCookie:[]}]},post:{summary:'Create an available key with an idempotent mutation',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/keys/bundles':{post:{summary:'Create an immutable key bundle from explicit member keys',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/keys/bundles/{id}/return':{post:{summary:'Atomically partially return explicit bundle members with per-key validation',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/keys/{id}/history':{get:{summary:'List immutable key issue/return/loss/deactivation history',security:[{sessionCookie:[]}] }},
     '/keys/{id}/issue':{post:{summary:'Atomically issue a key to one user or employee',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/keys/{id}/return':{post:{summary:'Atomically return a key by its holder or an operator',security:[{sessionCookie:[],csrfToken:[]}] }},
