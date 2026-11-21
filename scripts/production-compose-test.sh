@@ -33,6 +33,8 @@ CORS_ORIGIN=https://pi5.example.test
 MFA_ENCRYPTION_KEY=compose-test-mfa-encryption-key-32-bytes
 HTTP_PORT=$http_port
 API_PORT=$api_port
+# Ephemeral CI/integration-test marker only; never use this value in production.
+MFA_ENCRYPTION_KEY=ci-production-compose-test-only-not-a-secret
 EOF
 
 wait_for() {
