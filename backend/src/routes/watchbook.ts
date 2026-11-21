@@ -81,7 +81,9 @@ watchbookRouter.get('/watchbook/entries',requirePermission('watchbook:read'),asy
       r.id revision_id,r.revision_no,r.content,r.status,r.created_at revision_created_at,r.chain_hash,
       c.id category_id,c.code category_code,c.name category_name,
       p.id priority_id,p.code priority_code,p.name priority_name,p.rank priority_rank,
-      u.email author_email
+      u.email author_email,
+      (SELECT ae.details->>'reason' FROM audit_events ae WHERE ae.tenant_id=e.tenant_id AND ae.entity_type='watchbook_entry' AND ae.entity_id=e.id AND ae.event_type='watchbook.entry.corrected' ORDER BY ae.created_at DESC LIMIT 1) correction_reason,
+      (SELECT ae.created_at FROM audit_events ae WHERE ae.tenant_id=e.tenant_id AND ae.entity_type='watchbook_entry' AND ae.entity_id=e.id AND ae.event_type='watchbook.entry.corrected' ORDER BY ae.created_at DESC LIMIT 1) corrected_at
       FROM watchbook_entries e
       JOIN LATERAL (SELECT * FROM watchbook_revisions r0 WHERE r0.tenant_id=e.tenant_id AND r0.entry_id=e.id ORDER BY r0.revision_no DESC LIMIT 1) r ON true
       JOIN watchbook_categories c ON c.id=r.category_id
