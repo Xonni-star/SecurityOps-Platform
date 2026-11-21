@@ -21,6 +21,16 @@ describe('phase 2 alarm lifecycle',()=>{
     expect(response.status).toBe(200);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes("VALUES($1,$2,'open','acknowledged'"))).toBe(true);
   });
+  it('keeps acknowledgement and history atomic when the history write fails',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}]);
+      if(sql.includes("status='acknowledged'"))return result([{id:'alarm-1',status:'acknowledged'}]);
+      throw new Error('history unavailable');
+    });
+    const response=await request(app).post('/api/v1/alarms/alarm-1/acknowledge').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf');
+    expect(response.status).toBe(500);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes("VALUES($1,$2,'open','acknowledged'"))).toBe(true);
+  });
 });
 describe('phase 2 NFC deviation',()=>{
   it('marks an out-of-order scan and creates a medium alarm',async()=>{
