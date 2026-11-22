@@ -16,6 +16,8 @@ export const openapi={
     '/auth/mfa/policy':{get:{summary:'Read tenant MFA-required roles',security:[{sessionCookie:[]}]},put:{summary:'Set tenant MFA-required roles',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/auth/mfa/reset/{userId}':{post:{summary:'Reset MFA and revoke a user session set',description:'Privileged, tenant-scoped reset with audit event.',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/auth/logout':{post:{summary:'Revoke session',security:[{sessionCookie:[],csrfToken:[]}],responses:{'204':{description:'Logged out and revoked'},'403':{description:'Invalid CSRF token or Origin'}}}},
+    '/auth/sessions':{get:{summary:'List tenant authenticated sessions',security:[{sessionCookie:[]}]}},
+    '/auth/sessions/{id}/revoke':{post:{summary:'Revoke one tenant authenticated session',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/auth/me':{get:{summary:'Get current user and permissions',security:[{sessionCookie:[]}],responses:{'200':{description:'Authenticated user'}}}},
     '/auth/devices':{get:{summary:'List authenticated tenant devices',security:[{sessionCookie:[]}] }},
     '/auth/devices/{id}/revoke':{post:{summary:'Revoke a device and all bound sessions atomically',security:[{sessionCookie:[],csrfToken:[]}] }},
