@@ -26,3 +26,21 @@ existing session/device binding rejects their session before routing.
 The database stores only UUID references for users/employees and keeps holder
 history in immutable movement records. Key codes and labels are operational
 metadata, not secrets; secret material must not be stored in PostgreSQL.
+
+## End-to-end increment: accountable key bundles
+
+Migration 035 adds persisted bundles, one-to-one key membership, immutable
+bundle movements, tenant/site authorization, idempotent API mutations and a
+real frontend flow for creating bundles, adding available keys, issuing a
+complete bundle and returning all currently issued members. Individual key
+movement endpoints reject bundled keys, so a bundle cannot silently diverge
+from its member histories. Partial returns remain visible as `partial` until
+the final member is returned.
+
+This increment deliberately does not claim completion of the broader
+specification. Key-type catalogs, lock hierarchies, loss incidents/NSL
+integration, inventory sessions, due-date notifications, document/PDF
+receipts, scheduling assignment checks, offline conflict workflows for
+bundles, and mobile/offline UI remain separate P1/P2 phases. Employee
+authorization is still limited by the existing employee model, which has no
+canonical site/qualification assignment relation exposed to this module.
