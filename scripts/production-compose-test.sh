@@ -70,13 +70,15 @@ psql() {
   "${compose[@]}" exec -T db psql -U securityops -d securityops -v ON_ERROR_STOP=1 -Atqc "$1"
 }
 
+expected_migrations="$(find "$work_dir/backend/migrations" -maxdepth 1 -name '*.sql' -type f | wc -l | tr -d ' ')"
+
 echo "Starting fresh production stack"
 "${compose[@]}" up -d --build
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 32
-test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = 32
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_migrations"
+test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = "$expected_migrations"
 test "$(psql "SELECT count(*) FROM tenants;")" = 1
 
 psql "INSERT INTO tenants(id,name) VALUES ('00000000-0000-0000-0000-0000000000f1','Compose persistence') ON CONFLICT DO NOTHING;"
@@ -103,23 +105,26 @@ echo "Restarting without data loss"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 32
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_migrations"
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 
-cat >"$work_dir/backend/migrations/033_production_compose_upgrade.sql" <<'EOF'
+upgrade_version=$((expected_migrations + 1))
+upgrade_migration="$(printf '%03d_production_compose_upgrade.sql' "$upgrade_version")"
+cat >"$work_dir/backend/migrations/$upgrade_migration" <<'EOF'
 CREATE TABLE IF NOT EXISTS production_compose_upgrade_marker (
   id integer PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO production_compose_upgrade_marker(id) VALUES (1) ON CONFLICT DO NOTHING;
 EOF
+expected_migrations=$upgrade_version
 
 echo "Applying an additive upgrade"
 "${compose[@]}" up -d --build backend
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 33
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_migrations"
 test "$(psql "SELECT count(*) FROM production_compose_upgrade_marker;")" = 1
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 echo "Production Compose integration test passed"
