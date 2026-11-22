@@ -1,4 +1,4 @@
-import {withTenantContext,withTransaction} from '../db/pool.js';
+import {query,withTenantContext,withTransaction} from '../db/pool.js';
 import {recordAudit} from './audit.js';
 
 export type AuthenticatedDeviceMetadata={platform?:string;app_version?:string};
@@ -66,5 +66,47 @@ export async function revokeAuthenticatedDevice(tenantId:string,deviceId:string,
     return {device,sessionsRevoked:sessions.rowCount??0};
   }));
   await recordAudit(tenantId,actorUserId,'authenticated_device.revoked','device',deviceId,{sessionsRevoked:result.sessionsRevoked});
+  return result;
+}
+
+export type AuthenticatedSessionSummary={
+  id:string;
+  user_id:string;
+  email:string;
+  role:string;
+  device_id:string;
+  device_name:string;
+  metadata:Record<string,unknown>;
+  created_at:string;
+  last_seen_at:string|null;
+  expires_at:string;
+  revoked_at:string|null;
+};
+
+export async function listAuthenticatedSessions(tenantId:string){
+  return (await withTenantContext(tenantId,()=>query<AuthenticatedSessionSummary>(
+    `SELECT s.id,s.user_id,u.email,u.role,s.device_id,d.name AS device_name,d.metadata,
+            s.created_at,d.last_seen_at,s.expires_at,s.revoked_at
+       FROM sessions s
+       JOIN users u ON u.tenant_id=s.tenant_id AND u.id=s.user_id
+       JOIN devices d ON d.tenant_id=s.tenant_id AND d.id=s.device_id
+      WHERE s.tenant_id=$1
+      ORDER BY s.revoked_at NULLS FIRST,s.created_at DESC`,
+    [tenantId],
+  ))).rows;
+}
+
+export async function revokeAuthenticatedSession(tenantId:string,sessionId:string,actorUserId:string){
+  const result=await withTenantContext(tenantId,()=>withTransaction(async client=>{
+    const session=(await client.query(
+      `UPDATE sessions SET revoked_at=now(),updated_at=now()
+        WHERE tenant_id=$1 AND id=$2 AND revoked_at IS NULL
+        RETURNING id`,
+      [tenantId,sessionId],
+    )).rows[0];
+    if(!session)throw deviceError('Authenticated session not found or already revoked.',404,'SESSION_NOT_FOUND');
+    return session;
+  }));
+  await recordAudit(tenantId,actorUserId,'authenticated_session.revoked','session',sessionId,{});
   return result;
 }

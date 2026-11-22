@@ -137,3 +137,26 @@ authenticated user identity. No direct task/attachment contract, delta/pull
 feed, or cross-device synchronization is introduced. Retention and DSGVO
 deletion require a separately approved policy.
 Migration `020_mfa.sql` adds encrypted TOTP fields, pending-MFA session state, tenant role policy, hashed recovery codes, RLS policies, and MFA permissions. Apply it with the normal migration runner. Set `MFA_ENCRYPTION_KEY` only in the deployment secret store; never commit it.
+
+## Phase 1, step 1: CRM foundation
+
+Migration `033_crm_foundation.sql` is additive. It enriches the existing
+`customers` table and adds `customer_sites`, `customer_contacts`, `contracts`,
+`contract_sites`, `services`, and `contract_services`. Every new relation uses
+tenant-aware composite foreign keys, explicit status/date/value checks, indexes,
+and forced RLS. Existing customers and sites remain valid and are not reassigned
+to one another because the pre-existing schema contains no reliable relationship
+to infer. Existing non-empty `customers.email` values are copied idempotently to
+one primary `customer_contacts` row; names remain null because they are not
+available in the legacy data.
+
+The migration adds internal CRM read/write permissions only. It deliberately does
+not add customer portal identities, external principals, portal scopes, report
+sharing, or customer-facing API behavior. Those require a separate authorization
+and portal migration after the customer-to-site model is exposed through APIs.
+
+Roll out with the normal migration runner (`npm run migrate`) against a restored
+staging copy first. Verify the backfill count, inspect constraint/RLS failures,
+and monitor lock duration. The migration is append-only and must not be edited
+after release; rollback requires a separately reviewed forward migration or a
+database restore.
