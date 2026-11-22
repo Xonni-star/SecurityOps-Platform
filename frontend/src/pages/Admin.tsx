@@ -1,5 +1,5 @@
 import {FormEvent,useEffect,useState} from 'react';
-import {api,AuthenticatedDevice,hasPermission,storedUser} from '../lib/api';
+import {api,AuthenticatedDevice,AuthenticatedSession,hasPermission,storedUser} from '../lib/api';
 
 type Audit={id:string;event_type:string;actor_email:string|null;created_at:string;details:Record<string,unknown>};
 type Provider={provider:'smtp'|'sms'|'timescan';status:'not_configured'|'configured'|'verified'|'failed';message:string;checked_at:string};
@@ -15,7 +15,7 @@ export function Admin(){
   const user=storedUser();
   const admin=Boolean(user&&(user.role==='admin'||user.role==='superadmin'));
   const [items,setItems]=useState<Audit[]>([]);const [backupStatus,setBackupStatus]=useState<BackupStatus|null>(null);
-  const [providers,setProviders]=useState<Provider[]>([]);const [devices,setDevices]=useState<AuthenticatedDevice[]>([]);
+  const [providers,setProviders]=useState<Provider[]>([]);const [devices,setDevices]=useState<AuthenticatedDevice[]>([]);const [sessions,setSessions]=useState<AuthenticatedSession[]>([]);
   const [schedule,setSchedule]=useState(initialSchedule);const [targets,setTargets]=useState<Target[]>([]);
   const [reason,setReason]=useState('');const [providerReason,setProviderReason]=useState('');
   const [smtp,setSmtp]=useState({host:'',port:'587',user:'',from:'',tls:true,secret_ref:''});
@@ -23,15 +23,16 @@ export function Admin(){
   const [target,setTarget]=useState({name:'',target_kind:'local',root:'',endpoint:'',bucket:'',prefix:'',host:'',port:'22',remotePath:'',secret_ref:''});
   const [rules,setRules]=useState<NotificationRule[]>([]);const [error,setError]=useState('');
   const load=async()=>{try{
-    const [audit,status,providerStatus,providerSettings,notificationRules,deviceList]=await Promise.all([
+    const [audit,status,providerStatus,providerSettings,notificationRules,deviceList,sessionList]=await Promise.all([
       api<Audit[]>('/audit'),hasPermission('backup:read')?api<BackupStatus>('/backups/status'):Promise.resolve(null),
       hasPermission('settings:read')?api<{providers:Provider[]}>('/settings/providers/status'):Promise.resolve({providers:[]}),
       hasPermission('settings:read')?api<ProviderSettings>('/settings/providers'):Promise.resolve({providers:[],timescan:null} as ProviderSettings),
       hasPermission('settings:read')?api<NotificationRule[]>('/settings/backup-notifications'):Promise.resolve([]),
       hasPermission('authenticated_devices:read')?api<AuthenticatedDevice[]>('/auth/devices'):Promise.resolve([]),
+      hasPermission('authenticated_sessions:read')?api<AuthenticatedSession[]>('/auth/sessions'):Promise.resolve([]),
     ]);
     const safeStatus=status&&typeof status==='object'?status:null;const safeProviderSettings=providerSettings&&typeof providerSettings==='object'?providerSettings:{providers:[],timescan:null};
-    setItems(Array.isArray(audit)?audit:[]);setBackupStatus(safeStatus);setTargets(Array.isArray(safeStatus?.targets)?safeStatus.targets:[]);setProviders(Array.isArray(providerStatus?.providers)?providerStatus.providers:[]);setRules(Array.isArray(notificationRules)?notificationRules:[]);setDevices(Array.isArray(deviceList)?deviceList:[]);
+    setItems(Array.isArray(audit)?audit:[]);setBackupStatus(safeStatus);setTargets(Array.isArray(safeStatus?.targets)?safeStatus.targets:[]);setProviders(Array.isArray(providerStatus?.providers)?providerStatus.providers:[]);setRules(Array.isArray(notificationRules)?notificationRules:[]);setDevices(Array.isArray(deviceList)?deviceList:[]);setSessions(Array.isArray(sessionList)?sessionList:[]);
     const persisted=safeProviderSettings.providers||[];const smtpConfig=persisted.find(item=>item.provider==='smtp');const smsConfig=persisted.find(item=>item.provider==='sms');
     if(smtpConfig)setSmtp({host:String(smtpConfig.config.host||''),port:String(smtpConfig.config.port||587),user:String(smtpConfig.config.user||''),from:String(smtpConfig.config.from||''),tls:Boolean(smtpConfig.config.tls??true),secret_ref:smtpConfig.secret_ref||''});
     if(smsConfig)setSms({url:String(smsConfig.config.url||''),secret_ref:smsConfig.secret_ref||''});
@@ -44,7 +45,8 @@ export function Admin(){
   async function saveTimescan(){try{await api('/timescan/config',{method:'POST',body:JSON.stringify({...timescan,reason:providerReason})});setProviderReason('');await load();}catch(e){setError((e as Error).message);}}
   async function addTarget(event:FormEvent){event.preventDefault();try{const {name,target_kind,secret_ref,...config}=target;await api('/backups/targets',{method:'POST',body:JSON.stringify({name,target_kind,config,secret_ref:secret_ref||undefined,enabled:true,reason})});setTarget({...target,name:'',root:'',endpoint:'',bucket:'',prefix:'',host:'',port:'22',remotePath:'',secret_ref:''});setReason('');await load();}catch(e){setError((e as Error).message);}}
   async function addRule(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=new FormData(event.currentTarget);try{await api('/settings/backup-notifications',{method:'PUT',body:JSON.stringify({event_type:String(form.get('event_type')),role:String(form.get('role')),channel:String(form.get('channel')),recipient:String(form.get('recipient')||'')||undefined,enabled:true,reason})});event.currentTarget.reset();setReason('');await load();}catch(e){setError((e as Error).message);}}
-  async function revoke(id:string){try{await api(`/auth/devices/${id}/revoke`,{method:'POST'});await load();}catch(e){setError((e as Error).message);}}
+  async function revoke(id:string){if(!window.confirm('Dieses Vertrauensgerät und alle zugehörigen Sitzungen widerrufen?'))return;try{await api(`/auth/devices/${id}/revoke`,{method:'POST'});await load();}catch(e){setError((e as Error).message);}}
+  async function revokeSession(id:string){if(!window.confirm('Diese Sitzung widerrufen?'))return;try{await api(`/auth/sessions/${id}/revoke`,{method:'POST'});await load();}catch(e){setError((e as Error).message);}}
   if(!admin)return <section><h1>Administration</h1><p>Diese Seite ist nur für Administratoren verfügbar.</p></section>;
   return <section><h1>Administration & Einstellungen</h1>{error&&<p role="alert">{error}</p>}
     <p><a href="/api/v1/audit/export" target="_blank" rel="noreferrer">Audit-Log als CSV exportieren</a></p>
@@ -55,6 +57,7 @@ export function Admin(){
     {hasPermission('settings:write')&&<><h3>SMTP</h3><form onSubmit={e=>{e.preventDefault();void saveProvider('smtp')}}><input placeholder="Host" value={smtp.host} onChange={e=>setSmtp({...smtp,host:e.target.value})}/><input type="number" placeholder="Port" value={smtp.port} onChange={e=>setSmtp({...smtp,port:e.target.value})}/><input placeholder="Absender" value={smtp.from} onChange={e=>setSmtp({...smtp,from:e.target.value})}/><input placeholder="secret_ref" value={smtp.secret_ref} onChange={e=>setSmtp({...smtp,secret_ref:e.target.value})}/><button>SMTP speichern</button></form><h3>SMS-Gateway</h3><form onSubmit={e=>{e.preventDefault();void saveProvider('sms')}}><input placeholder="URL" value={sms.url} onChange={e=>setSms({...sms,url:e.target.value})}/><input placeholder="secret_ref" value={sms.secret_ref} onChange={e=>setSms({...sms,secret_ref:e.target.value})}/><button>SMS speichern</button></form><h2>TimeScan-Integration</h2><p>TimeScan ist Bestandteil der SecurityOps-Plattform. Hier wird nur die Verbindung zur vorhandenen TimeScan-Quelle konfiguriert; Arbeitszeiten werden anschließend über die integrierte Synchronisation übernommen.</p>{providers.find(provider=>provider.provider==='timescan')&&<p>Status: <strong>{providers.find(provider=>provider.provider==='timescan')?.status}</strong> — {providers.find(provider=>provider.provider==='timescan')?.message}</p>}<h3>Verbindung</h3><form onSubmit={e=>{e.preventDefault();void saveTimescan()}}><input placeholder="URL" value={timescan.base_url} onChange={e=>setTimescan({...timescan,base_url:e.target.value})}/><input placeholder="Account" value={timescan.account_ref} onChange={e=>setTimescan({...timescan,account_ref:e.target.value})}/><input placeholder="secret_ref" value={timescan.secret_ref} onChange={e=>setTimescan({...timescan,secret_ref:e.target.value})}/><button>TimeScan speichern</button></form><label>Provider-Änderungsgrund<input required minLength={3} value={providerReason} onChange={e=>setProviderReason(e.target.value)}/></label></>}
     {hasPermission('settings:write')&&<><h2>Backup-Benachrichtigungen</h2><form onSubmit={addRule}><select name="event_type"><option value="backup.failed">Fehlgeschlagene Backups</option><option value="backup.succeeded">Erfolgreiche Backups (Opt-in)</option></select><select name="role"><option value="admin">Admins</option><option value="operator">Operatoren</option><option value="viewer">Viewer</option></select><select name="channel"><option value="in_app">In-App</option><option value="email">E-Mail</option><option value="sms">SMS</option></select><input name="recipient" placeholder="Empfänger bei E-Mail/SMS"/><button>Regel hinzufügen</button></form><ul>{rules.map(rule=><li key={rule.id}>{rule.event_type} · {rule.role||rule.user_id} · {rule.channel} · {rule.recipient||'Rollenempfänger'}</li>)}</ul></>}
     {devices.length>0&&<><h2>Vertrauensgeräte</h2><ul>{devices.map(device=><li key={device.id}><strong>{device.name}</strong> · {device.revoked_at?'widerrufen':'aktiv'} {!device.revoked_at&&hasPermission('authenticated_devices:write')&&<button onClick={()=>revoke(device.id)}>Widerrufen</button>}</li>)}</ul></>}
+    {hasPermission('authenticated_sessions:read')&&<><h2>Aktive Sitzungen</h2>{sessions.length===0?<p>Keine Sitzungen vorhanden.</p>:<ul>{sessions.map(session=><li key={session.id}><strong>{session.email}</strong> · {session.role} · {session.device_name} · {String(session.metadata.platform||'unbekannte Plattform')} · erstellt {new Date(session.created_at).toLocaleString('de-DE')} · {session.revoked_at?'widerrufen':session.expires_at&&new Date(session.expires_at).getTime()<Date.now()?'abgelaufen':'aktiv'} {!session.revoked_at&&hasPermission('authenticated_sessions:write')&&<button onClick={()=>revokeSession(session.id)}>Sitzung widerrufen</button>}</li>)}</ul>}</>}
     <h2>Audit</h2><ul>{items.slice(0,20).map(item=><li key={item.id}>{item.created_at} · {item.event_type}</li>)}</ul>
   </section>;
 }
