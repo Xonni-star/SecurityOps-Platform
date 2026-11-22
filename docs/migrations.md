@@ -141,7 +141,7 @@ authenticated user identity. No direct task/attachment contract, delta/pull
 feed, or cross-device synchronization is introduced. Retention and DSGVO
 deletion require a separately approved policy.
 
-Migration `035_key_bundles.sql` adds tenant/site-scoped bundles with immutable
+Migration `036_key_bundles.sql` adds tenant/site-scoped bundles with immutable
 bundle movements and one-to-one key membership. Bundle issue and return
 operations lock the bundle and all member keys in one transaction. Partial
 returns remain `partial` until every issued member is returned; individual key
