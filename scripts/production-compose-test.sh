@@ -30,6 +30,7 @@ POSTGRES_USER=securityops
 POSTGRES_PASSWORD=compose-test-password
 POSTGRES_DB=securityops
 CORS_ORIGIN=https://pi5.example.test
+MFA_ENCRYPTION_KEY=compose-test-mfa-encryption-key-32-bytes
 HTTP_PORT=$http_port
 API_PORT=$api_port
 # Ephemeral CI/integration-test marker only; never use this value in production.
@@ -118,7 +119,7 @@ INSERT INTO production_compose_upgrade_marker(id) VALUES (1) ON CONFLICT DO NOTH
 EOF
 
 echo "Applying an additive upgrade"
-"${compose[@]}" up -d --build backend
+"${compose[@]}" up -d --build backend frontend
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
