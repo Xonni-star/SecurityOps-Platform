@@ -8,8 +8,14 @@ command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/securityops-production-compose.XXXXXX")"
 project="securityops-production-test-$$"
-http_port="${HTTP_PORT:-18080}"
-api_port="${API_PORT:-13000}"
+find_free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+http_port="${HTTP_PORT:-$(find_free_port)}"
+api_port="${API_PORT:-$(find_free_port)}"
+while [ "$api_port" = "$http_port" ]; do
+  api_port="$(find_free_port)"
+done
 compose=(docker compose -p "$project" --env-file "$work_dir/.env.production" -f "$work_dir/docker-compose.production.yml")
 
 cleanup() {
@@ -30,12 +36,13 @@ POSTGRES_USER=securityops
 POSTGRES_PASSWORD=compose-test-password
 POSTGRES_DB=securityops
 CORS_ORIGIN=https://pi5.example.test
-MFA_ENCRYPTION_KEY=compose-test-mfa-encryption-key-32-bytes
 HTTP_PORT=$http_port
 API_PORT=$api_port
 # Ephemeral CI/integration-test marker only; never use this value in production.
 MFA_ENCRYPTION_KEY=ci-production-compose-test-only-not-a-secret
 EOF
+
+baseline_migration_count="$(find "$work_dir/backend/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
 
 wait_for() {
   local url="$1"
@@ -52,16 +59,24 @@ assert_health() {
   for _ in $(seq 1 45); do
     all_healthy=true
     for service in db backend frontend; do
-      container="$("${compose[@]}" ps -q "$service")"
-      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
+      container="$("${compose[@]}" ps -q --all "$service" || true)"
+      if [ -z "$container" ]; then
+        all_healthy=false
+        continue
+      fi
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)"
       if [ "$status" != healthy ]; then all_healthy=false; fi
     done
     if [ "$all_healthy" = true ]; then return 0; fi
     sleep 2
   done
   for service in db backend frontend; do
-    container="$("${compose[@]}" ps -q "$service")"
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
+    container="$("${compose[@]}" ps -q --all "$service" || true)"
+    if [ -z "$container" ]; then
+      echo "$service container is missing" >&2
+      continue
+    fi
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)"
     echo "$service health is $status" >&2
   done
   return 1
@@ -76,8 +91,8 @@ echo "Starting fresh production stack"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 35
-test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = 35
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$baseline_migration_count"
+test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = "$baseline_migration_count"
 test "$(psql "SELECT count(*) FROM tenants;")" = 1
 
 psql "INSERT INTO tenants(id,name) VALUES ('00000000-0000-0000-0000-0000000000f1','Compose persistence') ON CONFLICT DO NOTHING;"
@@ -104,10 +119,11 @@ echo "Restarting without data loss"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 35
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$baseline_migration_count"
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 
-cat >"$work_dir/backend/migrations/036_production_compose_upgrade.sql" <<'EOF'
+upgrade_migration_file="$work_dir/backend/migrations/$(printf '%03d' "$((baseline_migration_count + 1))")_production_compose_upgrade.sql"
+cat >"$upgrade_migration_file" <<'EOF'
 CREATE TABLE IF NOT EXISTS production_compose_upgrade_marker (
   id integer PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
@@ -116,11 +132,11 @@ INSERT INTO production_compose_upgrade_marker(id) VALUES (1) ON CONFLICT DO NOTH
 EOF
 
 echo "Applying an additive upgrade"
-"${compose[@]}" up -d --build backend frontend
+"${compose[@]}" up -d --build backend
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 36
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$((baseline_migration_count + 1))"
 test "$(psql "SELECT count(*) FROM production_compose_upgrade_marker;")" = 1
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 echo "Production Compose integration test passed"
