@@ -42,6 +42,8 @@ API_PORT=$api_port
 MFA_ENCRYPTION_KEY=ci-production-compose-test-only-not-a-secret
 EOF
 
+baseline_migration_count="$(find "$work_dir/backend/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
+
 wait_for() {
   local url="$1"
   for _ in $(seq 1 90); do
@@ -81,8 +83,8 @@ echo "Starting fresh production stack"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 34
-test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = 34
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$baseline_migration_count"
+test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = "$baseline_migration_count"
 test "$(psql "SELECT count(*) FROM tenants;")" = 1
 
 psql "INSERT INTO tenants(id,name) VALUES ('00000000-0000-0000-0000-0000000000f1','Compose persistence') ON CONFLICT DO NOTHING;"
@@ -109,10 +111,11 @@ echo "Restarting without data loss"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 34
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$baseline_migration_count"
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 
-cat >"$work_dir/backend/migrations/035_production_compose_upgrade.sql" <<'EOF'
+upgrade_migration_file="$work_dir/backend/migrations/$(printf '%03d' "$((baseline_migration_count + 1))")_production_compose_upgrade.sql"
+cat >"$upgrade_migration_file" <<'EOF'
 CREATE TABLE IF NOT EXISTS production_compose_upgrade_marker (
   id integer PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
@@ -125,7 +128,7 @@ echo "Applying an additive upgrade"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 35
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$((baseline_migration_count + 1))"
 test "$(psql "SELECT count(*) FROM production_compose_upgrade_marker;")" = 1
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 echo "Production Compose integration test passed"
