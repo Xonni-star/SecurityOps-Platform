@@ -29,6 +29,8 @@ const ids = {
   priority: "00000000-0000-4000-8000-000000000107",
   criticalPriority: "00000000-0000-4000-8000-000000000109",
   device: "00000000-0000-4000-8000-000000000108",
+  nfcTag: "00000000-0000-4000-8000-000000000110",
+  patrolAssignment: "00000000-0000-4000-8000-000000000111",
 };
 
 const client = await pool.connect();
@@ -86,6 +88,20 @@ try {
     `INSERT INTO patrol_route_points(tenant_id,route_id,control_point_id,sequence,expected_offset_seconds)
      VALUES($1,$2,$3,1,0) ON CONFLICT(route_id,control_point_id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,sequence=1,expected_offset_seconds=0`,
     [ids.tenant, ids.route, ids.point],
+  );
+  await client.query(
+    `INSERT INTO nfc_devices(id,tenant_id,identifier,device_type,manufacturer,status,control_point_id)
+     VALUES($1,$2,'e2e-nfc-01','tag','E2E','active',$3)
+     ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,identifier=EXCLUDED.identifier,
+       device_type='tag',manufacturer='E2E',status='active',control_point_id=EXCLUDED.control_point_id,updated_at=now()`,
+    [ids.nfcTag, ids.tenant, ids.point],
+  );
+  await client.query(
+    `INSERT INTO patrol_assignments(id,tenant_id,route_id,employee_id,starts_at,ends_at)
+     VALUES($1,$2,$3,$4,now()-interval '1 hour',now()+interval '1 day')
+     ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,route_id=EXCLUDED.route_id,
+       employee_id=EXCLUDED.employee_id,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at`,
+    [ids.patrolAssignment, ids.tenant, ids.route, ids.employee],
   );
   await client.query("COMMIT");
   console.log(

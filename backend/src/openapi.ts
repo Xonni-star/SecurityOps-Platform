@@ -38,7 +38,7 @@ export const openapi={
     '/alarm-priorities':crudPath('alarm-priorities'),'/alarm-priorities/{id}':itemPath('alarm-priorities'),
     '/escalation-rules':crudPath('escalation-rules'),
     '/control-points':crudPath('control-points'),'/patrol-routes':crudPath('patrol-routes'),
-    '/patrol-routes/{routeId}/scans':{post:{summary:'Record an NFC patrol scan and detect deviations',description:'Supports Idempotency-Key and conflict_strategy USE_LOCAL, USE_SERVER or RECORD_AS_EXCEPTION.',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/patrol-routes/{routeId}/scans':{post:{summary:'Record an assigned, registered NFC patrol scan and detect deviations',description:'Requires an active tag registration bound to the route control point and an employee assignment covering the scan time. UID scans are recorded as uid_registered, not cryptographically authenticated. Supports Idempotency-Key and conflict_strategy USE_LOCAL, USE_SERVER or RECORD_AS_EXCEPTION.',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/sensor-thresholds':crudPath('sensor-thresholds'),'/sensor-events':{get:{summary:'List tenant sensor events',security:[{sessionCookie:[]}] }},
     '/telemetry':{post:{summary:'Ingest authenticated device sensor telemetry',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/positions':crudPath('positions'),'/map-data':{get:{summary:'Get latest positions and active alarms for the live map',security:[{sessionCookie:[]}] }},

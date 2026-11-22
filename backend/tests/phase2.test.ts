@@ -34,10 +34,44 @@ describe('phase 2 alarm lifecycle',()=>{
 });
 describe('phase 2 NFC deviation',()=>{
   it('marks an out-of-order scan and creates a medium alarm',async()=>{
-    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}]):sql.includes('FROM control_points')?result([{id:'00000000-0000-0000-0000-000000000002',site_id:'00000000-0000-0000-0000-000000000003'}]):sql.includes('FROM patrol_route_points')?result([{sequence:1,expected_offset_seconds:0}]):sql.includes('FROM patrol_scans')?result([{sequence:2}]):sql.includes('INSERT INTO patrol_scans')?result([{id:'scan-1',deviation:'out_of_order'}]):sql.includes("code='medium'")?result([{id:'00000000-0000-0000-0000-000000000004'}]):sql.includes('INSERT INTO alarms')?result([{id:'alarm-2'}]):result([{id:'history-2'}]));
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('FROM patrol_routes')?result([{id:'00000000-0000-0000-0000-000000000005',site_id:'00000000-0000-0000-0000-000000000003'}])
+      :sql.includes('FROM control_points')?result([{id:'00000000-0000-0000-0000-000000000002',site_id:'00000000-0000-0000-0000-000000000003'}])
+      :sql.includes('FROM nfc_devices')?result([{id:'00000000-0000-0000-0000-000000000007',status:'active',control_point_id:'00000000-0000-0000-0000-000000000002'}])
+      :sql.includes('FROM patrol_assignments')?result([{id:'assignment-1'}])
+      :sql.includes('FROM patrol_route_points')?result([{sequence:1,expected_offset_seconds:0}])
+      :sql.includes('FROM patrol_scans')?result([{sequence:2}])
+      :sql.includes('INSERT INTO patrol_scans')?result([{id:'scan-1',deviation:'out_of_order'}])
+      :sql.includes("code='medium'")?result([{id:'00000000-0000-0000-0000-000000000004'}])
+      :sql.includes('INSERT INTO alarms')?result([{id:'alarm-2'}])
+      :result([{id:'history-2'}]));
     const response=await request(app).post('/api/v1/patrol-routes/00000000-0000-0000-0000-000000000005/scans').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf').send({nfc_uid:'nfc-2',employee_id:'00000000-0000-0000-0000-000000000006'});
     expect(response.status).toBe(201);
     expect(response.body.deviation).toBe('out_of_order');
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO alarms'))).toBe(true);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes("patrol.scan.recorded"))).toBe(true);
+  });
+
+  it('rejects a scan when the employee has no active route assignment',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('FROM patrol_routes')?result([{id:'route-1',site_id:'site-1'}])
+      :sql.includes('FROM control_points')?result([{id:'point-1',site_id:'site-1'}])
+      :sql.includes('FROM nfc_devices')?result([{id:'tag-1',status:'active',control_point_id:'point-1'}])
+      :sql.includes('FROM patrol_assignments')?result([])
+      :result([]));
+    const response=await request(app).post('/api/v1/patrol-routes/00000000-0000-0000-0000-000000000005/scans').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf').send({nfc_uid:'nfc-2',employee_id:'00000000-0000-0000-0000-000000000006'});
+    expect(response.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO patrol_scans'))).toBe(false);
+  });
+
+  it('rejects an inactive registered tag before persisting a scan',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('FROM patrol_routes')?result([{id:'route-1',site_id:'site-1'}])
+      :sql.includes('FROM control_points')?result([{id:'point-1',site_id:'site-1'}])
+      :sql.includes('FROM nfc_devices')?result([{id:'tag-1',status:'blocked',control_point_id:'point-1'}])
+      :result([]));
+    const response=await request(app).post('/api/v1/patrol-routes/00000000-0000-0000-0000-000000000005/scans').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf').send({nfc_uid:'nfc-2',employee_id:'00000000-0000-0000-0000-000000000006'});
+    expect(response.status).toBe(409);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO patrol_scans'))).toBe(false);
   });
 });
