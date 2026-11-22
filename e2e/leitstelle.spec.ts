@@ -12,15 +12,15 @@ test.describe('NSL-Leitstelle',()=>{
   test('redirects unauthenticated users to login',async({page})=>{
     await page.goto('/');
     await expect(page).toHaveURL(/\/login$/);
-    await expect(page.getByRole('heading',{name:'Sign in'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'Willkommen zurück'})).toBeVisible();
   });
 
   test('logs in, shows dashboard areas, creates and resolves a panic alarm',async({page})=>{
     const credentials=requireFixtureCredentials();
     await page.goto('/login');
-    await page.getByLabel('Email').fill(credentials.email);
-    await page.getByLabel('Password').fill(credentials.password);
-    await page.getByRole('button',{name:'Sign in'}).click();
+    await page.getByLabel('E-Mail-Adresse').fill(credentials.email);
+    await page.getByLabel('Passwort').fill(credentials.password);
+    await page.getByRole('button',{name:'Anmelden'}).click();
     await expect(page).toHaveURL('/');
     await expect(page).toHaveURL('/');
     const cookies=await page.context().cookies();
@@ -53,9 +53,9 @@ test.describe('NSL-Leitstelle',()=>{
   test('mobile workflow exposes scan, panic and offline outbox controls',async({page})=>{
     const credentials=requireFixtureCredentials();
     await page.goto('/login');
-    await page.getByLabel('Email').fill(credentials.email);
-    await page.getByLabel('Password').fill(credentials.password);
-    await page.getByRole('button',{name:'Sign in'}).click();
+    await page.getByLabel('E-Mail-Adresse').fill(credentials.email);
+    await page.getByLabel('Passwort').fill(credentials.password);
+    await page.getByRole('button',{name:'Anmelden'}).click();
     await expect(page).toHaveURL('/');
     await page.goto('/mobile');
     await expect(page.getByRole('main').getByRole('heading',{name:'Wächter-App'})).toBeVisible();
