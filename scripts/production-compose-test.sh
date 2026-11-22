@@ -8,9 +8,26 @@ command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/securityops-production-compose.XXXXXX")"
 project="securityops-production-test-$$"
-http_port="${HTTP_PORT:-18080}"
-api_port="${API_PORT:-13000}"
+if [ -n "${HTTP_PORT:-}" ] && [ -n "${API_PORT:-}" ]; then
+  http_port="$HTTP_PORT"
+  api_port="$API_PORT"
+else
+  read -r default_http_port default_api_port < <(node -e '
+    const net = require("node:net");
+    const servers = [net.createServer(), net.createServer()];
+    Promise.all(servers.map(server => new Promise(resolve => {
+      server.listen(0, "127.0.0.1", () => resolve(server.address().port));
+    }))).then(ports => {
+      console.log(ports.join(" "));
+      servers.forEach(server => server.close());
+    });
+  ')
+  http_port="${HTTP_PORT:-$default_http_port}"
+  api_port="${API_PORT:-$default_api_port}"
+fi
 compose=(docker compose -p "$project" --env-file "$work_dir/.env.production" -f "$work_dir/docker-compose.production.yml")
+expected_migrations="$(find "$repo_root/backend/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
+expected_upgrade_migrations=$((expected_migrations + 1))
 
 cleanup() {
   "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -75,8 +92,8 @@ echo "Starting fresh production stack"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 32
-test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = 32
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_migrations"
+test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = "$expected_migrations"
 test "$(psql "SELECT count(*) FROM tenants;")" = 1
 
 psql "INSERT INTO tenants(id,name) VALUES ('00000000-0000-0000-0000-0000000000f1','Compose persistence') ON CONFLICT DO NOTHING;"
@@ -103,10 +120,10 @@ echo "Restarting without data loss"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 32
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_migrations"
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 
-cat >"$work_dir/backend/migrations/033_production_compose_upgrade.sql" <<'EOF'
+cat >"$work_dir/backend/migrations/035_production_compose_upgrade.sql" <<'EOF'
 CREATE TABLE IF NOT EXISTS production_compose_upgrade_marker (
   id integer PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
@@ -119,7 +136,7 @@ echo "Applying an additive upgrade"
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
-test "$(psql "SELECT count(*) FROM securityops_migrations;")" = 33
+test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_upgrade_migrations"
 test "$(psql "SELECT count(*) FROM production_compose_upgrade_marker;")" = 1
 test "$(psql "SELECT count(*) FROM tenants;")" = 2
 echo "Production Compose integration test passed"
