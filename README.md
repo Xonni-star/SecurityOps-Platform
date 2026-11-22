@@ -90,10 +90,17 @@ The APK is written to
 the delivery checksum with
 `shasum -a 256 android/app/build/outputs/apk/debug/app-debug.apk`.
 
-The app supports the existing IndexedDB AES-GCM outbox, service worker,
-manifest, scan and panic workflows. NFC/BLE hardware access is intentionally not
-simulated: the current UI accepts a scanned/entered NFC identifier, and native
-NFC/BLE plugins still need to be selected and integrated for hardware access.
+The native client also supports the existing server contracts directly:
+Keystore-encrypted sessions, Room/WorkManager offline sync, native NFC reader
+mode, the Android camera intent and an FCM token receiver. Build it with a
+non-secret backend URL:
+
+```bash
+./gradlew assembleDebug -PsecurityopsApiBaseUrl=https://securityops.example/api/v1
+```
+
+FCM server registration/delivery, physical NFC/camera acceptance, background
+execution and tablet layout still require environment-specific verification.
 
 ## Security
 Opaque server-side sessions are issued in an httpOnly, same-site cookie; only a SHA-256 token hash is stored, sessions expire and can be revoked on logout, and the CSRF double-submit check is timing-safe. State-changing browser requests require an explicit configured Origin allowlist, and login has a dedicated rate limit. Rotate `SESSION_TTL_HOURS`, database credentials, and all provider secrets through the deployment secret manager; revoke active sessions during incident response by setting `sessions.revoked_at`. Never use development secrets in production.
