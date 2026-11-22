@@ -8,8 +8,14 @@ command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/securityops-production-compose.XXXXXX")"
 project="securityops-production-test-$$"
-http_port="${HTTP_PORT:-18080}"
-api_port="${API_PORT:-13000}"
+find_free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+http_port="${HTTP_PORT:-$(find_free_port)}"
+api_port="${API_PORT:-$(find_free_port)}"
+while [ "$api_port" = "$http_port" ]; do
+  api_port="$(find_free_port)"
+done
 compose=(docker compose -p "$project" --env-file "$work_dir/.env.production" -f "$work_dir/docker-compose.production.yml")
 
 cleanup() {
@@ -30,7 +36,6 @@ POSTGRES_USER=securityops
 POSTGRES_PASSWORD=compose-test-password
 POSTGRES_DB=securityops
 CORS_ORIGIN=https://pi5.example.test
-MFA_ENCRYPTION_KEY=compose-test-mfa-encryption-key-32-bytes
 HTTP_PORT=$http_port
 API_PORT=$api_port
 # Ephemeral CI/integration-test marker only; never use this value in production.
@@ -54,16 +59,24 @@ assert_health() {
   for _ in $(seq 1 45); do
     all_healthy=true
     for service in db backend frontend; do
-      container="$("${compose[@]}" ps -q "$service")"
-      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
+      container="$("${compose[@]}" ps -q --all "$service" || true)"
+      if [ -z "$container" ]; then
+        all_healthy=false
+        continue
+      fi
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)"
       if [ "$status" != healthy ]; then all_healthy=false; fi
     done
     if [ "$all_healthy" = true ]; then return 0; fi
     sleep 2
   done
   for service in db backend frontend; do
-    container="$("${compose[@]}" ps -q "$service")"
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
+    container="$("${compose[@]}" ps -q --all "$service" || true)"
+    if [ -z "$container" ]; then
+      echo "$service container is missing" >&2
+      continue
+    fi
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)"
     echo "$service health is $status" >&2
   done
   return 1
@@ -119,7 +132,7 @@ INSERT INTO production_compose_upgrade_marker(id) VALUES (1) ON CONFLICT DO NOTH
 EOF
 
 echo "Applying an additive upgrade"
-"${compose[@]}" up -d --build backend frontend
+"${compose[@]}" up -d --build backend
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
 assert_health
