@@ -27,4 +27,51 @@ phase2Router.get('/control-points',requirePermission('patrols:read'),async(req,r
 phase2Router.post('/control-points',requirePermission('patrols:write'),async(req,res,next)=>{try{const b=z.object({site_id:uuid,name:nonempty,nfc_uid:nonempty,sequence:z.number().int().positive()}).parse(req.body);res.status(201).json((await query('INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence) VALUES($1,$2,$3,$4,$5) RETURNING *',[req.user!.tenantId,b.site_id,b.name,b.nfc_uid,b.sequence])).rows[0]);}catch(e){next(e);}});
 phase2Router.get('/patrol-routes',requirePermission('patrols:read'),async(req,res,next)=>{try{res.json((await query("SELECT r.*,json_agg(json_build_object('control_point_id',rp.control_point_id,'sequence',rp.sequence,'expected_offset_seconds',rp.expected_offset_seconds) ORDER BY rp.sequence) FILTER (WHERE rp.control_point_id IS NOT NULL) points FROM patrol_routes r LEFT JOIN patrol_route_points rp ON rp.route_id=r.id WHERE r.tenant_id=$1 GROUP BY r.id ORDER BY r.created_at DESC",[req.user!.tenantId])).rows);}catch(e){next(e);}});
 phase2Router.post('/patrol-routes',requirePermission('patrols:write'),async(req,res,next)=>{try{const b=z.object({site_id:uuid,name:nonempty,points:z.array(z.object({control_point_id:uuid,sequence:z.number().int().positive(),expected_offset_seconds:z.number().int().nonnegative()})).min(1)}).parse(req.body);const r=await query('INSERT INTO patrol_routes(tenant_id,site_id,name) VALUES($1,$2,$3) RETURNING *',[req.user!.tenantId,b.site_id,b.name]);for(const p of b.points)await query('INSERT INTO patrol_route_points(route_id,control_point_id,sequence,expected_offset_seconds) VALUES($1,$2,$3,$4)',[r.rows[0].id,p.control_point_id,p.sequence,p.expected_offset_seconds]);res.status(201).json(r.rows[0]);}catch(e){next(e);}});
-phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:write'),async(req,res,next)=>{try{const input=z.object({nfc_uid:nonempty,employee_id:uuid,scanned_at:z.coerce.date().optional(),client_event_id:uuid.optional(),conflict_strategy:z.enum(['USE_LOCAL','USE_SERVER','RECORD_AS_EXCEPTION']).optional()}).strict().parse(req.body);const headerMutationId=req.get('Idempotency-Key');if(headerMutationId&&input.client_event_id&&headerMutationId!==input.client_event_id)return res.status(400).json({error:'Idempotency-Key and client_event_id must match'});const mutationId=headerMutationId?uuid.parse(headerMutationId):input.client_event_id;const apply=async(client?:any)=>{const run=client?client.query.bind(client):query;const cp=(await run('SELECT id,site_id FROM control_points WHERE tenant_id=$1 AND nfc_uid=$2',[req.user!.tenantId,input.nfc_uid])).rows[0];if(!cp)throw Object.assign(new Error('Unknown NFC control point'),{status:404});const expected=(await run('SELECT sequence,expected_offset_seconds FROM patrol_route_points WHERE route_id=$1 AND control_point_id=$2',[req.params.routeId,cp.id])).rows[0];if(!expected)throw Object.assign(new Error('Control point is not on route'),{status:400});const last=(await run('SELECT rp.sequence FROM patrol_scans ps JOIN patrol_route_points rp ON rp.route_id=ps.route_id AND rp.control_point_id=ps.control_point_id WHERE ps.route_id=$1 AND ps.employee_id=$2 ORDER BY ps.scanned_at DESC LIMIT 1',[req.params.routeId,input.employee_id])).rows[0];const deviation=last&&expected.sequence<=last.sequence?'out_of_order':'none';const scan=(await run('INSERT INTO patrol_scans(tenant_id,route_id,control_point_id,employee_id,scanned_at,deviation,client_event_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[req.user!.tenantId,req.params.routeId,cp.id,input.employee_id,input.scanned_at??new Date(),deviation,input.client_event_id??null])).rows[0];if(deviation!=='none'){const p=(await run("SELECT id FROM alarm_priorities WHERE tenant_id=$1 AND code='medium'",[req.user!.tenantId])).rows[0];if(p)await createAlarm(req,{type:'patrol_deviation',priority_id:p.id,source:'nfc_scan',site_id:cp.site_id,employee_id:input.employee_id,description:`Patrol deviation: ${deviation}`,client_event_id:input.client_event_id},client);}return scan;};if(mutationId){const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId,action:'patrol.scan',payload:req.body,conflictStrategy:parseSyncConflictStrategy(input.conflict_strategy)},tx=>apply(tx)));return res.status(result.replayed?200:201).json(result.response);}res.status(201).json(await apply());}catch(e){next(e);}});
+phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:write'),async(req,res,next)=>{try{
+  const input=z.object({nfc_uid:nonempty,employee_id:uuid,scanned_at:z.coerce.date().optional(),client_event_id:uuid.optional(),conflict_strategy:z.enum(['USE_LOCAL','USE_SERVER','RECORD_AS_EXCEPTION']).optional()}).strict().parse(req.body);
+  const headerMutationId=req.get('Idempotency-Key');
+  if(headerMutationId&&input.client_event_id&&headerMutationId!==input.client_event_id)return res.status(400).json({error:'Idempotency-Key and client_event_id must match'});
+  const mutationId=headerMutationId?uuid.parse(headerMutationId):input.client_event_id;
+  const apply=async(client?:any)=>{
+    const run=client?client.query.bind(client):query;
+    const receivedAt=new Date();
+    const route=(await run('SELECT id,site_id FROM patrol_routes WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.routeId])).rows[0];
+    if(!route)throw Object.assign(new Error('Patrol route not found'),{status:404});
+    const cp=(await run('SELECT id,site_id FROM control_points WHERE tenant_id=$1 AND nfc_uid=$2 AND site_id=$3',[req.user!.tenantId,input.nfc_uid,route.site_id])).rows[0];
+    if(!cp)throw Object.assign(new Error('NFC control point is not registered for this route site'),{status:404,code:'PATROL_SITE_MISMATCH'});
+    const tag=(await run(`SELECT id,status,control_point_id FROM nfc_devices
+      WHERE tenant_id=$1 AND identifier=$2 AND device_type='tag'`,[req.user!.tenantId,input.nfc_uid])).rows[0];
+    if(!tag)throw Object.assign(new Error('NFC tag is not registered'),{status:404,code:'NFC_TAG_UNREGISTERED'});
+    if(tag.status!=='active')throw Object.assign(new Error('NFC tag is not active'),{status:409,code:'NFC_TAG_NOT_ACTIVE'});
+    if(tag.control_point_id!==cp.id)throw Object.assign(new Error('NFC tag is assigned to another control point'),{status:409,code:'NFC_TAG_ASSIGNMENT_MISMATCH'});
+    const assignment=(await run(`SELECT id FROM patrol_assignments
+      WHERE tenant_id=$1 AND route_id=$2 AND employee_id=$3
+        AND starts_at <= $4 AND (ends_at IS NULL OR ends_at >= $4)
+      ORDER BY starts_at DESC LIMIT 1`,[req.user!.tenantId,req.params.routeId,input.employee_id,input.scanned_at??receivedAt])).rows[0];
+    if(!assignment)throw Object.assign(new Error('Employee is not assigned to this patrol at the scan time'),{status:403,code:'PATROL_ASSIGNMENT_REQUIRED'});
+    const expected=(await run(`SELECT sequence,expected_offset_seconds FROM patrol_route_points
+      WHERE route_id=$1 AND control_point_id=$2`,[req.params.routeId,cp.id])).rows[0];
+    if(!expected)throw Object.assign(new Error('Control point is not on route'),{status:400});
+    const last=(await run(`SELECT rp.sequence FROM patrol_scans ps
+      JOIN patrol_route_points rp ON rp.route_id=ps.route_id AND rp.control_point_id=ps.control_point_id
+      WHERE ps.tenant_id=$1 AND ps.route_id=$2 AND ps.employee_id=$3
+      ORDER BY ps.scanned_at DESC LIMIT 1`,[req.user!.tenantId,req.params.routeId,input.employee_id])).rows[0];
+    const deviation=last&&expected.sequence<=last.sequence?'out_of_order':'none';
+    const scan=(await run(`INSERT INTO patrol_scans
+      (tenant_id,route_id,control_point_id,employee_id,scanned_at,server_received_at,
+       scan_authentication,nfc_device_id,deviation,client_event_id)
+      VALUES($1,$2,$3,$4,$5,$6,'uid_registered',$7,$8,$9) RETURNING *`,
+      [req.user!.tenantId,req.params.routeId,cp.id,input.employee_id,input.scanned_at??receivedAt,receivedAt,tag.id,deviation,input.client_event_id??null])).rows[0];
+    await run(`INSERT INTO audit_events
+      (tenant_id,actor_user_id,event_type,entity_type,entity_id,details)
+      VALUES($1,$2,'patrol.scan.recorded','patrol_scan',$3,$4)`,
+      [req.user!.tenantId,req.user!.id,scan.id,{route_id:req.params.routeId,control_point_id:cp.id,employee_id:input.employee_id,nfc_device_id:tag.id,scan_authentication:'uid_registered',scanned_at:(input.scanned_at??receivedAt).toISOString(),server_received_at:receivedAt.toISOString(),deviation}]);
+    if(deviation!=='none'){
+      const p=(await run("SELECT id FROM alarm_priorities WHERE tenant_id=$1 AND code='medium'",[req.user!.tenantId])).rows[0];
+      if(p)await createAlarm(req,{type:'patrol_deviation',priority_id:p.id,source:'nfc_scan',site_id:cp.site_id,employee_id:input.employee_id,description:`Patrol deviation: ${deviation}`,client_event_id:input.client_event_id},client);
+    }
+    return scan;
+  };
+  if(mutationId){const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId,action:'patrol.scan',payload:req.body,conflictStrategy:parseSyncConflictStrategy(input.conflict_strategy)},tx=>apply(tx)));return res.status(result.replayed?200:201).json(result.response);}
+  res.status(201).json(await apply());
+}catch(e){next(e);}});
