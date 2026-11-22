@@ -8,6 +8,7 @@ const DB_NAME='securityops-mobile';
 const STORE='outbox';
 const KEY_STORE='keys';
 let database:Promise<IDBDatabase>|undefined;
+let syncInFlight:Promise<{synced:number;conflicts:number;remaining:number}>|undefined;
 
 function openDatabase(){
   if(database)return database;
@@ -73,13 +74,26 @@ async function update(item:MobileOutboxItem){
   await transaction(STORE,'readwrite',store=>store.put({...item,body:undefined,...encrypted}));
 }
 
-export async function syncOutbox(){
+async function postOutboxItem(item:MobileOutboxItem){
+  let lastError:unknown;
+  for(let attempt=0;attempt<3;attempt++){
+    try{
+      return await fetch(item.path,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','x-csrf-token':csrf(),'Idempotency-Key':String(item.body.client_event_id)},body:JSON.stringify(item.body)});
+    }catch(error){
+      lastError=error;
+      if(attempt<2)await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
+    }
+  }
+  throw lastError instanceof Error?lastError:new Error('Netzwerkfehler');
+}
+
+async function syncOutboxInternal(){
   const items=await listOutbox();
   const results:{synced:number;conflicts:number;remaining:number}={synced:0,conflicts:0,remaining:0};
   for(const item of items){
     if(item.status==='conflict'){results.conflicts++;continue;}
     try{
-      const response=await fetch(item.path,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','x-csrf-token':csrf(),'Idempotency-Key':String(item.body.client_event_id)},body:JSON.stringify(item.body)});
+      const response=await postOutboxItem(item);
       if(response.status===409){
         const detail=await response.json().catch(()=>({}));
         await update({...item,status:'conflict',error:typeof detail.error==='string'?detail.error:'Server meldet einen Konflikt; manuelle Prüfung erforderlich.'});
@@ -97,6 +111,12 @@ export async function syncOutbox(){
     }
   }
   return results;
+}
+
+export function syncOutbox(){
+  if(syncInFlight)return syncInFlight;
+  syncInFlight=syncOutboxInternal().finally(()=>{syncInFlight=undefined;});
+  return syncInFlight;
 }
 
 export function watchConnection(onChange:()=>void){
