@@ -175,8 +175,8 @@ export function Employees(){
     }catch(e){setError((e as Error).message);}
   };
 
-  return <section className="employee-management">
-    <div className="employee-page-title"><div><h1>Mitarbeiter</h1><p>Verwalten Sie Mitarbeiter, Qualifikationen und Einsatzinformationen.</p></div><div className="employee-page-actions">{hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(v=>!v)}>+ Mitarbeiter anlegen</button>}<a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">Export</a></div></div>
+  return <section>
+    <div className="employee-toolbar">{hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(v=>!v)}>+ Mitarbeiter anlegen</button>}<a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">Export</a></div>
     {error&&<p role="alert" className="error">{error}</p>}
     {dashboard&&<div className="stats-grid employee-metrics">
       <article><strong>{dashboard.employees.total}</strong><span>Mitarbeiter gesamt</span></article>

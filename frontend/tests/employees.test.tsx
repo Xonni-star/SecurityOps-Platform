@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
-import {MemoryRouter} from 'react-router-dom';
+import {MemoryRouter,useNavigate} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
 vi.mock('../src/lib/api',()=>({
@@ -10,8 +10,9 @@ vi.mock('../src/lib/api',()=>({
   storedUser:()=>({role:'admin',permissions:['employees:read','employees:write']}),
 }));
 import {Employees} from '../src/pages/Employees';
+import {AppRoutes} from '../src/App';
 
-beforeEach(()=>{cleanup();apiMock.mockReset();});
+beforeEach(()=>{cleanup();localStorage.clear();apiMock.mockReset();});
 
 describe('employee management profile',()=>{
   it('shows dashboard metrics and creates an absence in the profile',async()=>{
@@ -65,5 +66,54 @@ describe('employee management profile',()=>{
       '/employees/00000000-0000-4000-8000-000000000111/absences',
       expect.objectContaining({method:'POST'}),
     ));
+  });
+});
+
+describe('employee route layout',()=>{
+  it('renders employees in the global layout on direct and history navigation',async()=>{
+    localStorage.setItem('securityops_authenticated','true');
+    apiMock.mockResolvedValue([]);
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='//employees')return [];
+      if(path==='/employees')return [];
+      if(path==='/employees/dashboard')return {
+        employees:{total:0,active:0,inactive:0,on_leave:0,sick:0,terminated:0},
+        qualifications_expiring_90_days:0,
+        qualifications_expired:0,
+        upcoming_shift_assignments:0,
+        open_absences:0,
+        sick_employees:0,
+        active_object_assignments:0,
+        active_contracts:0,
+        missing_required_qualifications:0,
+        missing_documents:0,
+        employees_without_object:0,
+      };
+      if(path==='/sites')return [];
+      return [];
+    });
+
+    function NavigationControls(){
+      const navigate=useNavigate();
+      return <><button onClick={()=>navigate('/customers')}>Customers route</button><button onClick={()=>navigate(-1)}>History back</button></>;
+    }
+
+    const {container}=render(
+      <MemoryRouter initialEntries={['/customers','/employees']} initialIndex={1}>
+        <NavigationControls/>
+        <AppRoutes/>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading',{name:'Mitarbeiter'})).toBeTruthy();
+    expect(container.querySelector('.employee-page-title')).toBeNull();
+    expect(container.querySelector('.app-shell')).toBeTruthy();
+    expect(container.querySelectorAll('.app-shell').length).toBe(1);
+
+    fireEvent.click(screen.getByRole('button',{name:'Customers route'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button',{name:'History back'}));
+    expect(await screen.findByRole('heading',{name:'Mitarbeiter'})).toBeTruthy();
   });
 });
