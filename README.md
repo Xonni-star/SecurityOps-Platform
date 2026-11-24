@@ -12,6 +12,8 @@ Tenant-isolated security operations platform. Phases 1-5 provide alarm operation
 
 API: http://localhost:3000. UI: http://localhost:5173. PostgreSQL migrations are mounted into the database image for first startup. For a reset, `docker compose down -v` then start again.
 
+Local seed login: `admin@example.com` / `password`. MFA is disabled only for this documented local seed account and its seed tenant.
+
 For an explicitly configured local development account, set `DEV_SEED_ENABLED=true`, `DEV_SEED_EMAIL`, `DEV_SEED_PASSWORD` (at least 12 characters), and `DEV_SEED_TENANT_NAME` in an untracked `.env`, then run `npm run seed:dev -w backend`. No development credentials are stored in the repository, and production disables this bootstrap path.
 
 Migration execution, checksum validation, baseline handling, and deployment upgrades are documented in [`docs/migrations.md`](docs/migrations.md).

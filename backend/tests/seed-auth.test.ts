@@ -10,4 +10,14 @@ describe('database seed authentication',()=>{
     expect(hash).toBeDefined();
     expect(await argon2.verify(hash!,'password')).toBe(true);
   });
+
+  it('disables MFA only for the local seed account and tenant',async()=>{
+    const migration=await fs.readFile(path.join(process.cwd(),'migrations/039_disable_seed_admin_mfa.sql'),'utf8');
+    expect(migration).toContain("u.email='admin@example.com'");
+    expect(migration).toContain("ARRAY[]::text[]");
+    expect(migration).toContain('mfa_secret_ciphertext=NULL');
+    expect(migration).toContain('mfa_secret_nonce=NULL');
+    expect(migration).toContain('mfa_secret_tag=NULL');
+    expect(migration).toContain('mfa_enrolled_at=NULL');
+  });
 });
