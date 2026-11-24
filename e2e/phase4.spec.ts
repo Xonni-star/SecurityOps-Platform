@@ -133,4 +133,5 @@ test("runs the mobile PWA offline outbox and reconciles the server receipt", asy
   await expect(
     page.getByRole("heading", { name: /Offline-Outbox \(0\)/ }),
   ).toBeVisible();
+  await expect(page.getByText(/synchronisiert/)).toBeVisible();
 });

@@ -55,7 +55,9 @@ export async function loadMigrationFiles(migrationsDir=resolve(process.cwd(),'mi
   migrations.sort((a,b)=>a.version-b.version);
   for(let index=0;index<migrations.length;index++){
     const migration=migrations[index];
-    if(index>0&&migration.version===migrations[index-1].version) throw new Error(`Duplicate migration version ${migration.version}`);
+    if(index>0&&migration.version===migrations[index-1].version){
+      throw new Error(`Duplicate migration version ${migration.version}: ${migrations[index-1].id}, ${migration.id}`);
+    }
     const expected=index+1;
     if(migration.version!==expected) throw new Error(`Migration gap: expected version ${String(expected).padStart(3,'0')}, found ${migration.id}`);
   }
