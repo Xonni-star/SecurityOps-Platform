@@ -247,7 +247,6 @@ export function Employees(){
           <article><h3>Objektzuweisungen</h3>{profile.object_assignments.length?profile.object_assignments.map((row:any)=><p key={row.id}><strong>{row.site_name}</strong><br/><small>{row.starts_on} bis {row.ends_on||'offen'} · {row.assignment_type}</small></p>):<p>Keine Objektzuweisungen</p>}</article>
           <article><h3>Abwesenheiten</h3>{profile.absences.length?profile.absences.map((row:any)=><p key={row.id}><strong>{row.absence_type}</strong>{row.status==='approved'||row.status==='requested'?<button type="button" onClick={()=>void cancelAbsence(row.id)}>Stornieren</button>:null}<br/><small>{row.starts_at?.slice(0,16)} bis {row.ends_at?.slice(0,16)} · {row.status}</small></p>):<p>Keine Abwesenheiten</p>}</article>
           <article><h3>Arbeitszeit</h3>{profile.work_time.length?profile.work_time.slice(0,8).map((row:any)=><p key={row.id}><strong>{row.status}</strong><br/><small>{row.started_at?.slice(0,16)} · {row.minutes??0} Min.</small></p>):<p>Keine Arbeitszeitdaten</p>}</article>
-          <article><h3>Abwesenheiten</h3>{profile.absences?.length?profile.absences.map((row:any)=><p key={row.id}><strong>{row.absence_type}</strong><br/><small>{row.starts_at?.slice(0,16)} bis {row.ends_at?.slice(0,16)} · {row.status}</small></p>):<p>Keine Abwesenheiten</p>}</article>
         </div>}
       </aside>}
     </div>
