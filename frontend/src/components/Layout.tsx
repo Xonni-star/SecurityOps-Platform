@@ -51,9 +51,10 @@ export function Layout(){
     items:group.items.filter(([, ,permission])=>hasPermission(permission)),
   })).filter(group=>group.items.length);
   const employeeRoute=location.pathname==='/employees'||location.pathname.startsWith('/employees/');
-  const title=employeeRoute?'Mitarbeiter':visible.flatMap(group=>group.items).find(([path])=>path===location.pathname)?.[1]??'SecurityOps';
-  const description=employeeRoute?descriptions['/employees']:descriptions[location.pathname];
-  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':'SECURITYOPS / ARBEITSBEREICH';
+  const customerRoute=location.pathname==='/customers'||location.pathname.startsWith('/customers/');
+  const title=employeeRoute?'Mitarbeiter':customerRoute?'Kunden':visible.flatMap(group=>group.items).find(([path])=>path===location.pathname)?.[1]??'SecurityOps';
+  const description=employeeRoute?descriptions['/employees']:customerRoute?descriptions['/customers']:descriptions[location.pathname];
+  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':customerRoute?'SECURITYOPS / VERWALTUNG / KUNDEN':'SECURITYOPS / ARBEITSBEREICH';
 
   return <div className="app-shell">
     <aside className={open?'sidebar open':'sidebar'}>
@@ -62,7 +63,7 @@ export function Layout(){
       <nav className="side-nav">
         {visible.map(group=><div className="nav-group" key={group.label}>
           <div className="nav-label">{group.label}</div>
-          {group.items.map(([path,label])=><Link className={location.pathname===path||(employeeRoute&&path==='/employees')?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
+          {group.items.map(([path,label])=><Link className={location.pathname===path||(employeeRoute&&path==='/employees')||(customerRoute&&path==='/customers')?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
             <span className="nav-icon">{label.charAt(0)}</span>{label}
           </Link>)}
         </div>)}
@@ -84,7 +85,7 @@ export function Layout(){
         </div>
         <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzer'}</span></div>
       </header>
-      <main className={employeeRoute?'page-content employee-page':'page-content'}><Outlet/></main>
+      <main className={employeeRoute||customerRoute?'page-content employee-page':'page-content'}><Outlet/></main>
     </div>
   </div>;
 }

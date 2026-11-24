@@ -12,7 +12,7 @@ describe('database seed authentication',()=>{
   });
 
   it('disables MFA only for the local seed account and tenant',async()=>{
-    const migration=await fs.readFile(path.join(process.cwd(),'migrations/039_disable_seed_admin_mfa.sql'),'utf8');
+    const migration=await fs.readFile(path.join(process.cwd(),'migrations/041_disable_seed_admin_mfa.sql'),'utf8');
     expect(migration).toContain("u.email='admin@example.com'");
     expect(migration).toContain("ARRAY[]::text[]");
     expect(migration).toContain('mfa_secret_ciphertext=NULL');

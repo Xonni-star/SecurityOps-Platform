@@ -404,3 +404,80 @@
   .employee-detail-form .form-grid{grid-template-columns:1fr}
   .employee-task-grid{grid-template-columns:1fr}
 }
+
+.customer-management .employee-page-title>div:first-child h1{font-size:20px}
+.customer-management .employee-page-title>div:first-child p{margin:4px 0 0;color:#8ea8c7;font-size:12px}
+.customer-management .employee-page-actions button{min-height:32px}
+.customer-management .employee-filterbar{grid-template-columns:minmax(240px,1fr) 180px auto}
+.customer-management .customer-create{grid-template-columns:repeat(4,minmax(0,1fr))}
+.customer-management .customer-create label{display:flex;flex-direction:column;gap:4px;color:#b7c8dc;font-size:10px}
+.customer-management .customer-create input,.customer-management .customer-create select{height:34px;background:#0b1d35;color:#dbe7f7;border:1px solid #294966;border-radius:3px;padding:7px}
+.customer-management .employee-status.prospect{background:#3e3b6f;color:#c0bdff}
+.customer-management .employee-status.negotiating{background:#5a4422;color:#f2c174}
+.customer-management .employee-status.paused{background:#3c4654;color:#c0cad6}
+.customer-management .employee-status.at_risk{background:#572731;color:#ff9caa}
+.customer-management .employee-status.archived,.customer-management .employee-status.terminated{background:#3c4654;color:#aab8c7}
+.customer-expiring{color:#f2c174}
+.customer-detail-page .employee-detail-header{grid-template-columns:auto minmax(0,1fr) auto}
+.customer-detail-page .employee-detail-title{min-width:0}
+.customer-detail-page .employee-detail-title h1{overflow-wrap:anywhere}
+.customer-detail-page .employee-detail-content{display:grid;gap:12px}
+.customer-detail-page .employee-tabs{overflow-x:auto;flex-wrap:nowrap}
+.customer-detail-page .employee-tabs button{white-space:nowrap}
+.customer-detail-page .customer-form{margin:12px 0}
+.customer-detail-page .customer-form h3{margin:0 0 12px;color:#eef5ff;font-size:13px}
+.customer-detail-page .customer-checkboxes{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px 16px}
+.customer-detail-page .customer-checkboxes label{display:flex;align-items:center;gap:6px}
+.customer-detail-page .customer-checkboxes input{width:auto}
+.customer-contact-list,.customer-history,.customer-contract-card,.customer-document-card,.customer-task-card,.customer-object-grid article{
+  background:#102745;border:1px solid #1d3b5c;border-radius:6px;padding:14px;color:#dbe7f7
+}
+.customer-contact-list h3,.customer-history h3{margin:0 0 10px;color:#eef5ff;font-size:13px}
+.customer-contact-card,.customer-task-card{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #183653}
+.customer-contact-card:last-child,.customer-task-card:last-child{border-bottom:0}
+.customer-contact-card p,.customer-contact-card small,.customer-task-card p,.customer-task-card small{display:block;margin:4px 0;color:#91a8c2;font-size:10px}
+.customer-primary{margin-left:8px;color:#75dda9;font-size:10px}
+.customer-object-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.customer-object-grid h3{margin:0 0 8px;color:#eef5ff;font-size:12px}
+.customer-object-grid p{color:#91a8c2;font-size:10px}
+.customer-object-grid dl{display:grid;grid-template-columns:1fr auto;gap:5px;color:#91a8c2;font-size:10px}
+.customer-object-grid dd{margin:0;color:#dbe7f7}
+.customer-inline-form{display:flex!important;flex-wrap:wrap;align-items:end;gap:10px;margin:0!important;padding:12px!important;background:#102745!important;border:1px solid #1d3b5c!important}
+.customer-inline-form h3{flex-basis:100%;margin:0;color:#eef5ff;font-size:12px}
+.customer-inline-form label{display:flex;flex-direction:column;gap:4px;min-width:180px;color:#b7c8dc;font-size:10px}
+.customer-inline-form input,.customer-inline-form select,.customer-small-form input,.customer-small-form select,.customer-contract-card select{
+  min-height:32px;padding:6px 8px;background:#0b1d35;color:#dbe7f7;border:1px solid #294966;border-radius:3px
+}
+.customer-contract-card header{display:flex;justify-content:space-between;gap:12px;align-items:start}
+.customer-contract-card header h3{margin:0;color:#eef5ff;font-size:13px}
+.customer-contract-card p,.customer-contract-card li{color:#b7c8dc;font-size:10px}
+.customer-contract-card header p{margin:4px 0}
+.customer-contract-links{display:grid;grid-template-columns:1fr 1fr;gap:16px;border-top:1px solid #294560;padding-top:10px}
+.customer-contract-links strong{color:#eef5ff;font-size:11px}
+.customer-contract-links ul,.customer-document-card ul{padding-left:18px}
+.customer-small-form{display:flex;gap:6px;margin-top:8px}
+.customer-small-form select{min-width:0;flex:1}
+.customer-small-form input{width:72px}
+.customer-document-card{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:8px}
+.customer-document-card span{color:#91a8c2;font-size:10px}
+.customer-document-card ul{grid-column:1/-1;margin:0}
+.customer-version-form{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.customer-version-form input{max-width:320px;color:#b7c8dc;font-size:10px}
+.customer-document-card li{padding:5px 0;color:#b7c8dc;font-size:10px}
+.customer-document-card button{margin-left:8px}
+.customer-security-note{padding:10px;border-left:3px solid #e6b24a;background:#102745;color:#d4c29b;font-size:11px}
+.customer-history>div{padding:10px 0;border-bottom:1px solid #183653}
+.customer-history>div:last-child{border-bottom:0}
+.customer-history strong{color:#eef5ff;font-size:11px}
+.customer-history p,.customer-history small{display:block;margin:4px 0;color:#91a8c2;font-size:10px}
+@media(max-width:900px){
+  .customer-management .employee-filterbar,.customer-management .customer-create{grid-template-columns:1fr}
+  .customer-detail-page .employee-detail-header{grid-template-columns:1fr}
+  .customer-detail-page .employee-detail-title{grid-column:auto;grid-row:auto}
+  .customer-object-grid,.customer-contract-links{grid-template-columns:1fr}
+  .customer-inline-form{align-items:stretch}
+  .customer-inline-form label{min-width:100%}
+  .customer-contact-card,.customer-task-card,.customer-contract-card header{align-items:flex-start;flex-direction:column}
+  .customer-document-card{grid-template-columns:1fr}
+  .customer-document-card ul{grid-column:auto}
+}
