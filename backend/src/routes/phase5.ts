@@ -29,7 +29,7 @@ function range(req:Request){
 async function reportRows(kind:string,tenantId:string,from:Date,to:Date,siteId?:string,employeeId?:string){
   const scope=`tenant_id=$1 AND created_at BETWEEN $2 AND $3`;
   switch(kind){
-    case 'employees':return (await query(`SELECT id,name,email,title,created_at FROM employees WHERE ${scope} ORDER BY name`,[tenantId,from,to])).rows;
+    case 'employees':return (await query(`SELECT id,employee_number,name,email,title,department,position,employment_status,employment_type,hire_date,termination_date,weekly_hours,created_at FROM employees WHERE tenant_id=$1 AND created_at BETWEEN $2 AND $3 ORDER BY name`,[tenantId,from,to])).rows;
     case 'sites':return (await query(`SELECT id,name,address,created_at FROM sites WHERE ${scope} ORDER BY name`,[tenantId,from,to])).rows;
     case 'patrols':return (await query(`SELECT ps.id,ps.route_id,r.name route_name,ps.control_point_id,cp.name control_point_name,ps.employee_id,e.name employee_name,ps.scanned_at,ps.deviation
       FROM patrol_scans ps JOIN patrol_routes r ON r.id=ps.route_id JOIN control_points cp ON cp.id=ps.control_point_id
@@ -58,13 +58,16 @@ function csv(rows:Record<string,unknown>[]){
 phase5Router.get('/reports/statistics',requirePermission('reports:read'),async(req,res,next)=>{
   try{
     const {from,to}=range(req);const tenant=req.user!.tenantId;
-    const [alarms,incidents,patrols,work]=await Promise.all([
+    const [alarms,incidents,patrols,work,employees,qualifications,absences]=await Promise.all([
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE status='resolved')::integer resolved,COUNT(*) FILTER(WHERE status IN('open','escalated'))::integer open FROM alarms WHERE tenant_id=$1 AND triggered_at BETWEEN $2 AND $3`,[tenant,from,to]),
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE status='completed')::integer completed FROM incidents WHERE tenant_id=$1 AND created_at BETWEEN $2 AND $3`,[tenant,from,to]),
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE deviation<>'none')::integer deviations FROM patrol_scans WHERE tenant_id=$1 AND scanned_at BETWEEN $2 AND $3`,[tenant,from,to]),
       query(`SELECT COALESCE(SUM(minutes),0)::integer minutes,COUNT(*)::integer entries FROM work_time_entries WHERE tenant_id=$1 AND started_at BETWEEN $2 AND $3`,[tenant,from,to]),
+      query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE employment_status IN ('active','probation'))::integer active,COUNT(*) FILTER(WHERE employment_status IN ('terminated','archived'))::integer inactive FROM employees WHERE tenant_id=$1`,[tenant]),
+      query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE status='valid' AND valid_until IS NOT NULL AND valid_until<CURRENT_DATE)::integer expired,COUNT(*) FILTER(WHERE status='valid' AND valid_until IS NOT NULL AND valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days')::integer expiring FROM employee_qualifications WHERE tenant_id=$1`,[tenant]),
+      query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE starts_at<=now() AND ends_at>=now())::integer current FROM employee_absences WHERE tenant_id=$1 AND status IN ('requested','approved')`,[tenant]),
     ]);
-    res.json({from,to,alarms:alarms.rows[0],incidents:incidents.rows[0],patrols:patrols.rows[0],work_time:work.rows[0]});
+    res.json({from,to,alarms:alarms.rows[0],incidents:incidents.rows[0],patrols:patrols.rows[0],work_time:work.rows[0],employees:employees.rows[0],qualifications:qualifications.rows[0],absences:absences.rows[0]});
   }catch(error){next(error);}
 });
 
