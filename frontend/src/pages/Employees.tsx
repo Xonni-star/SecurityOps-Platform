@@ -12,6 +12,8 @@ type Employee={
   position?:string|null;
   employment_status:string;
   employment_type:string;
+  current_object?:string|null;
+  qualification_status?:string|null;
 };
 
 type Dashboard={
@@ -24,6 +26,9 @@ type Dashboard={
   active_object_assignments:number;
   missing_documents:number;
   employees_without_object:number;
+  expiring_qualifications?:{employee:string;code:string;valid_until:string}[];
+  missing_document_employees?:{employee:string;title:string}[];
+  pending_tasks?:{employee:string;task:string;due:string}[];
 };
 
 const emptyEmployee={name:'',email:'',title:'',employee_number:''};
@@ -36,17 +41,22 @@ export function Employees(){
   const [statusFilter,setStatusFilter]=useState('all');
   const [departmentFilter,setDepartmentFilter]=useState('all');
   const [functionFilter,setFunctionFilter]=useState('all');
+  const [sortKey,setSortKey]=useState<'name'|'employee_number'|'position'|'department'|'employment_status'|'current_object'|'qualification_status'>('name');
+  const [sortDirection,setSortDirection]=useState<'asc'|'desc'>('asc');
+  const [page,setPage]=useState(1);
+  const pageSize=10;
   const [createOpen,setCreateOpen]=useState(false);
   const [form,setForm]=useState(emptyEmployee);
   const [error,setError]=useState('');
 
   const load=async()=>{
     try{
-      const [rows,metrics]=await Promise.all([
-        api<Employee[]>('/employees'),
+      const [overview,metrics]=await Promise.all([
+        api<Employee[]|null>('/employees/overview'),
         api<Dashboard>('/employees/dashboard'),
       ]);
-      setEmployees(rows||[]);
+      const rows=Array.isArray(overview)?overview:await api<Employee[]>('/employees');
+      setEmployees(Array.isArray(rows)?rows:[]);
       setDashboard(metrics||null);
       setError('');
     }catch(e){setError((e as Error).message);}
@@ -83,6 +93,19 @@ export function Employees(){
     }
     return true;
   });
+  const sorted=[...filtered].sort((a,b)=>{
+    const av=String((a as any)[sortKey]||'').toLowerCase();
+    const bv=String((b as any)[sortKey]||'').toLowerCase();
+    return sortDirection==='asc'?av.localeCompare(bv):bv.localeCompare(av);
+  });
+  const pageCount=Math.max(1,Math.ceil(sorted.length/pageSize));
+  const currentPage=Math.min(page,pageCount);
+  const paged=sorted.slice((currentPage-1)*pageSize,currentPage*pageSize);
+  const changeSort=(key:typeof sortKey)=>{
+    if(sortKey===key)setSortDirection(value=>value==='asc'?'desc':'asc');
+    else{setSortKey(key);setSortDirection('asc');}
+    setPage(1);
+  };
 
   return <section className="employee-management">
     <div className="employee-page-title">
@@ -114,14 +137,14 @@ export function Employees(){
 
     <div className="employee-overview">
       <div className="employee-filterbar">
-        <input className="employee-search" placeholder="Name, Personalnummer, Funktion oder E-Mail suchen" value={search} onChange={event=>setSearch(event.target.value)} />
-        <select value={statusFilter} onChange={event=>setStatusFilter(event.target.value)} aria-label="Status">
+        <input className="employee-search" placeholder="Name, Personalnummer, Funktion oder E-Mail suchen" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}} />
+        <select value={statusFilter} onChange={event=>{setStatusFilter(event.target.value);setPage(1);}} aria-label="Status">
           <option value="all">Status: Alle</option><option value="active">Status: Aktiv</option><option value="probation">Status: Probezeit</option><option value="leave">Status: Abwesenheit</option><option value="terminated">Status: Ausgeschieden</option>
         </select>
-        <select value={departmentFilter} onChange={event=>setDepartmentFilter(event.target.value)} aria-label="Abteilung">
+        <select value={departmentFilter} onChange={event=>{setDepartmentFilter(event.target.value);setPage(1);}} aria-label="Abteilung">
           <option value="all">Abteilung: Alle</option>{departments.map(department=><option key={department} value={department}>{department}</option>)}
         </select>
-        <select value={functionFilter} onChange={event=>setFunctionFilter(event.target.value)} aria-label="Funktion">
+        <select value={functionFilter} onChange={event=>{setFunctionFilter(event.target.value);setPage(1);}} aria-label="Funktion">
           <option value="all">Funktion: Alle</option><option value="objekt">Objektdienst</option><option value="revier">Revierdienst</option><option value="leitstelle">Leitstelle</option>
         </select>
       </div>
@@ -129,22 +152,53 @@ export function Employees(){
       <div className="employee-table employee-overview-table">
         <table>
           <thead>
-            <tr><th>Auswahl</th><th>Mitarbeiter</th><th>Personal-Nr.</th><th>Funktion</th><th>Abteilung</th><th>Status</th><th>Aktion</th></tr>
+            <tr>
+              <th>Auswahl</th>
+              <th><button type="button" onClick={()=>changeSort('name')}>Mitarbeiter</button></th>
+              <th><button type="button" onClick={()=>changeSort('employee_number')}>Personal-Nr.</button></th>
+              <th><button type="button" onClick={()=>changeSort('position')}>Funktion</button></th>
+              <th><button type="button" onClick={()=>changeSort('department')}>Abteilung</button></th>
+              <th><button type="button" onClick={()=>changeSort('employment_status')}>Status</button></th>
+              <th><button type="button" onClick={()=>changeSort('current_object')}>Aktuelles Objekt</button></th>
+              <th><button type="button" onClick={()=>changeSort('qualification_status')}>Qualifikation</button></th>
+              <th>Aktion</th>
+            </tr>
           </thead>
           <tbody>
-            {filtered.map(employee=><tr key={employee.id}>
+            {paged.map(employee=><tr key={employee.id}>
               <td><input type="checkbox" aria-label={`${employee.name} auswählen`} /></td>
               <td><button type="button" className="employee-name-link" onClick={()=>navigate(`/employees/${employee.id}`)}><strong>{employee.name}</strong><small>{employee.email}</small></button></td>
               <td>{employee.employee_number||'–'}</td>
               <td>{employee.position||employee.title||'–'}</td>
               <td>{employee.department||'–'}</td>
               <td><span className={`employee-status ${employee.employment_status}`}>{employee.employment_status==='active'?'Aktiv':employee.employment_status==='leave'?'Abwesenheit':employee.employment_status==='probation'?'Probezeit':employee.employment_status==='terminated'?'Ausgeschieden':employee.employment_status}</span></td>
+              <td>{employee.current_object||'–'}</td>
+              <td><span className={`qualification-mini ${employee.qualification_status==='abgelaufen'?'expired':''}`}>{employee.qualification_status||'keine Daten'}</span></td>
               <td><button type="button" onClick={()=>navigate(`/employees/${employee.id}`)}>Bearbeiten</button></td>
             </tr>)}
           </tbody>
         </table>
         {filtered.length===0&&<p className="employee-empty">Keine Mitarbeiter entsprechen den aktiven Filtern.</p>}
+        {filtered.length>0&&<div className="employee-pagination">
+          <span>{filtered.length} Mitarbeiter · Seite {currentPage} von {pageCount}</span>
+          <button type="button" disabled={currentPage===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button>
+          <button type="button" disabled={currentPage===pageCount} onClick={()=>setPage(value=>Math.min(pageCount,value+1))}>Weiter</button>
+        </div>}
       </div>
     </div>
+    {dashboard&&<div className="employee-task-grid">
+      <article>
+        <h3>Auslaufende Qualifikationen</h3>
+        {dashboard.expiring_qualifications?.length?<ul>{dashboard.expiring_qualifications.map((item:any)=><li key={`${item.employee}-${item.code}`}><strong>{item.employee}</strong><span>{item.code} · {item.valid_until}</span></li>)}</ul>:<p className="employee-empty">Keine auslaufenden Qualifikationen.</p>}
+      </article>
+      <article>
+        <h3>Fehlende Dokumente</h3>
+        {dashboard.missing_document_employees?.length?<ul>{dashboard.missing_document_employees.map((item:any,index:number)=><li key={`${item.employee}-${index}`}><strong>{item.employee}</strong><span>Personalakte unvollständig</span></li>)}</ul>:<p className="employee-empty">Keine fehlenden Dokumente.</p>}
+      </article>
+      <article>
+        <h3>Anstehende Personalaufgaben</h3>
+        {dashboard.pending_tasks?.length?<ul>{dashboard.pending_tasks.map((item:any,index:number)=><li key={`${item.employee}-${index}`}><strong>{item.employee}</strong><span>{item.task}</span></li>)}</ul>:<p className="employee-empty">Keine offenen Personalaufgaben.</p>}
+      </article>
+    </div>}
   </section>;
 }

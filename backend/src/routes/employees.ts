@@ -79,10 +79,49 @@ const absenceSchema=z.object({
 export const employeesRouter=Router();
 employeesRouter.use('/employees',requireAuth);
 
+employeesRouter.get('/employees/overview',requirePermission('employees:read'),async(req,res,next)=>{
+  try{
+    const rows=(await query(
+      `SELECT e.*,
+        COALESCE((
+          SELECT s.name
+          FROM employee_object_assignments oa
+          JOIN sites s ON s.tenant_id=oa.tenant_id AND s.id=oa.site_id
+          WHERE oa.tenant_id=e.tenant_id AND oa.employee_id=e.id
+            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+          ORDER BY oa.primary_assignment DESC,oa.starts_on DESC LIMIT 1
+        ),'') AS current_object,
+        CASE
+          WHEN EXISTS (
+            SELECT 1 FROM employee_qualifications q
+            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id
+              AND (q.status IN ('expired','revoked','invalid') OR q.valid_until<CURRENT_DATE)
+          ) THEN 'abgelaufen'
+          WHEN EXISTS (
+            SELECT 1 FROM employee_qualifications q
+            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id
+              AND q.status='valid' AND q.valid_until IS NOT NULL
+              AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'
+          ) THEN 'läuft bald ab'
+          WHEN EXISTS (
+            SELECT 1 FROM employee_qualifications q
+            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND q.status='valid'
+          ) THEN 'gültig'
+          ELSE 'keine Daten'
+        END AS qualification_status
+       FROM employees e
+       WHERE e.tenant_id=$1
+       ORDER BY e.name`,
+      [req.user!.tenantId],
+    )).rows;
+    res.json(rows);
+  }catch(error){next(error);}
+});
+
 employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),async(req,res,next)=>{
   try{
     const tenant=req.user!.tenantId;
-    const [employees,expiring,expired,shifts,absences,sick,assignments,contracts,missingQualifications,missingDocuments,withoutObject]=await Promise.all([
+    const [employees,expiring,expired,shifts,openAbsences,vacationAbsences,sickAbsences,assignments,contracts,missingQualifications,missingDocuments,expiringRows,missingDocumentRows,pendingTasks,withoutObject]=await Promise.all([
       query<{total:number;active:number;inactive:number;on_leave:number;sick:number;terminated:number}>(
         `SELECT COUNT(*)::int total,
           COUNT(*) FILTER(WHERE employment_status IN ('active','probation'))::int active,
@@ -104,10 +143,13 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
          WHERE a.tenant_id=$1 AND a.status='assigned' AND s.starts_at<=now() AND s.ends_at>=now()`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employee_absences
-         WHERE tenant_id=$1 AND starts_at<=now() AND ends_at>=now()`,[tenant]),
+         WHERE tenant_id=$1 AND status IN ('requested','approved') AND ends_at>=now()`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employee_absences
-         WHERE tenant_id=$1 AND starts_at<=now() AND ends_at>=now() AND lower(COALESCE(reason,'')) LIKE '%krank%'`,[tenant]),
+         WHERE tenant_id=$1 AND status='approved' AND absence_type='vacation' AND starts_at<=now() AND ends_at>=now()`,[tenant]),
+      query<{count:number}>(
+        `SELECT COUNT(*)::int count FROM employee_absences
+         WHERE tenant_id=$1 AND status='approved' AND absence_type='sick' AND starts_at<=now() AND ends_at>=now()`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(DISTINCT employee_id)::int count FROM employee_object_assignments
          WHERE tenant_id=$1 AND (ends_on IS NULL OR ends_on >= CURRENT_DATE)`,[tenant]),
@@ -129,6 +171,32 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
            SELECT 1 FROM dms_documents d
            WHERE d.tenant_id=e.tenant_id AND d.employee_id=e.id
          )`,[tenant]),
+      query<{employee:string;code:string;valid_until:string}>(
+        `SELECT e.name employee,q.code,COALESCE(q.valid_until::text,'') valid_until
+         FROM employee_qualifications q JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
+         WHERE q.tenant_id=$1 AND q.status='valid' AND q.valid_until IS NOT NULL
+         AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'
+         ORDER BY q.valid_until,e.name LIMIT 10`,
+        [tenant],
+      ),
+      query<{employee:string;title:string}>(
+        `SELECT e.name employee,d.title
+         FROM employees e LEFT JOIN dms_documents d ON d.tenant_id=e.tenant_id AND d.employee_id=e.id
+         WHERE e.tenant_id=$1 AND d.id IS NULL
+         ORDER BY e.name LIMIT 10`,
+        [tenant],
+      ),
+      query<{employee:string;task:string;due:string}>(
+        `SELECT e.name employee,
+          CASE WHEN ea.status='requested' THEN 'Abwesenheit genehmigen'
+             WHEN ea.absence_type='sick' THEN 'Krankmeldung prüfen'
+             ELSE 'Unterweisung oder Personalaufgabe' END task,
+          COALESCE(ea.starts_at::text,'') due
+         FROM employee_absences ea JOIN employees e ON e.tenant_id=ea.tenant_id AND e.id=ea.employee_id
+         WHERE ea.tenant_id=$1 AND ea.status='requested'
+         ORDER BY ea.starts_at LIMIT 10`,
+        [tenant],
+      ),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employees e
          WHERE e.tenant_id=$1 AND e.employment_status IN ('active','probation','leave')
@@ -139,17 +207,24 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
            )`,[tenant]),
     ]);
     res.json({
-      employees:employees.rows[0],
+      employees:{
+        ...employees.rows[0],
+        on_leave:vacationAbsences.rows[0].count,
+        sick:sickAbsences.rows[0].count,
+      },
       qualifications_expiring_90_days:expiring.rows[0].count,
       qualifications_expired:expired.rows[0].count,
       upcoming_shift_assignments:shifts.rows[0].count,
-      open_absences:absences.rows[0].count,
-      sick_employees:sick.rows[0].count,
+      open_absences:openAbsences.rows[0].count,
+      sick_employees:sickAbsences.rows[0].count,
       active_object_assignments:assignments.rows[0].count,
       active_contracts:contracts.rows[0].count,
       missing_required_qualifications:missingQualifications.rows[0].count,
       missing_documents:missingDocuments.rows[0].count,
       employees_without_object:withoutObject.rows[0].count,
+      expiring_qualifications:expiringRows.rows,
+      missing_document_employees:missingDocumentRows.rows,
+      pending_tasks:pendingTasks.rows,
     });
   }catch(error){next(error);}
 });
