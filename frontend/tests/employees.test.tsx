@@ -52,7 +52,8 @@ describe('employee management profile',()=>{
     expect(await screen.findByText('Qualifikationen < 90 Tage')).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Profil'}));
     expect(await screen.findByText('Abwesenheit')).toBeTruthy();
-    const absenceHeading=screen.getAllByRole('heading',{name:'Abwesenheit'}).at(-1);
+    const absenceHeadings=screen.getAllByRole('heading',{name:'Abwesenheit'});
+    const absenceHeading=absenceHeadings[absenceHeadings.length-1];
     const absenceForm=absenceHeading?.closest('form');
     expect(absenceForm).toBeTruthy();
     fireEvent.change(absenceForm!.querySelector('input[type="datetime-local"]') as HTMLInputElement,{target:{value:'2026-12-01T08:00'}});
