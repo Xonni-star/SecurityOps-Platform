@@ -216,6 +216,7 @@ export function Employees(){
           <label>Nachname<input value={form.last_name||''} onChange={e=>setForm({...form,last_name:e.target.value})}/></label>
           <label>Telefon<input value={form.phone||''} onChange={e=>setForm({...form,phone:e.target.value})}/></label>
           <label>Mobil<input value={form.mobile||''} onChange={e=>setForm({...form,mobile:e.target.value})}/></label>
+          <label>Geburtsdatum<input type="date" value={form.date_of_birth?.slice(0,10)||''} onChange={e=>setForm({...form,date_of_birth:e.target.value||null})}/></label>
           <label>Abteilung<input value={form.department||''} onChange={e=>setForm({...form,department:e.target.value})}/></label>
           <label>Position<input value={form.position||''} onChange={e=>setForm({...form,position:e.target.value})}/></label>
           <label>Standort<input value={form.work_location||''} onChange={e=>setForm({...form,work_location:e.target.value})}/></label>
@@ -223,6 +224,8 @@ export function Employees(){
           <label>Beschäftigungsart<select value={form.employment_type} onChange={e=>setForm({...form,employment_type:e.target.value})}><option value="employee">Angestellt</option><option value="temporary">Zeitarbeit</option><option value="contractor">Werkvertrag</option><option value="intern">Praktikum</option><option value="apprentice">Ausbildung</option><option value="freelancer">Freiberuflich</option></select></label>
           <label>Wöchentliche Stunden<input type="number" min="0" max="168" step="0.25" value={form.weekly_hours??''} onChange={e=>setForm({...form,weekly_hours:e.target.value===''?null:Number(e.target.value)})}/></label>
           <label>Eintritt<input type="date" value={form.hire_date?.slice(0,10)||''} onChange={e=>setForm({...form,hire_date:e.target.value||null})}/></label>
+          <label>Austritt<input type="date" value={form.termination_date?.slice(0,10)||''} onChange={e=>setForm({...form,termination_date:e.target.value||null})}/></label>
+          <label>Benutzerkonto-ID<input value={form.user_id||''} onChange={e=>setForm({...form,user_id:e.target.value||null})}/></label>
           <label>Adresse<textarea value={form.address||''} onChange={e=>setForm({...form,address:e.target.value})}/></label>
           <label>Änderungsgrund<input required value={reason} onChange={e=>setReason(e.target.value)} placeholder="Grund der Änderung"/></label>
           <button>Profil speichern</button>
