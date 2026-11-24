@@ -44,6 +44,7 @@ export function Employees(){
   const [search,setSearch]=useState('');
   const [contractForm,setContractForm]=useState({contract_number:'',contract_type:'permanent',status:'active',starts_on:new Date().toISOString().slice(0,10),ends_on:'',weekly_hours:'',reason:''});
   const [assignmentForm,setAssignmentForm]=useState({site_id:'',assignment_type:'operational',role:'',starts_on:new Date().toISOString().slice(0,10),ends_on:'',primary_assignment:false,reason:''});
+  const [absenceForm,setAbsenceForm]=useState({starts_at:'',ends_at:'',absence_type:'vacation',status:'approved',reason:'',document_id:'',audit_reason:''});
 
   const load=async()=>{
     try{
@@ -115,6 +116,31 @@ export function Employees(){
         ends_on:assignmentForm.ends_on||null,
       })});
       setAssignmentForm(v=>({...v,site_id:'',role:'',reason:''}));
+      await openProfile(selected);await load();
+    }catch(e){setError((e as Error).message);}
+  };
+
+  const createAbsence=async(e:FormEvent)=>{
+    e.preventDefault();if(!selected||!absenceForm.starts_at||!absenceForm.ends_at)return;
+    try{
+      await api(`/employees/${selected.id}/absences`,{method:'POST',body:JSON.stringify({
+        starts_at:new Date(absenceForm.starts_at).toISOString(),
+        ends_at:new Date(absenceForm.ends_at).toISOString(),
+        absence_type:absenceForm.absence_type,
+        status:absenceForm.status,
+        reason:absenceForm.reason||null,
+        document_id:absenceForm.document_id||null,
+        audit_reason:absenceForm.audit_reason,
+      })});
+      setAbsenceForm(v=>({...v,starts_at:'',ends_at:'',reason:'',document_id:'',audit_reason:''}));
+      await openProfile(selected);await load();
+    }catch(e){setError((e as Error).message);}
+  };
+
+  const cancelAbsence=async(absenceId:string)=>{
+    if(!selected)return;
+    try{
+      await api(`/employees/${selected.id}/absences/${absenceId}`,{method:'DELETE',body:JSON.stringify({audit_reason:'Absence cancelled from employee profile'})});
       await openProfile(selected);await load();
     }catch(e){setError((e as Error).message);}
   };
@@ -203,12 +229,25 @@ export function Employees(){
             <label>Grund<input required value={assignmentForm.reason} onChange={e=>setAssignmentForm({...assignmentForm,reason:e.target.value})}/></label>
             <button>Zuweisen</button>
           </form>
+          <form className="employee-subform" onSubmit={createAbsence}>
+            <h3>Abwesenheit</h3>
+            <label>Beginn<input type="datetime-local" required value={absenceForm.starts_at} onChange={e=>setAbsenceForm({...absenceForm,starts_at:e.target.value})}/></label>
+            <label>Ende<input type="datetime-local" required value={absenceForm.ends_at} onChange={e=>setAbsenceForm({...absenceForm,ends_at:e.target.value})}/></label>
+            <label>Art<select value={absenceForm.absence_type} onChange={e=>setAbsenceForm({...absenceForm,absence_type:e.target.value})}><option value="vacation">Urlaub</option><option value="sick">Krankheit</option><option value="training">Fortbildung</option><option value="special_leave">Sonderurlaub</option><option value="compensatory">Freizeitausgleich</option><option value="unavailable">Nicht verfügbar</option><option value="other">Sonstige</option></select></label>
+            <label>Status<select value={absenceForm.status} onChange={e=>setAbsenceForm({...absenceForm,status:e.target.value})}><option value="approved">Genehmigt</option><option value="requested">Antrag</option><option value="rejected">Abgelehnt</option><option value="cancelled">Storniert</option></select></label>
+            <label>Grund<input value={absenceForm.reason} onChange={e=>setAbsenceForm({...absenceForm,reason:e.target.value})}/></label>
+            <label>DMS-Dokument-ID<input value={absenceForm.document_id} onChange={e=>setAbsenceForm({...absenceForm,document_id:e.target.value})}/></label>
+            <label>Änderungsgrund<input required value={absenceForm.audit_reason} onChange={e=>setAbsenceForm({...absenceForm,audit_reason:e.target.value})}/></label>
+            <button>Abwesenheit speichern</button>
+          </form>
         </>}
         {profile&&<div className="employee-data-cards">
           <article><h3>Verträge</h3>{profile.contracts.length?profile.contracts.map((row:any)=><p key={row.id}><strong>{row.contract_type}</strong><br/><small>{row.starts_on} bis {row.ends_on||'offen'} · {row.status}</small></p>):<p>Keine Verträge erfasst</p>}</article>
           <article><h3>Qualifikationen</h3>{profile.qualifications.length?profile.qualifications.map((row:any)=><p key={row.id}><strong>{row.catalog_name||row.code}</strong><br/><small>bis {row.valid_until||'unbefristet'} · {row.status}</small></p>):<p>Keine Qualifikationen erfasst</p>}</article>
           <article><h3>Objektzuweisungen</h3>{profile.object_assignments.length?profile.object_assignments.map((row:any)=><p key={row.id}><strong>{row.site_name}</strong><br/><small>{row.starts_on} bis {row.ends_on||'offen'} · {row.assignment_type}</small></p>):<p>Keine Objektzuweisungen</p>}</article>
+          <article><h3>Abwesenheiten</h3>{profile.absences.length?profile.absences.map((row:any)=><p key={row.id}><strong>{row.absence_type}</strong>{row.status==='approved'||row.status==='requested'?<button type="button" onClick={()=>void cancelAbsence(row.id)}>Stornieren</button>:null}<br/><small>{row.starts_at?.slice(0,16)} bis {row.ends_at?.slice(0,16)} · {row.status}</small></p>):<p>Keine Abwesenheiten</p>}</article>
           <article><h3>Arbeitszeit</h3>{profile.work_time.length?profile.work_time.slice(0,8).map((row:any)=><p key={row.id}><strong>{row.status}</strong><br/><small>{row.started_at?.slice(0,16)} · {row.minutes??0} Min.</small></p>):<p>Keine Arbeitszeitdaten</p>}</article>
+          <article><h3>Abwesenheiten</h3>{profile.absences?.length?profile.absences.map((row:any)=><p key={row.id}><strong>{row.absence_type}</strong><br/><small>{row.starts_at?.slice(0,16)} bis {row.ends_at?.slice(0,16)} · {row.status}</small></p>):<p>Keine Abwesenheiten</p>}</article>
         </div>}
       </aside>}
     </div>
