@@ -38,6 +38,12 @@ trap cleanup EXIT
 cp "$repo_root/docker-compose.production.yml" "$work_dir/"
 cp -R "$repo_root/backend" "$work_dir/"
 cp -R "$repo_root/frontend" "$work_dir/"
+duplicate_migrations="$(find "$work_dir/backend/migrations" -maxdepth 1 -type f -name '*.sql' -exec basename {} \; | awk -F_ '{print $1}' | sort | uniq -d)"
+if [ -n "$duplicate_migrations" ]; then
+  echo "Duplicate migration versions: $duplicate_migrations" >&2
+  find "$work_dir/backend/migrations" -maxdepth 1 -type f -name '*.sql' -exec basename {} \; | sort >&2
+  exit 1
+fi
 if grep -q '/docker-entrypoint-initdb.d' "$work_dir/docker-compose.production.yml"; then
   echo "Production Compose must not let PostgreSQL execute backend migrations" >&2
   exit 1
