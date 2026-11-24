@@ -44,6 +44,11 @@ export function Employees(){
   const [profile,setProfile]=useState<Profile|null>(null);
   const [sites,setSites]=useState<{id:string;name:string}[]>([]);
   const [search,setSearch]=useState('');
+  const [editMode,setEditMode]=useState(false);
+  const [createOpen,setCreateOpen]=useState(false);
+  const [statusFilter,setStatusFilter]=useState('active');
+  const [absenceFilter,setAbsenceFilter]=useState('all');
+  const [functionFilter,setFunctionFilter]=useState('all');
   const [contractForm,setContractForm]=useState({contract_number:'',contract_type:'permanent',status:'active',starts_on:new Date().toISOString().slice(0,10),ends_on:'',weekly_hours:'',reason:''});
   const [assignmentForm,setAssignmentForm]=useState({site_id:'',assignment_type:'operational',role:'',starts_on:new Date().toISOString().slice(0,10),ends_on:'',primary_assignment:false,reason:''});
   const [absenceForm,setAbsenceForm]=useState({starts_at:'',ends_at:'',absence_type:'vacation',status:'approved',reason:'',document_id:'',audit_reason:''});
@@ -63,6 +68,9 @@ export function Employees(){
     }catch(e){setError((e as Error).message);}
   };
   useEffect(()=>{void load();},[]);
+  useEffect(()=>{
+    if(!selected&&employees.length>0)void openProfile(employees[0]);
+  },[employees]);
 
   const create=async(e:FormEvent)=>{
     e.preventDefault();
@@ -78,6 +86,7 @@ export function Employees(){
     try{
       const profile=await api<Profile>(`/employees/${employee.id}/profile`);
       if(!profile)throw new Error('Mitarbeiterprofil nicht gefunden');
+      setEditMode(false);
       setProfile(profile);
       setSelected(profile.employee);
       setForm({...profile.employee});
@@ -167,24 +176,18 @@ export function Employees(){
   };
 
   return <section className="employee-management">
-    <h1>Mitarbeiter</h1>
+    <div className="employee-page-title"><div><h1>Mitarbeiter</h1><p>Verwalten Sie Mitarbeiter, Qualifikationen und Einsatzinformationen.</p></div><div className="employee-page-actions">{hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(v=>!v)}>+ Mitarbeiter anlegen</button>}<a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">Export</a></div></div>
     {error&&<p role="alert" className="error">{error}</p>}
     {dashboard&&<div className="stats-grid employee-metrics">
       <article><strong>{dashboard.employees.total}</strong><span>Mitarbeiter gesamt</span></article>
       <article><strong>{dashboard.employees.active}</strong><span>Aktiv</span></article>
-      <article><strong>{dashboard.qualifications_expiring_90_days}</strong><span>Qualifikationen &lt; 90 Tage</span></article>
       <article><strong>{dashboard.open_absences}</strong><span>Offene Abwesenheiten</span></article>
-      <article><strong>{dashboard.active_contracts}</strong><span>Aktive Verträge</span></article>
-      <article><strong>{dashboard.active_object_assignments}</strong><span>Objektzuordnungen</span></article>
+      <article><strong>{dashboard.sick_employees}</strong><span>Krank</span></article>
       <article><strong>{dashboard.upcoming_shift_assignments}</strong><span>Schichtzuordnungen</span></article>
-      <article><strong>{dashboard.employees.on_leave}</strong><span>In Abwesenheit</span></article>
-      <article><strong>{dashboard.employees.inactive}</strong><span>Inaktiv/Ausgeschieden</span></article>
-      <article><strong>{dashboard.qualifications_expired}</strong><span>Abgelaufene Qualifikationen</span></article>
-      <article><strong>{dashboard.missing_documents}</strong><span>Mitarbeiter ohne Dokumente</span></article>
-      <article><strong>{dashboard.employees_without_object}</strong><span>Ohne aktuelle Objektzuweisung</span></article>
+      <article><strong>{dashboard.qualifications_expiring_90_days+dashboard.qualifications_expired}</strong><span>Qualifikationswarnungen</span></article>
     </div>}
 
-    {hasPermission('employees:write')&&<form onSubmit={create} className="employee-create">
+    {hasPermission('employees:write')&&<form onSubmit={create} className={createOpen?'employee-create open':'employee-create'}>
       <label>Name<input required value={form.name||''} onChange={e=>setForm({...form,name:e.target.value})}/></label>
       <label>E-Mail<input required type="email" value={form.email||''} onChange={e=>setForm({...form,email:e.target.value})}/></label>
       <label>Personalnummer<input value={form.employee_number||''} onChange={e=>setForm({...form,employee_number:e.target.value})}/></label>
@@ -194,20 +197,38 @@ export function Employees(){
 
     <div className="employee-layout">
       <div className="employee-table">
-        <input className="employee-search" placeholder="Mitarbeiter suchen" value={search} onChange={e=>setSearch(e.target.value)} />
+        <div className="employee-filterbar">
+          <input className="employee-search" placeholder="Nach Name, Personalnummer, Objekt oder E-Mail suchen" value={search} onChange={e=>setSearch(e.target.value)} />
+          <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} aria-label="Status"><option value="all">Status: Alle</option><option value="active">Status: Aktiv</option><option value="leave">Status: Abwesenheit</option><option value="probation">Status: Probezeit</option><option value="terminated">Status: Ausgeschieden</option></select>
+          <select value={absenceFilter} onChange={e=>setAbsenceFilter(e.target.value)} aria-label="Abwesenheit"><option value="all">Abwesenheit: Alle</option><option value="none">Abwesenheit: Keine</option><option value="leave">Abwesenheit: Urlaub/Krank</option></select>
+          <select value={functionFilter} onChange={e=>setFunctionFilter(e.target.value)} aria-label="Funktion"><option value="all">Funktion: Alle</option><option value="objekt">Objektdienst</option><option value="revier">Revierdienst</option><option value="nsl">Leitstelle</option></select>
+        </div>
         <table>
-          <thead><tr><th>Mitarbeiter</th><th>Personal-Nr.</th><th>Abteilung</th><th>Status</th><th>Aktion</th></tr></thead>
-          <tbody>{employees.filter(employee=>`${employee.name} ${employee.email} ${employee.employee_number||''}`.toLowerCase().includes(search.toLowerCase())).map(employee=><tr key={employee.id}>
+          <thead><tr><th></th><th>Mitarbeiter</th><th>Personal-Nr.</th><th>Funktion</th><th>Abteilung</th><th>Status</th><th>Qualifikationen</th><th>Aktion</th></tr></thead>
+          <tbody>{employees.filter(employee=>{
+            const haystack=`${employee.name} ${employee.email} ${employee.employee_number||''} ${employee.department||''} ${employee.position||''}`.toLowerCase();
+            if(search && !haystack.includes(search.toLowerCase()))return false;
+            if(statusFilter==='all')return true;
+            if(statusFilter==='leave')return employee.employment_status==='leave';
+            return employee.employment_status===statusFilter;
+          }).map(employee=><tr key={employee.id} className={selected?.id===employee.id?'selected-row':''}>
+            <td><input type="checkbox" aria-label={`${employee.name} auswählen`} /></td>
             <td><strong>{employee.name}</strong><br/><small>{employee.email}</small></td>
             <td>{employee.employee_number||'–'}</td>
-            <td>{employee.department||employee.position||'–'}</td>
-            <td>{employee.employment_status}</td>
-            <td><button type="button" onClick={()=>void openProfile(employee)}>Profil</button></td>
+            <td>{employee.position||employee.title||'–'}</td>
+            <td>{employee.department||'–'}</td>
+            <td><span className={`employee-status ${employee.employment_status}`}>{employee.employment_status==='active'?'Aktiv':employee.employment_status==='leave'?'Abwesenheit':employee.employment_status==='terminated'?'Ausgeschieden':employee.employment_status==='probation'?'Probezeit':employee.employment_status}</span></td>
+            <td>{profile?.employee.id===employee.id&&profile.qualifications.length>0?<span className="qualification-mini">Qualifikationen: {profile.qualifications.length}</span>:<span className="qualification-mini muted">Keine Daten</span>}</td>
+            <td><button type="button" onClick={()=>void openProfile(employee)}>Bearbeiten</button></td>
           </tr>)}</tbody>
         </table>
       </div>
-      {selected&&<aside className="employee-profile">
-        <h2>Mitarbeiterprofil</h2>
+      {selected&&<aside className={editMode?'employee-profile edit-mode':'employee-profile'}>
+        <div className="employee-profile-summary">
+          <div className="employee-avatar">{(selected.first_name||selected.name||'M').charAt(0)}{(selected.last_name||'').charAt(0)}</div>
+          <div><h2>{selected.name}</h2><span className="employee-online">● Aktiv</span><p>{selected.position||selected.title||'Funktion nicht erfasst'} · {selected.employee_number||'Keine Personal-Nr.'}</p></div>
+          {hasPermission('employees:write')&&<button type="button" className="employee-edit-button" onClick={()=>setEditMode(v=>!v)}>{editMode?'Schließen':'Bearbeiten'}</button>}
+        </div>
         {hasPermission('employees:write')?<form onSubmit={update}>
           <label>Name<input required value={form.name||''} onChange={e=>setForm({...form,name:e.target.value})}/></label>
           <label>E-Mail<input required type="email" value={form.email||''} onChange={e=>setForm({...form,email:e.target.value})}/></label>
@@ -288,5 +309,14 @@ export function Employees(){
         </div>}
       </aside>}
     </div>
+    {profile&&<div className="employee-qualification-alerts">
+      <div className="employee-section-title"><strong>Qualifikationswarnungen</strong><button type="button">Alle anzeigen</button></div>
+      {profile.qualifications.length?<table><thead><tr><th>Mitarbeiter</th><th>Qualifikation</th><th>Ablaufdatum</th><th>Tage</th><th>Status</th></tr></thead><tbody>{profile.qualifications.map((qualification:any)=>{
+        const validUntil=qualification.valid_until?new Date(`${qualification.valid_until}T23:59:59`):null;
+        const days=validUntil?Math.ceil((validUntil.getTime()-Date.now())/86400000):null;
+        const status=days!==null&&days<0?'abgelaufen':days!==null&&days<=30?'läuft bald ab':qualification.status==='valid'?'gültig':'prüfen';
+        return <tr key={qualification.id}><td>{selected?.name}</td><td>{qualification.catalog_name||qualification.code}</td><td>{qualification.valid_until||'unbefristet'}</td><td>{days===null?'—':days}</td><td><span className={`qualification-status ${status==='abgelaufen'?'expired':status==='läuft bald ab'?'warning':'ok'}`}>{status}</span></td></tr>;
+      })}</tbody></table>:<p className="employee-empty">Keine Qualifikationswarnungen für diesen Mitarbeiter.</p>}
+    </div>}
   </section>;
 }

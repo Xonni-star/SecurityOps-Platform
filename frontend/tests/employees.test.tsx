@@ -49,8 +49,8 @@ describe('employee management profile',()=>{
     });
 
     render(<MemoryRouter><Employees/></MemoryRouter>);
-    expect(await screen.findByText('Qualifikationen < 90 Tage')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button',{name:'Profil'}));
+    expect(await screen.findByText('Qualifikationswarnungen')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Bearbeiten'}));
     expect(await screen.findByText('Abwesenheit')).toBeTruthy();
     const absenceHeadings=screen.getAllByRole('heading',{name:'Abwesenheit'});
     const absenceHeading=absenceHeadings[absenceHeadings.length-1];
