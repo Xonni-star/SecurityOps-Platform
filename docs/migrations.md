@@ -170,3 +170,27 @@ staging copy first. Verify the backfill count, inspect constraint/RLS failures,
 and monitor lock duration. The migration is append-only and must not be edited
 after release; rollback requires a separately reviewed forward migration or a
 database restore.
+
+## Phase 1, step 2: object security hub
+
+Migration `035_object_security_hub.sql` is additive. It keeps `sites` as the
+canonical object record and adds tenant/RLS-protected buildings, areas and
+zones, explainable hazard assessments with a persisted likelihood x impact
+score, and versioned site instructions with optional employee
+acknowledgements. All relationships use composite tenant-aware foreign keys.
+The object-context endpoint exposes these records alongside existing customer,
+contract and watchbook links; patrol, alarm, incident, handover and DMS
+records remain in their existing domains and are not duplicated.
+
+Current gap after this step: the object context has real customer, contract,
+hierarchy, hazard, instruction and watchbook links, but it does not yet expose
+the existing patrol, alarm, incident, qualification, schedule, key, handover
+or DMS read models in one response. Those domains already have their own
+authorization, audit and offline contracts and must be integrated by read-only
+joins or dedicated projections rather than copied into object tables.
+
+The next phases should connect existing patrol/control-point, alarm/incident,
+qualification/scheduling, key, handover and DMS read models to the object
+context, then add task-level actions where the existing domain supports them.
+Offline evidence and conflict handling remain governed by the existing sync
+receipts; this migration introduces no simulated evidence or second workflow.

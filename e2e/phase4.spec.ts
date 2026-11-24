@@ -129,6 +129,7 @@ test("runs the mobile PWA offline outbox and reconciles the server receipt", asy
   ).toBeVisible();
   await context.setOffline(false);
   await page.getByRole("button", { name: "Jetzt synchronisieren" }).click();
+  await expect(page.getByText(/synchronisiert/)).toBeVisible();
   await expect(
     page.getByRole("heading", { name: /Offline-Outbox \(0\)/ }),
   ).toBeVisible();
