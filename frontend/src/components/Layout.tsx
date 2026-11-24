@@ -84,7 +84,7 @@ export function Layout(){
         </div>
         <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzer'}</span></div>
       </header>
-      <main className="page-content"><Outlet/></main>
+      <main className={employeeRoute?'page-content employee-page':'page-content'}><Outlet/></main>
     </div>
   </div>;
 }
