@@ -1,6 +1,6 @@
 import {describe,expect,it} from '@jest/globals';
 import {canAccessResource} from '../src/types/authorization.js';
-import {canReturnKey,holderIsValid,transitionKeyStatus} from '../src/services/keys-domain.js';
+import {bundleStatus,canReturnKey,holderIsValid,transitionKeyStatus,validateBundleReturn} from '../src/services/keys-domain.js';
 
 describe('key management domain',()=>{
   it('keeps tenant and site scope isolated',()=>{
@@ -25,5 +25,20 @@ describe('key management domain',()=>{
     expect(canReturnKey({actorUserId:'u1',holderUserId:'u1',operator:false})).toBe(true);
     expect(canReturnKey({actorUserId:'u2',holderUserId:'u1',operator:false})).toBe(false);
     expect(canReturnKey({actorUserId:'u2',holderUserId:'u1',operator:true})).toBe(true);
+  });
+  it('checks every requested bundle key before allowing a partial return',()=>{
+    const keys=[
+      {id:'key-a',site_id:null,status:'issued' as const,holder_user_id:'u1',holder_employee_id:null},
+      {id:'key-b',site_id:null,status:'issued' as const,holder_user_id:'u1',holder_employee_id:null},
+    ];
+    expect(validateBundleReturn(keys,['key-b','key-a'],{actorUserId:'u1',operator:false}).map(key=>key.id)).toEqual(['key-a','key-b']);
+    expect(()=>validateBundleReturn(keys,['key-a','missing'],{actorUserId:'u1',operator:false})).toThrow('Every requested key must belong to the bundle');
+    expect(()=>validateBundleReturn([{...keys[0],status:'lost' as const},keys[1]],['key-a','key-b'],{actorUserId:'u1',operator:false})).toThrow('is not issued');
+  });
+  it('keeps partial bundle returns visible until every member is returned',()=>{
+    expect(bundleStatus(0,3)).toBe('available');
+    expect(bundleStatus(3,3)).toBe('issued');
+    expect(bundleStatus(1,3)).toBe('partial');
+    expect(bundleStatus(2,3)).toBe('partial');
   });
 });
