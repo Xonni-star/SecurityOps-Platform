@@ -1,4 +1,5 @@
 import {FormEvent,useEffect,useState} from 'react';
+import {useParams} from 'react-router-dom';
 import {api,hasPermission} from '../lib/api';
 
 type Employee={
@@ -35,6 +36,7 @@ type Profile={
 const empty:Employee={id:'',name:'',email:'',employment_status:'active',employment_type:'employee'};
 
 export function Employees(){
+  const {employeeId}=useParams<{employeeId?:string}>();
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [dashboard,setDashboard]=useState<Dashboard|null>(null);
   const [selected,setSelected]=useState<Employee|null>(null);
@@ -69,8 +71,10 @@ export function Employees(){
   };
   useEffect(()=>{void load();},[]);
   useEffect(()=>{
-    if(!selected&&employees.length>0)void openProfile(employees[0]);
-  },[employees]);
+    if(employees.length===0)return;
+    const target=employeeId?employees.find(employee=>employee.id===employeeId):employees[0];
+    if(target&&!selected)void openProfile(target);
+  },[employees,employeeId]);
 
   const create=async(e:FormEvent)=>{
     e.preventDefault();
@@ -176,7 +180,7 @@ export function Employees(){
   };
 
   return <section className="employee-management">
-    <div className="employee-page-title"><div><h1>Mitarbeiter</h1><p>Verwalten Sie Mitarbeiter, Qualifikationen und Einsatzinformationen.</p></div><div className="employee-page-actions">{hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(v=>!v)}>+ Mitarbeiter anlegen</button>}<a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">Export</a></div></div>
+    <div className="employee-page-title"><div className="employee-page-title-spacer"></div><div className="employee-page-actions">{hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(v=>!v)}>+ Mitarbeiter anlegen</button>}<a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">Export</a></div></div>
     {error&&<p role="alert" className="error">{error}</p>}
     {dashboard&&<div className="stats-grid employee-metrics">
       <article><strong>{dashboard.employees.total}</strong><span>Mitarbeiter gesamt</span></article>

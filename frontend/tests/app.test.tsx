@@ -5,7 +5,13 @@ import {MemoryRouter} from 'react-router-dom';
 const apiMock=vi.hoisted(()=>vi.fn());
 const loginMock=vi.hoisted(()=>vi.fn());
 const logoutMock=vi.hoisted(()=>vi.fn());
-vi.mock('../src/lib/api',()=>({api:apiMock,login:loginMock,logout:logoutMock}));
+vi.mock('../src/lib/api',()=>({
+  api:apiMock,
+  login:loginMock,
+  logout:logoutMock,
+  hasPermission:()=>true,
+  storedUser:()=>({email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}),
+}));
 import {Login} from '../src/pages/Login';
 import {Resource} from '../src/pages/Resource';
 import App from '../src/App';
@@ -27,6 +33,35 @@ describe('login and protected navigation',()=>{
   it('redirects unauthenticated users away from protected navigation',()=>{
     render(<App/>);
     expect(screen.getByRole('heading',{name:'Willkommen zurück'})).toBeTruthy();
+  });
+
+  it('renders employees inside exactly one global app shell',async()=>{
+    storage.set('securityops_authenticated','true');
+    storage.set('securityops_user',JSON.stringify({email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}));
+    window.history.pushState({},'','/employees');
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path===' /employees')return [];
+      if(path==='/employees')return [];
+      if(path==='/employees/dashboard')return {
+        employees:{total:0,active:0,inactive:0,on_leave:0,sick:0,terminated:0},
+        qualifications_expiring_90_days:0,
+        qualifications_expired:0,
+        upcoming_shift_assignments:0,
+        open_absences:0,
+        sick_employees:0,
+        active_object_assignments:0,
+        active_contracts:0,
+        missing_required_qualifications:0,
+        missing_documents:0,
+        employees_without_object:0,
+      };
+      if(path==='/sites')return [];
+      return {};
+    });
+    render(<App/>);
+    expect(await screen.findByRole('heading',{name:'Mitarbeiter'})).toBeTruthy();
+    expect(document.querySelectorAll('.app-shell')).toHaveLength(1);
+    expect(document.querySelectorAll('.sidebar')).toHaveLength(1);
   });
 });
 
