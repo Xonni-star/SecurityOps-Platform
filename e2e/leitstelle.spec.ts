@@ -58,7 +58,7 @@ test.describe('NSL-Leitstelle',()=>{
     await page.getByRole('button',{name:'Anmelden'}).click();
     await expect(page).toHaveURL('/');
     await page.goto('/mobile');
-    await expect(page.getByRole('heading',{name:'Wächter-App'}).first()).toBeVisible();
+    await expect(page.locator('main').getByRole('heading',{name:'Wächter-App'})).toBeVisible();
     await expect(page.getByRole('button',{name:'PANIK'})).toBeVisible();
     await expect(page.getByRole('button',{name:'Kontrollpunkt bestätigen'})).toBeVisible();
     await expect(page.getByText(/Offline-Outbox/)).toBeVisible();
