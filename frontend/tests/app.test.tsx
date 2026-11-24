@@ -63,6 +63,23 @@ describe('login and protected navigation',()=>{
     expect(document.querySelectorAll('.app-shell')).toHaveLength(1);
     expect(document.querySelectorAll('.sidebar')).toHaveLength(1);
   });
+
+  it('renders a direct employee detail route inside the same app shell',async()=>{
+    storage.set('securityops_authenticated','true');
+    storage.set('securityops_user',JSON.stringify({email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}));
+    window.history.pushState({},'','/employees/00000000-4000-4000-8000-000000000111');
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path.endsWith('/profile'))return {
+        employee:{id:'00000000-4000-4000-8000-000000000111',name:'Ava Worker',email:'ava@example.com',employment_status:'active',employment_type:'employee'},
+        contracts:[],qualifications:[],absences:[],object_assignments:[],work_time:[],documents:[],availability:[],
+      };
+      return {};
+    });
+    render(<App/>);
+    expect(await screen.findByRole('heading',{name:'Ava Worker'})).toBeTruthy();
+    expect(document.querySelectorAll('.app-shell')).toHaveLength(1);
+    expect(document.querySelectorAll('.sidebar')).toHaveLength(1);
+  });
 });
 
 describe('basic CRUD',()=>{

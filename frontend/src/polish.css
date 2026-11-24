@@ -74,3 +74,201 @@
     grid-template-columns:1fr;
   }
 }
+
+.page-content.employee-page .employee-overview{
+  width:100%;
+  min-width:0;
+}
+.employee-overview-table{
+  width:100%;
+  background:#102745;
+}
+.employee-name-link{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  background:transparent!important;
+  box-shadow:none!important;
+  color:#eef5ff!important;
+  padding:0!important;
+  min-height:0!important;
+  text-align:left;
+}
+.employee-name-link small{
+  color:#829bb6;
+  margin-top:2px;
+  font-weight:400;
+}
+
+.employee-detail-page{
+  min-height:calc(100vh - 88px);
+  background:#0b1b33;
+  color:#dbe7f7;
+  width:100%;
+  box-sizing:border-box;
+  padding:18px;
+}
+.employee-detail-header{
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  align-items:center;
+  gap:14px;
+  margin-bottom:12px;
+  padding:14px;
+  background:#102745;
+  border:1px solid #1d3b5c;
+  border-radius:6px;
+}
+.employee-back{
+  background:#1d3b5c!important;
+  color:#dbe7f7!important;
+  font-size:11px!important;
+}
+.employee-detail-title{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.employee-detail-title h1{
+  margin:0;
+  color:#eef5ff;
+  font-size:20px;
+}
+.employee-detail-title p{
+  margin:3px 0 0;
+  color:#91a8c2;
+  font-size:11px;
+}
+.employee-detail-header>.employee-status{
+  justify-self:end;
+  padding:6px 10px;
+  font-size:10px;
+}
+.employee-tabs{
+  display:flex;
+  gap:4px;
+  overflow-x:auto;
+  margin-bottom:12px;
+  padding:6px;
+  background:#102745;
+  border:1px solid #1d3b5c;
+  border-radius:6px;
+}
+.employee-tabs button{
+  flex:0 0 auto;
+  background:transparent;
+  color:#9fb2ca;
+  border-radius:4px;
+  padding:8px 10px;
+  font-size:11px;
+  box-shadow:none;
+}
+.employee-tabs button.active{
+  background:#2d78be;
+  color:#fff;
+}
+.employee-detail-content{
+  min-width:0;
+}
+.employee-detail-kpis{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:12px;
+}
+.employee-detail-kpis article{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  background:#102745;
+  border:1px solid #1d3b5c;
+  border-radius:6px;
+  padding:14px;
+}
+.employee-detail-kpis strong{
+  color:#70dda7;
+  font-size:20px;
+}
+.employee-detail-kpis span{
+  color:#b7c8dc;
+  font-size:11px;
+}
+.employee-detail-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+}
+.employee-detail-grid article,
+.employee-detail-table{
+  background:#102745;
+  border:1px solid #1d3b5c;
+  border-radius:6px;
+  padding:14px;
+  color:#dbe7f7;
+}
+.employee-detail-grid h3,
+.employee-detail-table h3{
+  margin:0 0 10px;
+  color:#eef5ff;
+  font-size:12px;
+}
+.employee-detail-grid dl{
+  display:grid;
+  grid-template-columns:120px 1fr;
+  gap:6px 10px;
+  margin:0;
+  font-size:11px;
+}
+.employee-detail-grid dt{color:#91a8c2}.employee-detail-grid dd{margin:0;color:#dbe7f7}
+.employee-detail-grid p{color:#b7c8dc;font-size:11px}
+.employee-detail-table table{
+  width:100%;
+  background:transparent;
+  border-collapse:collapse;
+  margin-top:4px;
+}
+.employee-detail-table th{
+  color:#91a8c2;
+  background:transparent;
+  border-bottom:1px solid #294560;
+  font-size:9px;
+  text-align:left;
+  padding:8px;
+}
+.employee-detail-table td{
+  color:#dbe7f7;
+  border-bottom:1px solid #183653;
+  font-size:10px;
+  padding:8px;
+}
+.employee-detail-form{
+  background:#102745!important;
+  border:1px solid #1d3b5c!important;
+  display:block!important;
+  max-width:none!important;
+  padding:14px!important;
+  border-radius:6px;
+}
+.employee-detail-form .form-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+}
+.employee-detail-form label{
+  color:#c8d8eb;
+}
+.employee-detail-form input,
+.employee-detail-form select,
+.employee-detail-form textarea{
+  background:#0d2038!important;
+  border:1px solid #294966!important;
+  color:#dbe7f7!important;
+}
+.employee-detail-form .span-2{grid-column:1/-1}
+@media(max-width:900px){
+  .employee-detail-header{grid-template-columns:1fr auto}
+  .employee-detail-title{grid-column:1/-1;grid-row:2}
+  .employee-detail-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .employee-detail-grid{grid-template-columns:1fr}
+  .employee-detail-form .form-grid{grid-template-columns:1fr}
+}

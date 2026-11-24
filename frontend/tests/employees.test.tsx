@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import {beforeEach,describe,expect,it,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
-import {MemoryRouter} from 'react-router-dom';
+import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {MemoryRouter,Route,Routes} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
 vi.mock('../src/lib/api',()=>({
@@ -10,6 +10,7 @@ vi.mock('../src/lib/api',()=>({
   storedUser:()=>({role:'admin',permissions:['employees:read','employees:write']}),
 }));
 import {Employees} from '../src/pages/Employees';
+import {EmployeeDetail} from '../src/pages/EmployeeDetail';
 
 beforeEach(()=>{cleanup();apiMock.mockReset();});
 
@@ -48,22 +49,11 @@ describe('employee management profile',()=>{
       return {};
     });
 
-    render(<MemoryRouter><Employees/></MemoryRouter>);
+    render(<MemoryRouter initialEntries={['/employees']}><Routes><Route path="/employees" element={<Employees/>}/><Route path="/employees/:employeeId" element={<EmployeeDetail/>}/></Routes></MemoryRouter>);
     expect(await screen.findByText('Qualifikationswarnungen')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button',{name:'Bearbeiten'}));
-    expect(await screen.findByText('Abwesenheit')).toBeTruthy();
-    const absenceHeadings=screen.getAllByRole('heading',{name:'Abwesenheit'});
-    const absenceHeading=absenceHeadings[absenceHeadings.length-1];
-    const absenceForm=absenceHeading?.closest('form');
-    expect(absenceForm).toBeTruthy();
-    fireEvent.change(absenceForm!.querySelector('input[type="datetime-local"]') as HTMLInputElement,{target:{value:'2026-12-01T08:00'}});
-    const datetimeInputs=absenceForm!.querySelectorAll('input[type="datetime-local"]');
-    fireEvent.change(datetimeInputs[1] as HTMLInputElement,{target:{value:'2026-12-01T16:00'}});
-    fireEvent.change(within(absenceForm as HTMLFormElement).getByLabelText('Änderungsgrund'),{target:{value:'Urlaubsantrag'}});
-    fireEvent.click(screen.getByRole('button',{name:'Abwesenheit speichern'}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(
-      '/employees/00000000-0000-4000-8000-000000000111/absences',
-      expect.objectContaining({method:'POST'}),
-    ));
+    const buttons=screen.getAllByRole('button',{name:'Bearbeiten'});
+    fireEvent.click(buttons[0]);
+    expect(await screen.findByRole('heading',{name:'Ava Worker'})).toBeTruthy();
+    expect(screen.getByRole('button',{name:'Zur Mitarbeiterübersicht'})).toBeTruthy();
   });
 });
