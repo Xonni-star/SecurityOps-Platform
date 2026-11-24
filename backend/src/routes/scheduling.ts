@@ -124,6 +124,22 @@ schedulingRouter.post('/scheduling/shifts/:shiftId/assignments',requirePermissio
       const shift=(await tx.query('SELECT sh.*,p.id period_id,p.rule_profile_id,p.site_id FROM schedule_shifts sh JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id WHERE sh.tenant_id=$1 AND sh.id=$2',[req.user!.tenantId,req.params.shiftId])).rows[0];
       if(!shift)throw Object.assign(new Error('Schedule shift not found'),{status:404});
       permission(req,'scheduling:write',shift.site_id);
+      const employee=(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
+      if(!employee)throw Object.assign(new Error('Employee not found'),{status:404});
+      const absence=(await tx.query(
+        `SELECT id FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2
+         AND starts_at < $4 AND $3 < ends_at LIMIT 1`,
+        [req.user!.tenantId,body.employee_id,shift.starts_at,shift.ends_at],
+      )).rows[0];
+      if(absence)throw Object.assign(new Error('Employee is absent during this shift'),{status:409});
+      const overlapping=(await tx.query(
+        `SELECT a.id FROM schedule_assignments a JOIN schedule_shifts s
+         ON s.tenant_id=a.tenant_id AND s.id=a.shift_id
+         WHERE a.tenant_id=$1 AND a.employee_id=$2 AND a.status='assigned'
+           AND s.starts_at < $4 AND $3 < s.ends_at LIMIT 1`,
+        [req.user!.tenantId,body.employee_id,shift.starts_at,shift.ends_at],
+      )).rows[0];
+      if(overlapping)throw Object.assign(new Error('Employee already assigned to an overlapping shift'),{status:409});
       const row=(await tx.query(`INSERT INTO schedule_assignments(tenant_id,shift_id,employee_id,created_by,created_session_id,client_mutation_id)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[req.user!.tenantId,shift.id,body.employee_id,req.user!.id,sessionId,body.client_mutation_id])).rows[0];
       const qualificationRows=(await tx.query<{code:string;valid_from:string|null;valid_until:string|null;status:string}>(

@@ -42,7 +42,7 @@ dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['ten
     const scope=effectivePermissionScope(normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),'dms:read',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
     const siteFilter=scope==='site'?' AND d.site_id = ANY($2::uuid[])':'';
     const values=siteFilter?[req.user!.tenantId,req.user!.siteIds??[]]:[req.user!.tenantId];
-    const rows=(await query(`SELECT d.id,d.site_id,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
+    const rows=(await query(`SELECT d.id,d.site_id,d.employee_id,d.employee_document_category,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
       COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,'sha256',v.sha256,'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') versions
       FROM dms_documents d LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
       WHERE d.tenant_id=$1${siteFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
@@ -52,8 +52,22 @@ dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['ten
 
 dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
-    const body=z.object({title:z.string().trim().min(1).max(240),description:z.string().max(4000).nullable().optional(),site_id:uuid.nullable().optional(),content_base64:z.string(),content_type:z.string().trim().min(1).max(160),retention_until:z.string().datetime({offset:true}).nullable().optional(),client_mutation_id:uuid}).strict().parse(req.body);
+    const body=z.object({
+      title:z.string().trim().min(1).max(240),
+      description:z.string().max(4000).nullable().optional(),
+      site_id:uuid.nullable().optional(),
+      employee_id:uuid.nullable().optional(),
+      employee_document_category:z.enum(['contract','qualification','training','instruction','personal','other']).nullable().optional(),
+      content_base64:z.string(),
+      content_type:z.string().trim().min(1).max(160),
+      retention_until:z.string().datetime({offset:true}).nullable().optional(),
+      client_mutation_id:uuid,
+    }).strict().parse(req.body);
     siteAccess(req,body.site_id??null,'dms:write');
+    if(body.employee_id){
+      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
+      if(!employee)throw Object.assign(new Error('Employee not found'),{status:404});
+    }
     const content=decodeContent(body.content_base64);
     const maxBytes=env.DMS_MAX_BYTES;
     validateDmsUpload(content,body.content_type,maxBytes,allowedTypes);
@@ -61,7 +75,8 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     await dmsStorage.put(objectKey,content,body.content_type);
     try{
       const result=await withTransaction(client=>runIdempotentMutation<{document:Record<string,unknown>;version:Record<string,unknown>}>(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'dms.document',payload:req.body},async tx=>{
-        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,title,description,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[documentId,req.user!.tenantId,body.site_id??null,body.title,body.description??null,req.user!.id,session(req)])).rows[0];
+        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,title,description,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.title,body.description??null,req.user!.id,session(req)])).rows[0];
         const version=(await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
           VALUES($1,$2,$3,1,$4,$5,$6,$7,'quarantined',$8,$9,(SELECT device_id FROM sessions WHERE id=$9),$10) RETURNING *`,
           [versionId,req.user!.tenantId,documentId,objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
