@@ -31,13 +31,29 @@ from the legacy schema.
   identities and customer-facing authorization are explicitly not part of this
   migration.
 
+## Implementation follow-through
+
+Migration `042_customer_management.sql` and the customer API/UI build on this
+model. They add structured business and billing addresses, contact-to-object
+assignments, customer activity/task history, confidential customer-document
+associations in the existing DMS, and tenant-scoped customer reporting over
+already-linked sites. Customer and contract changes are audited; customer
+documents use separate read/write permissions in addition to the DMS controls.
+
+The existing object, employee assignment, schedule, incident, contract and
+service tables remain canonical. No invoice or finance module, dedicated
+complaints module, or general task module exists in this schema; invoice
+records are therefore not duplicated, and follow-ups are limited to the
+customer-specific task table. Customer-facing portal identities remain
+explicitly deferred.
+
 ## Compatibility and rollout
 
-The change is additive: existing customer/site columns and APIs remain valid.
-No site is automatically assigned to a customer because that would create
-unverifiable business data. Apply the migration through the existing advisory
-locked migration runner, validate the email backfill and RLS/integrity tests in
-staging, then deploy API changes in a later dependent step.
+The change is additive: existing customer/site columns and basic CRUD APIs
+remain valid. No site is automatically assigned to a customer because that
+would create unverifiable business data. Apply migrations through the existing
+advisory-locked migration runner and validate the email backfill and
+RLS/integrity tests in staging before production rollout.
 
 ## Consequences
 

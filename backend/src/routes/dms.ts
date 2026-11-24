@@ -18,6 +18,10 @@ export let dmsScanner:MalwareScannerAdapter=adapters.scanner;
 export function configureDmsAdapters(storage:BlobStorageAdapter,scanner:MalwareScannerAdapter){dmsStorage=storage;dmsScanner=scanner;}
 
 function session(req:Request){if(!req.sessionDbId)throw Object.assign(new Error('Session-Identität fehlt.'),{status:401});return req.sessionDbId;}
+function customerDocumentPermission(req:Request,permission:'customer_documents:read'|'customer_documents:write'){
+  const scope=effectivePermissionScope(normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),permission,{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
+  return scope==='tenant'||scope==='system';
+}
 function siteAccess(req:Request,siteId:string|null,permission='dms:read'){
   const user=req.user!;
   const scope=effectivePermissionScope(normalizePermissionGrants(user.permissionGrants,user.permissions),permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
@@ -41,11 +45,12 @@ dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['ten
   try{
     const scope=effectivePermissionScope(normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),'dms:read',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
     const siteFilter=scope==='site'?' AND d.site_id = ANY($2::uuid[])':'';
+    const customerFilter=customerDocumentPermission(req,'customer_documents:read')?'':' AND d.customer_id IS NULL';
     const values=siteFilter?[req.user!.tenantId,req.user!.siteIds??[]]:[req.user!.tenantId];
     const rows=(await query(`SELECT d.id,d.site_id,d.employee_id,d.employee_document_category,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
       COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,'sha256',v.sha256,'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') versions
       FROM dms_documents d LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
-      WHERE d.tenant_id=$1${siteFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
+      WHERE d.tenant_id=$1${siteFilter}${customerFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
     res.json(rows);
   }catch(error){next(error);}
 });
@@ -57,13 +62,24 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       description:z.string().max(4000).nullable().optional(),
       site_id:uuid.nullable().optional(),
       employee_id:uuid.nullable().optional(),
+      customer_id:uuid.nullable().optional(),
       employee_document_category:z.enum(['contract','qualification','training','instruction','personal','other']).nullable().optional(),
+      customer_document_category:z.enum(['contract','service','insurance','security_plan','correspondence','other']).nullable().optional(),
       content_base64:z.string(),
       content_type:z.string().trim().min(1).max(160),
       retention_until:z.string().datetime({offset:true}).nullable().optional(),
       client_mutation_id:uuid,
-    }).strict().parse(req.body);
+    }).strict().refine(value=>
+      Boolean(value.customer_id)===Boolean(value.customer_document_category)
+      && !(value.customer_id&&value.employee_id)
+    ).parse(req.body);
     siteAccess(req,body.site_id??null,'dms:write');
+    if(body.customer_id){
+      if(!customerDocumentPermission(req,'customer_documents:write'))throw Object.assign(new Error('Insufficient permissions for customer documents'),{status:403});
+      const customer=(await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.customer_id])).rows[0];
+      if(!customer)throw Object.assign(new Error('Customer not found'),{status:404});
+      if(body.site_id&&!((await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=$3',[req.user!.tenantId,body.customer_id,body.site_id])).rows[0]))throw Object.assign(new Error('Document site must belong to the customer'),{status:400});
+    }
     if(body.employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
       if(!employee)throw Object.assign(new Error('Employee not found'),{status:404});
@@ -75,8 +91,8 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     await dmsStorage.put(objectKey,content,body.content_type);
     try{
       const result=await withTransaction(client=>runIdempotentMutation<{document:Record<string,unknown>;version:Record<string,unknown>}>(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'dms.document',payload:req.body},async tx=>{
-        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,title,description,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.title,body.description??null,req.user!.id,session(req)])).rows[0];
+        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,customer_id,customer_document_category,title,description,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,req.user!.id,session(req)])).rows[0];
         const version=(await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
           VALUES($1,$2,$3,1,$4,$5,$6,$7,'quarantined',$8,$9,(SELECT device_id FROM sessions WHERE id=$9),$10) RETURNING *`,
           [versionId,req.user!.tenantId,documentId,objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
@@ -96,7 +112,7 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
         return res.status(422).json({error:'Document rejected by malware scan',state:'rejected',signature:scan.signature});
       }
       const available=(await query(`UPDATE dms_versions SET lifecycle_state='available',scanned_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,versionId])).rows[0];
-      await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.uploaded','dms_document',documentId,{version_id:versionId,sha256:available.sha256,size_bytes:available.size_bytes});
+      await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.uploaded','dms_document',documentId,{version_id:versionId,sha256:available.sha256,size_bytes:available.size_bytes,customer_id:body.customer_id??null});
       return res.status(201).json({...result.response,version:available});
     }catch(error){await dmsStorage.delete(objectKey).catch(()=>undefined);throw error;}
   }catch(error){next(error);}
@@ -106,6 +122,7 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
   try{
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.documentId])).rows[0];
     if(!document)return res.status(404).json({error:'Document not found'});
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
     siteAccess(req,document.site_id??null,'dms:write');
     const body=z.object({content_base64:z.string(),content_type:z.string().trim().min(1).max(160),retention_until:z.string().datetime({offset:true}).nullable().optional(),client_mutation_id:uuid}).strict().parse(req.body);
     const content=decodeContent(body.content_base64);validateDmsUpload(content,body.content_type,env.DMS_MAX_BYTES,allowedTypes);
@@ -138,6 +155,7 @@ dmsRouter.get('/dms/documents/:documentId/versions/:versionId/download',requireP
     const row=(await query(`SELECT d.*,v.* FROM dms_documents d JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
       WHERE d.tenant_id=$1 AND d.id=$2 AND v.id=$3 AND d.document_status='active'`,[req.user!.tenantId,req.params.documentId,req.params.versionId])).rows[0];
     if(!row)return res.status(404).json({error:'Document version not found'});
+    if(row.customer_id&&!customerDocumentPermission(req,'customer_documents:read'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
     siteAccess(req,row.site_id??null);
     if(!canDownloadDmsVersion(row.document_status,row.lifecycle_state))return res.status(409).json({error:'Document version is not available',state:row.lifecycle_state});
     const blob=await dmsStorage.get(row.object_key);

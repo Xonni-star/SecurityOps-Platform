@@ -26,6 +26,8 @@ import {AccountSecurity} from './pages/AccountSecurity';
 import {Sites} from './pages/Sites';
 import {Employees} from './pages/Employees';
 import {EmployeeDetail} from './pages/EmployeeDetail';
+import {Customers} from './pages/Customers';
+import {CustomerDetail} from './pages/CustomerDetail';
 
 function ProtectedLayout(){
   if(!localStorage.getItem('securityops_authenticated'))return <Navigate to="/login" replace />;
@@ -54,7 +56,9 @@ export default function App(){
         <Route path="/employees" element={<Employees/>}/>
         <Route path="/employees/:employeeId" element={<EmployeeDetail/>}/>
         <Route path="/employees/:employeeId/:section" element={<EmployeeDetail/>}/>
-        <Route path="/customers" element={<Resource name="customers" fields={['name','email']}/>}/>
+        <Route path="/customers" element={<Customers/>}/>
+        <Route path="/customers/:customerId" element={<CustomerDetail/>}/>
+        <Route path="/customers/:customerId/:section" element={<CustomerDetail/>}/>
         <Route path="/sites" element={<Sites/>}/>
         <Route path="/devices" element={<Resource name="devices" fields={['name','status','site_id']}/>}/>
         <Route path="/alarms" element={<Operations/>}/>

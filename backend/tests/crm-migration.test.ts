@@ -1,5 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import {loadMigrationFiles} from '../src/db/migration-runner.js';
 
 const migrationPath=join(process.cwd(),'migrations','033_crm_foundation.sql');
 
@@ -35,4 +36,24 @@ test('object management migration adds bounded site master data without a second
   expect(sql).toContain('sites_status_check');
   expect(sql).toContain('sites_tenant_object_manager_fk');
   expect(sql).not.toMatch(/CREATE TABLE IF NOT EXISTS objects/i);
+});
+
+test('customer management migration extends the CRM model with tenant-safe activity and document support',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','042_customer_management.sql'),'utf8');
+  for(const column of ['address_line1','billing_email','country_code','communication_preferences'])expect(sql).toContain(`ADD COLUMN IF NOT EXISTS ${column}`);
+  for(const table of ['customer_contact_sites','customer_history','customer_tasks']){
+    expect(sql).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+    expect(sql).toContain(`'${table}'`);
+  }
+  expect(sql).toContain('ALTER TABLE dms_documents');
+  expect(sql).toContain('customer_document_category');
+  expect(sql).toContain('customer_documents:read');
+  expect(sql).toContain('customer_documents:write');
+  expect(sql).toContain('CREATE POLICY tenant_isolation');
+  expect(sql).toContain('ON DELETE SET NULL (customer_id)');
+});
+
+test('all repository migrations have a unique, gap-free version sequence',async()=>{
+  const migrations=await loadMigrationFiles(join(process.cwd(),'migrations'));
+  expect(migrations[migrations.length-1]?.id).toBe('042_customer_management.sql');
 });
