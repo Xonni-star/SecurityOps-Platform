@@ -28,7 +28,7 @@
   top:106px;
   right:18px;
   bottom:18px;
-  width:min(430px,calc(100vw - 290px));
+  width:430px;
   max-height:none;
   overflow-y:auto;
   overflow-x:hidden;
