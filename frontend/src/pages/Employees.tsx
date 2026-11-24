@@ -150,7 +150,7 @@ export function Employees(){
         <input className="employee-search" placeholder="Mitarbeiter suchen" value={search} onChange={e=>setSearch(e.target.value)} />
         <table>
           <thead><tr><th>Mitarbeiter</th><th>Personal-Nr.</th><th>Abteilung</th><th>Status</th><th>Aktion</th></tr></thead>
-          <tbody>{employees.map(employee=><tr key={employee.id}>
+          <tbody>{employees.filter(employee=>`${employee.name} ${employee.email} ${employee.employee_number||''}`.toLowerCase().includes(search.toLowerCase())).map(employee=><tr key={employee.id}>
             <td><strong>{employee.name}</strong><br/><small>{employee.email}</small></td>
             <td>{employee.employee_number||'–'}</td>
             <td>{employee.department||employee.position||'–'}</td>
@@ -180,6 +180,36 @@ export function Employees(){
           <label>Änderungsgrund<input required value={reason} onChange={e=>setReason(e.target.value)} placeholder="Grund der Änderung"/></label>
           <button>Profil speichern</button>
         </form>:<dl><dt>E-Mail</dt><dd>{selected.email}</dd><dt>Status</dt><dd>{selected.employment_status}</dd><dt>Abteilung</dt><dd>{selected.department||'–'}</dd></dl>}
+        {hasPermission('employees:write')&&<>
+          <form className="employee-subform" onSubmit={createContract}>
+            <h3>Vertrag</h3>
+            <label>Vertrags-Nr.<input value={contractForm.contract_number} onChange={e=>setContractForm({...contractForm,contract_number:e.target.value})}/></label>
+            <label>Vertragsart<select value={contractForm.contract_type} onChange={e=>setContractForm({...contractForm,contract_type:e.target.value})}><option value="permanent">Unbefristet</option><option value="fixed_term">Befristet</option><option value="part_time">Teilzeit</option><option value="temporary">Zeitarbeit</option><option value="internship">Praktikum</option><option value="freelance">Freiberuflich</option></select></label>
+            <label>Status<select value={contractForm.status} onChange={e=>setContractForm({...contractForm,status:e.target.value})}><option value="active">Aktiv</option><option value="draft">Entwurf</option><option value="ended">Beendet</option><option value="cancelled">Storniert</option></select></label>
+            <label>Beginn<input type="date" required value={contractForm.starts_on} onChange={e=>setContractForm({...contractForm,starts_on:e.target.value})}/></label>
+            <label>Ende<input type="date" value={contractForm.ends_on} onChange={e=>setContractForm({...contractForm,ends_on:e.target.value})}/></label>
+            <label>Wochenstunden<input type="number" min="0" max="168" step="0.25" value={contractForm.weekly_hours} onChange={e=>setContractForm({...contractForm,weekly_hours:e.target.value})}/></label>
+            <label>Grund<input required value={contractForm.reason} onChange={e=>setContractForm({...contractForm,reason:e.target.value})}/></label>
+            <button>Vertrag speichern</button>
+          </form>
+          <form className="employee-subform" onSubmit={createAssignment}>
+            <h3>Objektzuweisung</h3>
+            <label>Objekt<select required value={assignmentForm.site_id} onChange={e=>setAssignmentForm({...assignmentForm,site_id:e.target.value})}><option value="">Bitte wählen</option>{sites.map(site=><option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
+            <label>Art<select value={assignmentForm.assignment_type} onChange={e=>setAssignmentForm({...assignmentForm,assignment_type:e.target.value})}><option value="operational">Operativ</option><option value="management">Leitung</option><option value="support">Unterstützung</option><option value="temporary">Temporär</option><option value="reserve">Reserve</option></select></label>
+            <label>Rolle<input value={assignmentForm.role} onChange={e=>setAssignmentForm({...assignmentForm,role:e.target.value})}/></label>
+            <label>Beginn<input type="date" required value={assignmentForm.starts_on} onChange={e=>setAssignmentForm({...assignmentForm,starts_on:e.target.value})}/></label>
+            <label>Ende<input type="date" value={assignmentForm.ends_on} onChange={e=>setAssignmentForm({...assignmentForm,ends_on:e.target.value})}/></label>
+            <label><input type="checkbox" checked={assignmentForm.primary_assignment} onChange={e=>setAssignmentForm({...assignmentForm,primary_assignment:e.target.checked})}/> Primärobjekt</label>
+            <label>Grund<input required value={assignmentForm.reason} onChange={e=>setAssignmentForm({...assignmentForm,reason:e.target.value})}/></label>
+            <button>Zuweisen</button>
+          </form>
+        </>}
+        {profile&&<div className="employee-data-cards">
+          <article><h3>Verträge</h3>{profile.contracts.length?profile.contracts.map((row:any)=><p key={row.id}><strong>{row.contract_type}</strong><br/><small>{row.starts_on} bis {row.ends_on||'offen'} · {row.status}</small></p>):<p>Keine Verträge erfasst</p>}</article>
+          <article><h3>Qualifikationen</h3>{profile.qualifications.length?profile.qualifications.map((row:any)=><p key={row.id}><strong>{row.catalog_name||row.code}</strong><br/><small>bis {row.valid_until||'unbefristet'} · {row.status}</small></p>):<p>Keine Qualifikationen erfasst</p>}</article>
+          <article><h3>Objektzuweisungen</h3>{profile.object_assignments.length?profile.object_assignments.map((row:any)=><p key={row.id}><strong>{row.site_name}</strong><br/><small>{row.starts_on} bis {row.ends_on||'offen'} · {row.assignment_type}</small></p>):<p>Keine Objektzuweisungen</p>}</article>
+          <article><h3>Arbeitszeit</h3>{profile.work_time.length?profile.work_time.slice(0,8).map((row:any)=><p key={row.id}><strong>{row.status}</strong><br/><small>{row.started_at?.slice(0,16)} · {row.minutes??0} Min.</small></p>):<p>Keine Arbeitszeitdaten</p>}</article>
+        </div>}
       </aside>}
     </div>
   </section>;
