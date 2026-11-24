@@ -164,7 +164,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       [req.user!.tenantId,id],
     )).rows[0];
     if(!employee)return res.status(404).json({error:'Employee not found'});
-    const [contracts,qualifications,absences,objectAssignments,workTime,documents]=await Promise.all([
+    const [contracts,qualifications,absences,objectAssignments,workTime,documents,availability]=await Promise.all([
       query('SELECT * FROM employee_contracts WHERE tenant_id=$1 AND employee_id=$2 ORDER BY starts_on DESC',[req.user!.tenantId,id]),
       query(`SELECT q.*,c.name AS catalog_name,c.category
              FROM employee_qualifications q LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
@@ -182,6 +182,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
              LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
              WHERE d.tenant_id=$1 AND d.employee_id=$2
              GROUP BY d.id ORDER BY d.created_at DESC`,[req.user!.tenantId,id]),
+      query('SELECT * FROM employee_availability WHERE tenant_id=$1 AND employee_id=$2 ORDER BY weekday,starts_time',[req.user!.tenantId,id]),
     ]);
     res.json({
       employee,
@@ -191,6 +192,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       object_assignments:objectAssignments.rows,
       work_time:workTime.rows,
       documents:documents.rows,
+      availability:availability.rows,
     });
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid employee id'});next(error);}
 });

@@ -29,6 +29,7 @@ type Profile={
   object_assignments:any[];
   work_time:any[];
   documents:any[];
+  availability:any[];
 };
 
 const empty:Employee={id:'',name:'',email:'',employment_status:'active',employment_type:'employee'};
@@ -46,6 +47,7 @@ export function Employees(){
   const [contractForm,setContractForm]=useState({contract_number:'',contract_type:'permanent',status:'active',starts_on:new Date().toISOString().slice(0,10),ends_on:'',weekly_hours:'',reason:''});
   const [assignmentForm,setAssignmentForm]=useState({site_id:'',assignment_type:'operational',role:'',starts_on:new Date().toISOString().slice(0,10),ends_on:'',primary_assignment:false,reason:''});
   const [absenceForm,setAbsenceForm]=useState({starts_at:'',ends_at:'',absence_type:'vacation',status:'approved',reason:'',document_id:'',audit_reason:''});
+  const [availabilityForm,setAvailabilityForm]=useState({weekday:'1',starts_time:'08:00',ends_time:'16:00',available:true,valid_from:'',valid_until:'',note:'',reason:''});
 
   const load=async()=>{
     try{
@@ -134,6 +136,24 @@ export function Employees(){
         audit_reason:absenceForm.audit_reason,
       })});
       setAbsenceForm(v=>({...v,starts_at:'',ends_at:'',reason:'',document_id:'',audit_reason:''}));
+      await openProfile(selected);await load();
+    }catch(e){setError((e as Error).message);}
+  };
+
+  const createAvailability=async(e:FormEvent)=>{
+    e.preventDefault();if(!selected)return;
+    try{
+      await api(`/employees/${selected.id}/availability`,{method:'POST',body:JSON.stringify({
+        weekday:Number(availabilityForm.weekday),
+        starts_time:availabilityForm.starts_time,
+        ends_time:availabilityForm.ends_time,
+        available:availabilityForm.available,
+        valid_from:availabilityForm.valid_from||null,
+        valid_until:availabilityForm.valid_until||null,
+        note:availabilityForm.note||null,
+        reason:availabilityForm.reason,
+      })});
+      setAvailabilityForm(v=>({...v,note:'',reason:''}));
       await openProfile(selected);await load();
     }catch(e){setError((e as Error).message);}
   };
@@ -241,6 +261,18 @@ export function Employees(){
             <label>Änderungsgrund<input required value={absenceForm.audit_reason} onChange={e=>setAbsenceForm({...absenceForm,audit_reason:e.target.value})}/></label>
             <button>Abwesenheit speichern</button>
           </form>
+          <form className="employee-subform" onSubmit={createAvailability}>
+            <h3>Verfügbarkeit</h3>
+            <label>Wochentag<select value={availabilityForm.weekday} onChange={e=>setAvailabilityForm({...availabilityForm,weekday:e.target.value})}><option value="1">Montag</option><option value="2">Dienstag</option><option value="3">Mittwoch</option><option value="4">Donnerstag</option><option value="5">Freitag</option><option value="6">Samstag</option><option value="0">Sonntag</option></select></label>
+            <label>Von<input type="time" required value={availabilityForm.starts_time} onChange={e=>setAvailabilityForm({...availabilityForm,starts_time:e.target.value})}/></label>
+            <label>Bis<input type="time" required value={availabilityForm.ends_time} onChange={e=>setAvailabilityForm({...availabilityForm,ends_time:e.target.value})}/></label>
+            <label><input type="checkbox" checked={availabilityForm.available} onChange={e=>setAvailabilityForm({...availabilityForm,available:e.target.checked})}/> Verfügbar</label>
+            <label>Gültig ab<input type="date" value={availabilityForm.valid_from} onChange={e=>setAvailabilityForm({...availabilityForm,valid_from:e.target.value})}/></label>
+            <label>Gültig bis<input type="date" value={availabilityForm.valid_until} onChange={e=>setAvailabilityForm({...availabilityForm,valid_until:e.target.value})}/></label>
+            <label>Hinweis<input value={availabilityForm.note} onChange={e=>setAvailabilityForm({...availabilityForm,note:e.target.value})}/></label>
+            <label>Änderungsgrund<input required value={availabilityForm.reason} onChange={e=>setAvailabilityForm({...availabilityForm,reason:e.target.value})}/></label>
+            <button>Verfügbarkeit speichern</button>
+          </form>
         </>}
         {profile&&<div className="employee-data-cards">
           <article><h3>Verträge</h3>{profile.contracts.length?profile.contracts.map((row:any)=><p key={row.id}><strong>{row.contract_type}</strong><br/><small>{row.starts_on} bis {row.ends_on||'offen'} · {row.status}</small></p>):<p>Keine Verträge erfasst</p>}</article>
@@ -249,6 +281,7 @@ export function Employees(){
           <article><h3>Abwesenheiten</h3>{profile.absences.length?profile.absences.map((row:any)=><p key={row.id}><strong>{row.absence_type}</strong>{row.status==='approved'||row.status==='requested'?<button type="button" onClick={()=>void cancelAbsence(row.id)}>Stornieren</button>:null}<br/><small>{row.starts_at?.slice(0,16)} bis {row.ends_at?.slice(0,16)} · {row.status}</small></p>):<p>Keine Abwesenheiten</p>}</article>
           <article><h3>Arbeitszeit</h3>{profile.work_time.length?profile.work_time.slice(0,8).map((row:any)=><p key={row.id}><strong>{row.status}</strong><br/><small>{row.started_at?.slice(0,16)} · {row.minutes??0} Min.</small></p>):<p>Keine Arbeitszeitdaten</p>}</article>
           <article><h3>Dokumente</h3>{profile.documents?.length?profile.documents.map((row:any)=><p key={row.id}><strong>{row.title}</strong><br/><small>{row.employee_document_category||'Sonstige'} · {row.document_status}</small></p>):<p>Keine Personalakten-Dokumente</p>}</article>
+          <article><h3>Verfügbarkeit</h3>{profile.availability?.length?profile.availability.map((row:any)=><p key={row.id}><strong>Wochentag {row.weekday}</strong><br/><small>{row.starts_time}–{row.ends_time} · {row.available?'verfügbar':'gesperrt'}</small></p>):<p>Keine Verfügbarkeit erfasst</p>}</article>
         </div>}
       </aside>}
     </div>
