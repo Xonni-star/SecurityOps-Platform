@@ -18,7 +18,7 @@ const sessionUser={
   tenantId:'00000000-0000-4000-8000-00000000000a',
   email:'admin@example.invalid',
   role:'admin',
-  permissions:['customer_reports:export','dms:read','account_security:manage','push_subscriptions:write'],
+  permissions:['customer_reports:export','dms:read','account_security:manage','push_subscriptions:write','employees:read','employees:write'],
   permission_grants:[],
   site_ids:['00000000-0000-4000-8000-0000000000aa'],
   is_system_admin:false,
@@ -36,6 +36,12 @@ beforeEach(()=>{
 });
 
 describe('route-level tenant isolation',()=>{
+  it('does not return an employee profile from another tenant',async()=>{
+    const response=await request(app).get('/api/v1/employees/00000000-0000-4000-8000-0000000000c1')
+      .set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(404);
+  });
+
   it('rejects a report export for a site outside the authenticated tenant scope',async()=>{
     const response=await request(app).get('/api/v1/customer-reports/alarms')
       .query({site_id:'00000000-0000-4000-8000-0000000000bb',format:'csv'})

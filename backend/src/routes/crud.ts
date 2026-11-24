@@ -3,7 +3,25 @@ const nonempty=z.string().trim().min(1);
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const date=z.coerce.date();
 const schemas={
-  employees:z.object({name:nonempty,email:z.string().email(),title:nonempty.optional()}).strict(),
+  employees:z.object({
+    name:nonempty,email:z.string().email(),title:nonempty.optional(),
+    employee_number:z.string().trim().max(80).nullable().optional(),
+    first_name:z.string().trim().max(120).nullable().optional(),
+    last_name:z.string().trim().max(120).nullable().optional(),
+    phone:z.string().trim().max(40).nullable().optional(),
+    mobile:z.string().trim().max(40).nullable().optional(),
+    address:z.string().trim().max(1000).nullable().optional(),
+    date_of_birth:z.string().date().nullable().optional(),
+    hire_date:z.string().date().nullable().optional(),
+    termination_date:z.string().date().nullable().optional(),
+    employment_status:z.enum(['active','probation','leave','terminated','archived']).optional(),
+    employment_type:z.enum(['employee','temporary','contractor','intern','apprentice','freelancer']).optional(),
+    department:z.string().trim().max(160).nullable().optional(),
+    position:z.string().trim().max(160).nullable().optional(),
+    work_location:z.string().trim().max(160).nullable().optional(),
+    weekly_hours:z.number().min(0).max(168).nullable().optional(),
+    user_id:uuid.nullable().optional(),
+  }).strict(),
   customers:z.object({name:nonempty,email:z.string().email().nullable().optional()}).strict(),
   sites:z.object({
     name:nonempty,address:nonempty.optional(),site_number:nonempty.optional(),alias:nonempty.optional(),
@@ -22,7 +40,7 @@ const schemas={
   devices:z.object({name:nonempty,status:z.enum(['online','offline','maintenance']).optional(),site_id:uuid.nullable().optional(),last_seen_at:date.nullable().optional()}).strict(),
   alarms:z.object({device_id:uuid.nullable().optional(),severity:z.enum(['low','medium','high','critical']),status:z.enum(['open','acknowledged','resolved']).optional(),message:nonempty,triggered_at:date.optional(),resolved_at:date.nullable().optional()}).strict()
 } as const;
-const fields={employees:['name','email','title'],customers:['name','email'],sites:['name','address','site_number','alias','site_type','description','status','security_classification','latitude','longitude','opening_hours','access_information','special_notes','hazard_notes','object_manager_employee_id','operations_manager_employee_id'],devices:['name','status','site_id','last_seen_at'],alarms:['device_id','severity','status','message','triggered_at','resolved_at']} as const;
+const fields={employees:['name','email','title','employee_number','first_name','last_name','phone','mobile','address','date_of_birth','hire_date','termination_date','employment_status','employment_type','department','position','work_location','weekly_hours','user_id'],customers:['name','email'],sites:['name','address','site_number','alias','site_type','description','status','security_classification','latitude','longitude','opening_hours','access_information','special_notes','hazard_notes','object_manager_employee_id','operations_manager_employee_id'],devices:['name','status','site_id','last_seen_at'],alarms:['device_id','severity','status','message','triggered_at','resolved_at']} as const;
 type Resource=keyof typeof schemas;
 function parseBody(resource:Resource,body:unknown,partial:boolean){const parsed=(partial?schemas[resource].partial():schemas[resource]).safeParse(body);return parsed.success?parsed.data:null;}
 function invalid(res:import('express').Response){return res.status(400).json({error:'Invalid request'});}
