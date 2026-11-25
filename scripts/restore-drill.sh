@@ -98,6 +98,20 @@ assert_equals 2 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELEC
 assert_equals 1 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until <= now() AND lifecycle_state='available'")" "expired retention candidate"
 assert_equals 0 "$(psql "$RESTORE_DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM dms_versions WHERE retention_until > now() AND lifecycle_state <> 'available'")" "future retention state"
 
+# Use a dedicated non-owner role for the RLS assertion. Owners and superusers
+# bypass RLS, so testing with the restore connection role would be misleading.
+psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'restore_drill_rls') THEN
+    CREATE ROLE restore_drill_rls NOLOGIN;
+  END IF;
+END
+$$;
+GRANT USAGE ON SCHEMA public TO restore_drill_rls;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO restore_drill_rls;
+SQL
+
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
 SET LOCAL ROLE restore_drill_rls;

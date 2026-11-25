@@ -26,6 +26,7 @@ const sites=Array.from({length:12},(_,index)=>({
 }));
 beforeEach(()=>{cleanup();apiMock.mockReset();requestedPaths.mockReset();permissionMock.mockReset();permissionMock.mockReturnValue(true);});
 const renderSites=()=>render(<MemoryRouter initialEntries={['/sites']}><Routes><Route path="/sites" element={<Sites/>}/><Route path="/sites/:siteId" element={<Sites/>}/><Route path="/sites/:siteId/:section" element={<Sites/>}/></Routes></MemoryRouter>);
+const renderSitesAt=(path:string)=>render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/sites" element={<Sites/>}/><Route path="/sites/:siteId" element={<Sites/>}/><Route path="/sites/:siteId/:section" element={<Sites/>}/></Routes></MemoryRouter>);
 
 describe('Objektübersicht',()=>{
   it('filters, sorts and paginates actual site data',async()=>{
@@ -756,14 +757,17 @@ describe('Objektübersicht',()=>{
 
   it('renders concrete dashboard priority actions and hides actions without permission',async()=>{
     const priorityActions=[
-      {id:'hazard-1',site_id:'0',site_name:'Objekt 01',entity_id:'hazard-1',employee_id:null,severity:'critical' as const,category:'Gefährdungen',title:'Kritische Gefährdung: Brand',detail:'Risikoscore 20',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:'/sites/0/gefaehrdungen'},
-      {id:'qualification-1',site_id:'0',site_name:'Objekt 01',entity_id:'qualification-1',employee_id:'employee-1',severity:'medium' as const,category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen'},
+      {id:'hazard-1',site_id:'0',site_name:'Objekt 01',entity_id:'hazard-1',employee_id:null,severity:'critical' as const,category:'Gefährdungen',title:'Kritische Gefährdung: Brand',detail:'Risikoscore 20',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:'/sites/0/gefaehrdungen?hazard=hazard-1'},
+      {id:'qualification-1',site_id:'0',site_name:'Objekt 01',entity_id:'qualification-1',employee_id:'employee-1',severity:'medium' as const,category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen?qualification=qualification-1'},
     ];
     apiMock.mockImplementation(async(path:string)=>path==='/sites'?{sites:[],metrics:{total_sites:1,active_sites:1,preparation_sites:0,restricted_sites:0,critical_sites:1},priorityActions}:[]);
     renderSites();
     const actions=await screen.findByRole('region',{name:'Dringende Aufgaben in allen Objekten'});
-    expect(within(actions).getByRole('link',{name:'Kritische Gefährdung: Brand'}).getAttribute('href')).toBe('/sites/0/gefaehrdungen');
-    expect(within(actions).getByRole('link',{name:'Qualifikation prüfen: Mia Guard'}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
+    expect(within(actions).getByRole('link',{name:'Kritische Gefährdung: Brand'}).getAttribute('href')).toBe('/sites/0/gefaehrdungen?hazard=hazard-1');
+    expect(within(actions).getByRole('link',{name:'Qualifikation prüfen: Mia Guard'}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen?qualification=qualification-1');
+    expect(within(actions).getByText('A – Sofort handeln')).toBeTruthy();
+    expect(within(actions).getByText('B – Zeitnah bearbeiten')).toBeTruthy();
+    expect(within(actions).getByText('C – Objektinformationen')).toBeTruthy();
     expect(actions.textContent).toContain('Kritisch');
     expect(actions.textContent).toContain('Objekt 01');
     expect(actions.textContent).toContain('fällig 24.11.2026');
@@ -837,5 +841,38 @@ describe('Objektübersicht',()=>{
     const restrictedList=restricted.parentElement!.querySelector('ol')!;
     expect(within(restrictedList as HTMLElement).queryByRole('link',{name:'Wartungsauftrag öffnen'})).toBeNull();
     expect(within(restrictedList as HTMLElement).getAllByText('Kein direkter Datensatzlink').length).toBe(2);
+  });
+
+  it('opens the exact record from a concrete chronicle link and highlights it',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],
+      hazards:[{id:'hazard-1',title:'Brandlast Lager',description:'Prüfung der Löschmittel',category:'fire',status:'open',risk_score:20,location_name:'Lager',due_on:'2026-12-01',measures:[]}],
+      instructions:[],journal:[],staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,
+      documents:[],documentRequirements:[],alarms:[],incidents:[],customerTasks:[],maintenance:[],
+      maintenanceOrders:[],devices:[],qualifications:[],handovers:[],priorityActions:[],
+    };
+    const events=[{id:'event-1',site_id:'0',occurred_at:'2026-11-25T12:00:00Z',event_kind:'site.hazard.created',entity_type:'object_hazard',entity_id:'hazard-1',category:'Gefährdungen',summary:'Gefährdung erfasst',details:{},actor_user_id:null,actor_email:null,actor_employee_name:null,source_table:'audit_events',link:{target:'/sites/0/gefaehrdungen?hazard=hazard-1',label:'Gefährdung öffnen',permission:'sites:read',record_id:'hazard-1',record_available:true}}];
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events}:context);
+    renderSitesAt('/sites/0/gefaehrdungen?hazard=hazard-1');
+    const focus=await screen.findByRole('region',{name:'Geöffneter Datensatz'});
+    expect(within(focus).getByRole('heading',{name:'Brandlast Lager'})).toBeTruthy();
+    expect(document.querySelector('.object-record-highlight')?.textContent).toContain('Brandlast Lager');
+    fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
+    const chronicleLink=await screen.findByRole('link',{name:'Gefährdung öffnen'});
+    expect(chronicleLink.getAttribute('href')).toBe('/sites/0/gefaehrdungen?hazard=hazard-1');
+  });
+
+  it('shows a safe fallback when a focused record is no longer available',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],
+      staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:[],documentRequirements:[],
+      alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],devices:[],
+      qualifications:[],handovers:[],priorityActions:[],
+    };
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events:[]}:context);
+    renderSitesAt('/sites/0/gefaehrdungen?hazard=deleted-record');
+    const focus=await screen.findByRole('region',{name:'Geöffneter Datensatz'});
+    expect(within(focus).getByRole('heading',{name:'Verknüpfter Datensatz nicht verfügbar'})).toBeTruthy();
+    expect(within(focus).getByText(/gelöscht oder ist für Ihren Berechtigungsumfang nicht freigegeben/)).toBeTruthy();
   });
 });

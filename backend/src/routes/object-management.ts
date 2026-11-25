@@ -31,9 +31,12 @@ type EnrichedQualification=QualificationRow&{
 };
 type PriorityAction={
   id:string;site_id?:string|null;site_name?:string|null;entity_id?:string|null;employee_id?:string|null;
-  severity:'critical'|'high'|'medium';category:string;title:string;detail:string;
+  severity:'critical'|'high'|'medium';priority:'A'|'B'|'C';category:string;title:string;detail:string;
   due_on:string|null;tab:string;permission:string;target:string;
 };
+function priorityForSeverity(severity:PriorityAction['severity']):PriorityAction['priority']{
+  return severity==='critical'?'A':severity==='high'?'B':'C';
+}
 
 const evidenceLabels:Record<string,string>={
   gueltig:'Nachweis gültig',lauf_bald_ab:'Nachweis läuft bald ab',
@@ -548,8 +551,17 @@ objectManagementRouter.get(
               OR q.valid_until<=CURRENT_DATE+INTERVAL '90 days' OR q.document_id IS NULL)
         )
         SELECT a.*,s.name AS site_name,
-          CASE WHEN a.employee_id IS NOT NULL
-            THEN '/employees/'||a.employee_id||'/qualifikationen'
+          CASE WHEN a.severity='critical' THEN 'A' WHEN a.severity='high' THEN 'B' ELSE 'C' END AS priority,
+          CASE
+            WHEN a.employee_id IS NOT NULL THEN '/employees/'||a.employee_id||'/qualifikationen?qualification='||a.entity_id
+            WHEN a.tab='gefaehrdungen' AND a.category='Maßnahmen' THEN '/sites/'||a.site_id||'/gefaehrdungen?measure='||a.entity_id
+            WHEN a.tab='gefaehrdungen' THEN '/sites/'||a.site_id||'/gefaehrdungen?hazard='||a.entity_id
+            WHEN a.tab='anweisungen' THEN '/sites/'||a.site_id||'/anweisungen?instruction='||a.entity_id
+            WHEN a.tab='dokumente' AND a.title LIKE 'Pflichtdokument%' THEN '/sites/'||a.site_id||'/dokumente?requirement='||a.entity_id
+            WHEN a.tab='dokumente' THEN '/sites/'||a.site_id||'/dokumente?document='||a.entity_id
+            WHEN a.tab='technik' THEN '/sites/'||a.site_id||'/technik?maintenance_order='||a.entity_id
+            WHEN a.tab='aufgaben' THEN '/sites/'||a.site_id||'/aufgaben?task='||a.entity_id
+            WHEN a.tab='dienstplanung' THEN '/sites/'||a.site_id||'/dienstplanung?shift='||a.entity_id
             ELSE '/sites/'||a.site_id||'/'||a.tab END AS target
         FROM action_source a
         JOIN sites s ON s.tenant_id=$1 AND s.id=a.site_id
@@ -559,7 +571,7 @@ objectManagementRouter.get(
         [user.tenantId,visibleSiteIds,watchbookSiteIds,documentSiteIds,deviceSiteIds,taskSiteIds,scheduleSiteIds,
           qualificationSiteIds,employeeSiteIds.filter(siteId=>watchbookSiteIds.includes(siteId))],
       )).rows;
-      res.json({sites,metrics,priorityActions:sortPriorityActions(priorityActions)});
+      res.json({sites,metrics,priorityActions:sortPriorityActions(priorityActions).map(action=>({...action,priority:action.priority??priorityForSeverity(action.severity)}))});
     }catch(error){next(error);}
   },
 );
@@ -1044,102 +1056,106 @@ objectManagementRouter.get(
         if(value===null||value===undefined||value==='')return null;
         return value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);
       };
-      const sectionTarget=(tab:string)=>`/sites/${id}/${tab}`;
+      const sectionTarget=(tab:string,param?:string,recordId?:string|null)=>`/sites/${id}/${tab}${param&&recordId?`?${param}=${recordId}`:''}`;
+      const action=(input:Omit<PriorityAction,'priority'>):PriorityAction=>({...input,priority:priorityForSeverity(input.severity)});
       const actions:PriorityAction[]=[];
       for(const hazard of hazards??[]){
-        if(hazard.status==='open'&&hazard.risk_score>=15)actions.push({
+        if(hazard.status==='open'&&hazard.risk_score>=15)actions.push(action({
           id:`hazard-${hazard.id}`,site_id:id,entity_id:hazard.id,
           severity:hazard.risk_score>=20?'critical':'high',category:'Gefährdungen',
           title:`Kritische Gefährdung: ${hazard.title}`,
           detail:`Risikoscore ${hazard.risk_score}${hazard.location_name?` · ${hazard.location_name}`:''}`,
-          due_on:day(hazard.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen'),
-        });
+          due_on:day(hazard.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen','hazard',hazard.id),
+        }));
         for(const measure of hazard.measures??[]){
-          if(['open','in_progress'].includes(measure.status)&&measure.due_on&&day(measure.due_on)!<today)actions.push({
+          if(['open','in_progress'].includes(measure.status)&&measure.due_on&&day(measure.due_on)!<today)actions.push(action({
             id:`measure-${measure.id}`,site_id:id,entity_id:measure.id,severity:'high',category:'Maßnahmen',
             title:`Überfällige Maßnahme: ${measure.title}`,detail:`Gefährdung: ${hazard.title}`,
-            due_on:day(measure.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen'),
-          });
+            due_on:day(measure.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen','measure',measure.id),
+          }));
         }
       }
       for(const instruction of instructions??[]){
-        if(instruction.status==='pending_approval')actions.push({
+        const instructionTarget=sectionTarget('anweisungen','instruction',instruction.id);
+        if(instruction.status==='pending_approval')actions.push(action({
           id:`instruction-approval-${instruction.id}`,site_id:id,entity_id:instruction.id,severity:'high',category:'Dienstanweisungen',
           title:`Freigabe ausstehend: ${instruction.title}`,detail:`Version ${instruction.version}`,
-          due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:sectionTarget('anweisungen'),
-        });
-        if(instruction.status==='approved'&&instruction.valid_until&&day(instruction.valid_until)!<today)actions.push({
+          due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:instructionTarget,
+        }));
+        if(instruction.status==='approved'&&instruction.valid_until&&day(instruction.valid_until)!<today)actions.push(action({
           id:`instruction-expired-${instruction.id}`,site_id:id,entity_id:instruction.id,severity:'high',category:'Dienstanweisungen',
           title:`Dienstanweisung abgelaufen: ${instruction.title}`,detail:`Version ${instruction.version}`,
-          due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:sectionTarget('anweisungen'),
-        });
+          due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:instructionTarget,
+        }));
       }
-      for(const acknowledgement of missingAcknowledgements)actions.push({
+      for(const acknowledgement of missingAcknowledgements)actions.push(action({
         id:`acknowledgement-${acknowledgement.instruction_id}`,site_id:id,entity_id:acknowledgement.instruction_id,
         severity:'medium',category:'Dienstanweisungen',
         title:`Kenntnisnahme ausstehend: ${acknowledgement.title}`,
         detail:acknowledgement.missing_employees.map(employee=>employee.employee_name).join(', '),
-        due_on:null,tab:'anweisungen',permission:'watchbook:read',target:acknowledgement.target,
-      });
+        due_on:null,tab:'anweisungen',permission:'watchbook:read',target:sectionTarget('anweisungen','instruction',acknowledgement.instruction_id),
+      }));
       for(const requirement of documentRequirements??[]){
         if(!requirement.missing)continue;
-        actions.push({
+        actions.push(action({
           id:`requirement-${requirement.id}`,site_id:id,entity_id:requirement.id,severity:'high',category:'Dokumente',
           title:`Pflichtdokument fehlt: ${requirement.document_type}`,
           detail:requirement.responsible_employee_name??'Keine verantwortliche Person hinterlegt',
-          due_on:null,tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
-        });
+          due_on:null,tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente','requirement',requirement.id),
+        }));
       }
       for(const document of documents??[]){
-        if(document.computed_status==='abgelaufen')actions.push({
+        const documentTarget=sectionTarget('dokumente','document',document.id);
+        if(document.computed_status==='abgelaufen')actions.push(action({
           id:`document-expired-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
           title:`Dokument abgelaufen: ${document.title}`,detail:day(document.valid_until)?`Ablaufdatum ${day(document.valid_until)}`:'Ablaufdatum nicht hinterlegt',
-          due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
-        });
-        if(document.computed_status==='nicht_freigegeben')actions.push({
+          due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:documentTarget,
+        }));
+        if(document.computed_status==='nicht_freigegeben')actions.push(action({
           id:`document-unapproved-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
           title:`Dokumentfreigabe ausstehend: ${document.title}`,detail:'Freigabe und/oder verfügbare Version prüfen',
-          due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
-        });
-        if(document.review_state==='overdue')actions.push({
+          due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:documentTarget,
+        }));
+        if(document.review_state==='overdue')actions.push(action({
           id:`document-review-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
           title:`Dokumentprüfung fällig: ${document.title}`,detail:day(document.review_on)?`Prüffrist ${day(document.review_on)}`:'Prüffrist überfällig',
-          due_on:day(document.review_on),tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
-        });
+          due_on:day(document.review_on),tab:'dokumente',permission:'dms:read',target:documentTarget,
+        }));
       }
       for(const order of maintenanceOrders??[]){
         const computed=String(order.computed_status??order.status??'');
         if(!['planned','open','in_progress','overdue'].includes(computed))continue;
-        actions.push({
+        actions.push(action({
           id:`maintenance-${String(order.id)}`,site_id:id,entity_id:String(order.id),severity:computed==='overdue'?'critical':'medium',
           category:'Technik & Wartung',title:`${computed==='overdue'?'Überfälliger':'Offener'} Wartungsauftrag: ${String(order.order_number??'')}`,
           detail:`${String(order.device_name??'Gerät nicht zugeordnet')} · ${String(order.description??'')}`,
-          due_on:day(order.due_on),tab:'technik',permission:'devices:read',target:sectionTarget('technik'),
-        });
+          due_on:day(order.due_on as string|null|undefined),tab:'technik',permission:'devices:read',target:sectionTarget('technik','maintenance_order',String(order.id)),
+        }));
       }
       for(const task of customerTasks??[]){
         if(task.status!=='open'||!task.due_at||new Date(String(task.due_at)).getTime()>=now.getTime())continue;
-        actions.push({
+        actions.push(action({
           id:`task-${task.id}`,site_id:id,entity_id:task.id,severity:'high',category:'Aufgaben',
           title:`Überfällige Aufgabe: ${task.title}`,detail:`Kunde: ${task.customer_name??'unbekannt'}`,
-          due_on:day(task.due_at),tab:'aufgaben',permission:'customers:read',target:sectionTarget('aufgaben'),
-        });
+          due_on:day(task.due_at),tab:'aufgaben',permission:'customers:read',target:sectionTarget('aufgaben','task',task.id),
+        }));
       }
       for(const shift of shifts??[]){
         if(shift.period_status!=='published'||shift.assigned_count>0||new Date(String(shift.ends_at)).getTime()<now.getTime())continue;
-        actions.push({
+        actions.push(action({
           id:`shift-${shift.id}`,site_id:id,entity_id:shift.id,severity:'medium',category:'Dienstplanung',
           title:`Schicht ohne Besetzung: ${shift.role_code}`,detail:`Planung: ${shift.period_name}`,
-          due_on:day(shift.starts_at),tab:'dienstplanung',permission:'scheduling:read',target:sectionTarget('dienstplanung'),
-        });
+          due_on:day(shift.starts_at),tab:'dienstplanung',permission:'scheduling:read',target:sectionTarget('dienstplanung','shift',shift.id),
+        }));
       }
-      for(const qualification of qualificationIssues)actions.push({
+      for(const qualification of qualificationIssues)actions.push(action({
         id:`qualification-${qualification.id}`,site_id:id,entity_id:qualification.id,employee_id:qualification.employee_id,
         severity:issueSeverity[qualification.issue.code]??'medium',category:'Personal',
         title:`Qualifikation prüfen: ${qualification.employee_name} · ${qualification.qualification_name??qualification.code}`,
         detail:`${qualification.issue.detail} · ${qualification.evidence_label}`,
-        due_on:day(qualification.valid_until),tab:'personal',permission:'qualifications:read',target:qualification.employee_url,
-      });
+        due_on:day(qualification.valid_until),tab:'personal',permission:'qualifications:read',
+        target:`${qualification.employee_url}?qualification=${qualification.id}${qualification.evidence_document_id&&!['missing','not_found'].includes(qualification.evidence_status)?`&document=${qualification.evidence_document_id}`:''}`,
+      }));
       res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications:enrichedQualifications,personnelSummary,recentPersonnelChanges,handovers,devices,priorityActions:sortPriorityActions(actions,12)});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },

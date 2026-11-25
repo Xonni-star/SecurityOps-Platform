@@ -137,20 +137,21 @@ describe('object management',()=>{
         overdue_measure_count:3,available_document_count:0,last_activity:'2026-11-25T10:00:00Z',
       }]);
       if(sql.includes('WITH action_source AS'))return result([
-        {id:'task-1',site_id:site,site_name:'Headquarters',entity_id:'task-1',employee_id:null,severity:'high',category:'Aufgaben',title:'Überfällige Aufgabe: Report',detail:'Kunde: North Client',due_on:'2026-11-20',tab:'aufgaben',permission:'customers:read',target:`/sites/${site}/aufgaben`},
-        {id:'hazard-1',site_id:site,site_name:'Headquarters',entity_id:'hazard-1',employee_id:null,severity:'critical',category:'Gefährdungen',title:'Kritische Gefährdung: Fire',detail:'Risikoscore 22',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:`/sites/${site}/gefaehrdungen`},
-        {id:'qualification-1',site_id:site,site_name:'Headquarters',entity_id:'q-1',employee_id:'employee-1',severity:'medium',category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen'},
+        {id:'task-1',site_id:site,site_name:'Headquarters',entity_id:'task-1',employee_id:null,severity:'high',category:'Aufgaben',title:'Überfällige Aufgabe: Report',detail:'Kunde: North Client',due_on:'2026-11-20',tab:'aufgaben',permission:'customers:read',target:`/sites/${site}/aufgaben?task=task-1`},
+        {id:'hazard-1',site_id:site,site_name:'Headquarters',entity_id:'hazard-1',employee_id:null,severity:'critical',category:'Gefährdungen',title:'Kritische Gefährdung: Fire',detail:'Risikoscore 22',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:`/sites/${site}/gefaehrdungen?hazard=hazard-1`},
+        {id:'qualification-1',site_id:site,site_name:'Headquarters',entity_id:'q-1',employee_id:'employee-1',severity:'medium',category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen?qualification=q-1'},
       ]);
       return result([]);
     });
 
     const response=await request(app).get('/api/v1/sites/overview-dashboard').set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    expect((response.body.priorityActions as Array<{id:string;severity:string}>).map(action=>[action.id,action.severity])).toEqual([
-      ['hazard-1','critical'],['task-1','high'],['qualification-1','medium'],
+    expect((response.body.priorityActions as Array<{id:string;severity:string;priority:string}>).map(action=>[action.id,action.severity,action.priority])).toEqual([
+      ['hazard-1','critical','A'],['task-1','high','B'],['qualification-1','medium','C'],
     ]);
-    expect(response.body.priorityActions[2].target).toBe('/employees/employee-1/qualifikationen');
+    expect(response.body.priorityActions[2].target).toBe('/employees/employee-1/qualifikationen?qualification=q-1');
     const priorityCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH action_source AS'));
+    expect(priorityCall?.[0]).toContain("WHEN a.tab='gefaehrdungen' THEN '/sites/'||a.site_id||'/gefaehrdungen?hazard='||a.entity_id");
     expect(priorityCall?.[1]).toEqual([tenant,[site],[site],[site],[site],[site],[site],[site],[site]]);
   });
 
@@ -483,15 +484,15 @@ describe('object management',()=>{
         missing_employee_ids:['employee-2','employee-3'],
       })],
     }));
-    const actions=response.body.priorityActions as Array<{id:string;severity:string;target:string}>;
+    const actions=response.body.priorityActions as Array<{id:string;severity:string;priority:string;target:string}>;
     expect(actions.map(action=>action.id)).toEqual(expect.arrayContaining([
       'qualification-q-revoked','qualification-q-missing','qualification-q-expiring','acknowledgement-instruction-1',
     ]));
     expect(actions.find(action=>action.id==='qualification-q-revoked')).toEqual(expect.objectContaining({
-      severity:'critical',target:'/employees/employee-1/qualifikationen',
+      severity:'critical',priority:'A',target:'/employees/employee-1/qualifikationen?qualification=q-revoked',
     }));
     expect(actions.find(action=>action.id==='acknowledgement-instruction-1')).toEqual(expect.objectContaining({
-      severity:'medium',target:`/sites/${site}/anweisungen`,
+      severity:'medium',priority:'C',target:`/sites/${site}/anweisungen?instruction=instruction-1`,
     }));
   });
 

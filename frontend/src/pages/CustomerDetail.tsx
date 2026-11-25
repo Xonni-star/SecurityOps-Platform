@@ -1,5 +1,5 @@
 import {ChangeEvent,FormEvent,useEffect,useState} from 'react';
-import {useNavigate,useParams} from 'react-router-dom';
+import {useNavigate,useParams,useSearchParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {uuid} from '../lib/uuid';
 
@@ -33,6 +33,7 @@ function fileToBase64(file:File){
 
 export function CustomerDetail(){
   const navigate=useNavigate();
+  const [searchParams,setSearchParams]=useSearchParams();
   const {customerId,section}=useParams<{customerId:string;section?:string}>();
   const [profile,setProfile]=useState<Profile|null>(null);
   const [form,setForm]=useState<Customer|null>(null);
@@ -188,6 +189,7 @@ export function CustomerDetail(){
       <div className="employee-detail-title"><div className="employee-avatar">{customer.name.slice(0,2).toUpperCase()}</div><div><h1>{customer.name}</h1><p>{customer.customer_number||'Keine Kundennummer'} · {customer.legal_form||customer.industry||'Unternehmensprofil'}</p></div><span className={`employee-status ${customer.customer_status}`}>{statusLabels[customer.customer_status]||customer.customer_status}</span></div>
       {hasPermission('customers:write')&&<button type="button" onClick={()=>navigate(`/customers/${customer.id}/stammdaten`)}>Stammdaten bearbeiten</button>}
     </div>
+    {searchParams.get('site')&&<section className="object-record-focus" aria-label="Geöffnetes Objekt"><div><span className="object-record-focus-label">Verknüpftes Objekt</span>{profile.sites.find(site=>site.site_id===searchParams.get('site')||site.id===searchParams.get('site'))?<><h3>{profile.sites.find(site=>site.site_id===searchParams.get('site')||site.id===searchParams.get('site'))!.site_name}</h3><p>{profile.sites.find(site=>site.site_id===searchParams.get('site')||site.id===searchParams.get('site'))!.site_number||'Ohne Objektnummer'} · {profile.sites.find(site=>site.site_id===searchParams.get('site')||site.id===searchParams.get('site'))!.site_status}</p></>:<h3>Verknüpftes Objekt nicht mehr verfügbar</h3>}</div><button type="button" onClick={()=>{const next=new URLSearchParams(searchParams);next.delete('site');setSearchParams(next,{replace:true});}}>Fokus schließen</button></section>}
     <nav className="employee-tabs" aria-label="Kundenbereiche">{tabs.map(([key,label])=><button type="button" key={key} className={active===key?'active':''} onClick={()=>navigate(`/customers/${customer.id}/${key}`)}>{label}</button>)}</nav>
     <div className="employee-detail-content">
       {active==='uebersicht'&&<>
@@ -247,7 +249,7 @@ export function CustomerDetail(){
       </>}
       {active==='objekte'&&<>
         {hasPermission('customers:write')&&hasPermission('sites:read')&&<form className="customer-inline-form" onSubmit={linkSite}><label>Vorhandenes Objekt verknüpfen<select required value={siteId} onChange={event=>setSiteId(event.target.value)}><option value="">Objekt auswählen</option>{sites.filter(site=>!profile.sites.some(link=>link.site_id===site.id)).map(site=><option key={site.id} value={site.id}>{site.site_number||'–'} · {site.name}</option>)}</select></label><button type="submit">Objekt zuordnen</button></form>}
-        <div className="customer-object-grid">{profile.sites.map(site=><article key={site.site_id}><h3>{site.site_number||'Objekt'} · {site.site_name}</h3><p>{site.address||'Keine Anschrift'} · {site.site_status} · Sicherheitsstufe {site.security_classification}</p><dl><dt>Personal zugeordnet</dt><dd>{site.assigned_employees}</dd><dt>Kommende Schichten</dt><dd>{site.upcoming_shifts}</dd><dt>Offene Einsätze</dt><dd>{site.open_incidents}</dd><dt>Beziehung</dt><dd>{site.relationship_type} · {site.relationship_status}</dd></dl>{site.relationship_status==='active'&&hasPermission('customers:write')&&<button type="button" onClick={()=>void setSiteRelationshipStatus(site,'inactive')}>Beziehung beenden</button>}</article>)}</div>
+        <div className="customer-object-grid">{profile.sites.map(site=><article key={site.site_id} className={searchParams.get('site')===site.site_id||searchParams.get('site')===site.id?'object-record-highlight':''}><h3>{site.site_number||'Objekt'} · {site.site_name}</h3><p>{site.address||'Keine Anschrift'} · {site.site_status} · Sicherheitsstufe {site.security_classification}</p><dl><dt>Personal zugeordnet</dt><dd>{site.assigned_employees}</dd><dt>Kommende Schichten</dt><dd>{site.upcoming_shifts}</dd><dt>Offene Einsätze</dt><dd>{site.open_incidents}</dd><dt>Beziehung</dt><dd>{site.relationship_type} · {site.relationship_status}</dd></dl>{site.relationship_status==='active'&&hasPermission('customers:write')&&<button type="button" onClick={()=>void setSiteRelationshipStatus(site,'inactive')}>Beziehung beenden</button>}</article>)}</div>
         {profile.sites.length===0&&<p className="employee-empty">Noch keine Objekte mit diesem Kunden verknüpft.</p>}
       </>}
       {active==='vertraege'&&<>
