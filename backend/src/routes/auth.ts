@@ -6,7 +6,7 @@ function cookieOptions(req: Request){
   const secure=origin.startsWith('https://')||(forwardedProto==='https')||(!origin&&req.secure);
   return {httpOnly:true,sameSite:'lax' as const,secure,path:'/',maxAge:env.SESSION_TTL_HOURS*60*60*1000};
 }
-const loginRateLimit=rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:true,legacyHeaders:false,message:{error:'Too many login attempts'}});
+const loginRateLimit=rateLimit({windowMs:15*60*1000,limit:env.LOGIN_RATE_LIMIT_MAX,standardHeaders:true,legacyHeaders:false,message:{error:'Too many login attempts'}});
 const mfaRateLimit=rateLimit({windowMs:15*60*1000,limit:5,standardHeaders:true,legacyHeaders:false,message:{error:'Too many MFA attempts'}});
 const deviceMetadata=z.object({platform:z.string().trim().min(1).max(64).optional(),app_version:z.string().trim().min(1).max(32).optional()}).strict();
 async function requireMfaSession(req:Request,res:Response,next:NextFunction){try{const sessionId=readCookie(req,SESSION_COOKIE);const pending=await getPendingSession(sessionId);if(!pending)return res.status(401).json({error:'Authentication required'});req.sessionId=sessionId;req.sessionDbId=pending.session_id;req.csrfToken=pending.csrf_token;req.user={id:pending.id,tenantId:pending.tenant_id,email:pending.email,role:pending.role,permissions:[],permissionGrants:[]};next();}catch(error){next(error);}}

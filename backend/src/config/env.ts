@@ -8,6 +8,8 @@ const schema=z.object({
   DATABASE_URL:z.string().default('postgres://securityops:securityops@localhost:5432/securityops'),
   CORS_ORIGIN:z.preprocess(value=>value===''?undefined:value,z.string().optional()),
   SESSION_TTL_HOURS:z.coerce.number().int().positive().max(168).default(8),
+  API_RATE_LIMIT_MAX:z.coerce.number().int().positive().default(120),
+  LOGIN_RATE_LIMIT_MAX:z.coerce.number().int().positive().default(10),
   LOGIN_MAX_FAILURES:z.coerce.number().int().positive().max(20).default(5),
   LOGIN_LOCK_MINUTES:z.coerce.number().int().positive().max(1440).default(15),
   PASSWORD_MIN_LENGTH:z.coerce.number().int().min(12).max(256).default(12),
