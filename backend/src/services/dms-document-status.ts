@@ -58,6 +58,7 @@ export type DocumentClassification = {
   has_available_version: boolean;
   is_approved: boolean;
   is_currently_valid: boolean;
+  is_reviewed: boolean;
 };
 
 function dayValue(value: string | Date | null | undefined): number | null {
@@ -101,6 +102,7 @@ export function classifyDocument(document: ClassifiableDocument, now = new Date(
     version => version?.lifecycle_state === ('available' satisfies DmsLifecycleState),
   );
   const isApproved = document.approval_status === 'approved';
+  const isReviewed = dayValue(document.reviewed_at) !== null;
   const from = dayValue(document.valid_from);
   const startsInFuture = from !== null && from > todayValue(now);
   const isCurrentlyValid = isApproved && hasAvailableVersion && !startsInFuture && bucket !== 'expired' && document.document_status !== 'deleted';
@@ -133,6 +135,7 @@ export function classifyDocument(document: ClassifiableDocument, now = new Date(
     has_available_version: hasAvailableVersion,
     is_approved: isApproved,
     is_currently_valid: isCurrentlyValid,
+    is_reviewed: isReviewed,
   };
 }
 
@@ -155,6 +158,13 @@ export type ClassifiedRequirement = {
   requirement_status: DocumentStatusCategory;
   status_label: string;
   matching_document_id: string | null;
+  // Present vs valid vs approved vs reviewed are deliberately separate facts.
+  has_available_version: boolean;
+  is_approved: boolean;
+  is_currently_valid: boolean;
+  is_reviewed: boolean;
+  review_state: ReviewState;
+  days_until_expiry: number | null;
 };
 
 /**
@@ -178,7 +188,20 @@ export function classifyRequirement<T extends {id: string; document_type: string
     requirement_status,
     status_label: documentStatusLabels[requirement_status],
     matching_document_id: best?.document.id ?? null,
+    has_available_version: best?.status.has_available_version ?? false,
+    is_approved: best?.status.is_approved ?? false,
+    is_currently_valid: best?.status.is_currently_valid ?? false,
+    is_reviewed: best?.status.is_reviewed ?? false,
+    review_state: best?.status.review_state ?? 'none',
+    days_until_expiry: best?.status.days_until_expiry ?? null,
   };
+}
+
+/** Single-valued counts: every document is in exactly one status category. */
+export function documentStatusCounts(documents: ClassifiableDocument[], now = new Date()): Record<DocumentStatusCategory, number> {
+  const counts = Object.fromEntries(Object.keys(documentStatusLabels).map(key => [key, 0])) as Record<DocumentStatusCategory, number>;
+  for (const document of documents) counts[classifyDocument(document, now).computed_status] += 1;
+  return counts;
 }
 
 export function documentWarningCounts(documents: ClassifiableDocument[], now = new Date()) {

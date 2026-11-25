@@ -6,6 +6,7 @@ import {MemoryRouter,Route,Routes} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
 const requestedPaths=vi.hoisted(()=>vi.fn());
+const permissionMock=vi.hoisted(()=>vi.fn((_code:string)=>true));
 vi.mock('../src/lib/api',()=>({api:(path:string,options?:RequestInit)=>{
   requestedPaths(path);
   const mockedPath=path==='/sites/overview-dashboard'?'/sites':path;
@@ -17,13 +18,13 @@ vi.mock('../src/lib/api',()=>({api:(path:string,options?:RequestInit)=>{
     const overviewSites=rows.map(site=>({...site,customer_names:null,object_manager_name:null,operations_manager_name:null,assigned_employee_count:null,active_contract_count:null,expiring_contract_count:null,open_hazard_count:0,overdue_measure_count:0,available_document_count:null,last_activity:null}));
     return {sites:overviewSites,metrics:{total_sites:rows.length,active_sites:rows.filter(site=>site.status==='active').length,preparation_sites:rows.filter(site=>site.status==='planning'||site.status==='setup').length,restricted_sites:rows.filter(site=>site.status==='restricted'||site.status==='temporarily_closed').length,critical_sites:rows.filter(site=>site.security_classification==='critical').length,open_hazards:0,overdue_measures:0,expiring_contracts:null,sites_without_available_documents:null}};
   });
-},hasPermission:()=>true}));
+},hasPermission:(code:string)=>permissionMock(code)}));
 import {Sites} from '../src/pages/Sites';
 
 const sites=Array.from({length:12},(_,index)=>({
   id:String(index),name:`Objekt ${String(index+1).padStart(2,'0')}`,site_number:`S${index+1}`,address:'Berlin',status:index===0?'active':'planning',security_classification:'unknown',
 }));
-beforeEach(()=>{cleanup();apiMock.mockReset();requestedPaths.mockReset();});
+beforeEach(()=>{cleanup();apiMock.mockReset();requestedPaths.mockReset();permissionMock.mockReset();permissionMock.mockReturnValue(true);});
 const renderSites=()=>render(<MemoryRouter initialEntries={['/sites']}><Routes><Route path="/sites" element={<Sites/>}/><Route path="/sites/:siteId" element={<Sites/>}/><Route path="/sites/:siteId/:section" element={<Sites/>}/></Routes></MemoryRouter>);
 
 describe('Objektübersicht',()=>{
@@ -414,10 +415,11 @@ describe('Objektübersicht',()=>{
     const user=userEvent.setup();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Dokumente'}));
-    fireEvent.change(screen.getByLabelText('Dokumenttitel'),{target:{value:'Fluchtplan'}});
+    const uploadForm=screen.getByRole('button',{name:'Dokument hochladen und prüfen'}).closest('form')!;
+    fireEvent.change(within(uploadForm).getByLabelText('Dokumenttitel'),{target:{value:'Fluchtplan'}});
     const file=new File(['content'],'escape-plan.pdf',{type:'application/pdf'});
     Object.defineProperty(file,'arrayBuffer',{value:async()=>new TextEncoder().encode('content').buffer});
-    const fileInput=screen.getByLabelText('Datei') as HTMLInputElement;
+    const fileInput=within(uploadForm).getByLabelText('Datei') as HTMLInputElement;
     await user.upload(fileInput,file);
     expect(fileInput.files?.[0]).toBe(file);
     fireEvent.submit(screen.getByRole('button',{name:'Dokument hochladen und prüfen'}).closest('form')!);
@@ -546,9 +548,12 @@ describe('Objektübersicht',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Zur Überarbeitung zurückgeben'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/dms/documents/document-1/return-for-revision',expect.objectContaining({method:'POST',body:JSON.stringify({reason:'Veraltet'})})));
     fireEvent.click(screen.getAllByRole('button',{name:'Metadaten bearbeiten'})[0]);
+    fireEvent.change(screen.getByLabelText('Dokumenttitel'),{target:{value:'Nur Upload'}});
+    fireEvent.change(screen.getByLabelText('Dokumenttitel bearbeiten'),{target:{value:'Korrigierter Titel'}});
     fireEvent.click(screen.getByRole('button',{name:'Metadaten speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/dms/documents/document-1',expect.objectContaining({method:'PATCH'})));
     const patch=apiMock.mock.calls.find(([path,options])=>path==='/dms/documents/document-1'&&options?.method==='PATCH')!;
+    expect(JSON.parse(patch[1].body).title).toBe('Korrigierter Titel');
     expect(JSON.parse(patch[1].body)).not.toHaveProperty('approval_status');
     prompt.mockRestore();
   });
@@ -662,5 +667,88 @@ describe('Objektübersicht',()=>{
     expect(metric('Fehlende Pflichtdokumente')).toBe('8');
     expect(metric('Offene Wartungsaufträge')).toBe('9');
     expect(metric('Überfällige Wartungsaufträge')).toBe('10');
+  });
+
+  it('keeps the object-name column as a protected navigation anchor',async()=>{
+    apiMock.mockResolvedValue(sites.slice(0,1));
+    renderSites();
+    await screen.findByRole('button',{name:'Objekt 01'});
+    const picker=screen.getByText('Spalten').closest('details')!;
+    const nameToggle=within(picker).getByLabelText('Objekt') as HTMLInputElement;
+    expect(nameToggle.checked).toBe(true);
+    fireEvent.click(nameToggle);
+    expect((within(picker).getByLabelText('Objekt') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('columnheader',{name:'Objekt'})).toBeTruthy();
+  });
+
+  it('hides object header quick actions behind their existing permissions',async()=>{
+    permissionMock.mockImplementation(code=>code==='sites:read'||code==='sites:write');
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:{
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,
+      keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,maintenanceOrders:null,
+      qualifications:null,handovers:null,devices:null,
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    expect(await screen.findByRole('button',{name:'Objekt bearbeiten'})).toBeTruthy();
+    expect(screen.queryByRole('button',{name:'Mitarbeiter zuweisen'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Aufgabe erstellen'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Dokument hinzufügen'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Vorfall erfassen'})).toBeNull();
+  });
+
+  it('reports list, detail and chronicle failures as separate error states',async()=>{
+    apiMock.mockRejectedValue(new Error('list offline'));
+    renderSites();
+    expect((await screen.findByRole('alert')).textContent).toContain('Objektübersicht konnte nicht geladen werden');
+  });
+
+  it('reports a failed object file load without hiding the overview list error channel',async()=>{
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):Promise.reject(new Error('detail offline')));
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    expect((await screen.findByRole('alert')).textContent).toContain('Objektakte konnte nicht geladen werden');
+  });
+
+  it('reports a failed chronicle load independently of the object context',async()=>{
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      if(path.startsWith('/sites/0/chronicle'))throw new Error('chronicle offline');
+      return {site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:[],documentRequirements:[],alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],qualifications:[],handovers:[],devices:[]};
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    expect((await screen.findByRole('alert')).textContent).toContain('Chronik konnte nicht geladen werden');
+  });
+
+  it('uses server-derived document, personnel and maintenance evidence and renders chronicle links',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],
+      staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:[],
+      documentStatusCounts:{gueltig:8,lauf_bald_ab:0,bald_pruefpflichtig:1,abgelaufen:2,fehlend:1,nicht_freigegeben:1,pruefung_ausstehend:1,noch_nicht_gueltig:0},
+      documentWarningCounts:{expired:2,within_7_days:3,within_8_30_days:4,within_31_60_days:1,beyond_60_days:0,no_expiry:5},
+      documentRequirements:[],
+      alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],
+      maintenanceStatusCounts:{planned:1,open:2,in_progress:3,overdue:1,completed:4,cancelled:0},
+      qualifications:[],
+      personnelSummary:{assigned_employee_count:4,expiring_qualification_count:1,invalid_qualification_count:0,expiring_qualifications:[{employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',qualification_name:'Erste Hilfe',days_until_expiry:12}],pending_acknowledgement_count:1,missing_acknowledgements:[{instruction_id:'instruction-1',title:'Evacuation',version:2,missing_employee_ids:['employee-2'],missing_employees:[{employee_id:'employee-2',employee_name:'Leo Guard'}]}]},
+      recentPersonnelChanges:[{occurred_at:'2026-11-25T10:00:00Z',event_type:'employee.object_assignment.created',entity_id:'assignment-1',employee_id:'employee-2',employee_name:'Leo Guard',actor_email:'admin@example.test',details:{}}],
+      handovers:[],devices:[],
+    };
+    const events=[{id:'event-1',site_id:'0',occurred_at:'2026-11-25T12:00:00Z',event_kind:'maintenance_order.completed',entity_type:'maintenance_order',entity_id:'order-1',category:'Technik & Wartung',summary:'Wartung abgeschlossen',details:{},actor_user_id:null,actor_email:null,actor_employee_name:null,source_table:'audit_events',link:{target:'/sites/0/technik',label:'Wartungsauftrag öffnen',permission:'devices:read'}}];
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    expect(await screen.findByText(/Bald ablaufende Qualifikationen: 1/)).toBeTruthy();
+    expect(screen.getByText(/Ausstehende Dienstanweisungs-Kenntnisnahmen: 1/)).toBeTruthy();
+    expect(screen.getByText(/Geplant 1 · offen 2 · in Bearbeitung 3/)).toBeTruthy();
+    expect(await screen.findByRole('heading',{name:'Personalüberblick'})).toBeTruthy();
+    expect(screen.getByText(/Erste Hilfe/)).toBeTruthy();
+    expect(screen.getAllByText(/Leo Guard/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/employee.object_assignment.created/)).toBeTruthy();
+    expect(screen.getByRole('link',{name:'Wartungsauftrag öffnen'}).getAttribute('href')).toBe('/sites/0/technik');
+    fireEvent.click(screen.getByRole('button',{name:'Journal'}));
+    expect(await screen.findByRole('link',{name:'Wartungsauftrag öffnen'})).toBeTruthy();
   });
 });

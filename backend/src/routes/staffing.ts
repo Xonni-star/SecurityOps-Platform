@@ -1,18 +1,11 @@
-import {Router,type RequestHandler} from 'express';
+import {Router} from 'express';
 import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requirePermission} from '../middleware/auth.js';
+import {createSitePermissionReader} from '../services/site-permissions.js';
 import {evaluateShiftEligibility,type AbsenceRecord,type AvailabilityRecord,type EligibilityInput,type InstructionRecord,type QualificationRecord} from '../services/staffing-eligibility.js';
-import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
-
-function canRead(req:Parameters<RequestHandler>[0],permission:string,siteId:string){
-  const user=req.user!;
-  const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
-  const scope=effectivePermissionScope(grants,permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-  return scope!==null&&canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId});
-}
 
 export const staffingRouter=Router();
 
@@ -21,7 +14,8 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
   try{
     const siteId=uuid.parse(String(req.params.id));
     const shiftId=uuid.parse(String(req.params.shiftId));
-    if(!canRead(req,'scheduling:read',siteId)||!canRead(req,'employees:read',siteId)||!canRead(req,'qualifications:read',siteId)){
+    const canRead=createSitePermissionReader(req);
+    if(!await canRead('scheduling:read',siteId)||!await canRead('employees:read',siteId)||!await canRead('qualifications:read',siteId)){
       return res.status(403).json({error:'Insufficient permissions for this site'});
     }
     const tenantId=req.user!.tenantId;

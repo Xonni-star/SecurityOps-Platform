@@ -3,7 +3,7 @@ import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
-import {classifyDocument,classifyRequirement} from '../services/dms-document-status.js';
+import {classifyDocument,classifyRequirement,documentStatusCounts,documentWarningCounts} from '../services/dms-document-status.js';
 import {withMaintenanceStatus} from '../services/maintenance-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
@@ -557,7 +557,8 @@ objectManagementRouter.get(
       const canReadCustomerDocuments=canReadTenantData('customer_documents:read');
       const documents=canReadDocuments?(await query<ClassifiedObjectDocumentRow>(
         `SELECT d.id,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
-          d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,d.approval_status,d.location_id,
+          d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,
+          d.reviewed_at,d.approved_by,d.approved_at,d.approval_status,d.location_id,
           COALESCE(json_agg(json_build_object(
             'id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,
             'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until
@@ -631,7 +632,9 @@ objectManagementRouter.get(
             WHEN q.valid_until IS NULL THEN 'valid'
             WHEN q.valid_until<CURRENT_DATE THEN 'expired'
             WHEN q.valid_until<=CURRENT_DATE+INTERVAL '90 days' THEN 'expiring'
-            ELSE 'valid' END AS computed_status
+            ELSE 'valid' END AS computed_status,
+           CASE WHEN q.status IN ('revoked','invalid') OR q.valid_until IS NULL THEN NULL
+             ELSE (q.valid_until::date - CURRENT_DATE)::int END AS days_until_expiry
          FROM employee_qualifications q
          JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
          LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
@@ -673,11 +676,12 @@ objectManagementRouter.get(
       )).rows:[];
       const maintenanceOrders=canReadSiteData('devices:read')?(await query(
         `SELECT o.*,d.name AS device_name,d.asset_number,e.name AS responsible_employee_name,
-          COALESCE(json_agg(json_build_object('id',link.id,'document_id',link.document_id) ORDER BY link.created_at) FILTER (WHERE link.id IS NOT NULL),'[]') AS documents
+          COALESCE(json_agg(json_build_object('id',link.id,'document_id',link.document_id,'document_title',ld.title,'document_status',ld.document_status) ORDER BY link.created_at) FILTER (WHERE link.id IS NOT NULL),'[]') AS documents
          FROM maintenance_orders o
          LEFT JOIN devices d ON d.tenant_id=o.tenant_id AND d.id=o.device_id AND d.device_kind='operational'
          LEFT JOIN employees e ON e.tenant_id=o.tenant_id AND e.id=o.responsible_employee_id
          LEFT JOIN maintenance_order_documents link ON link.tenant_id=o.tenant_id AND link.order_id=o.id
+         LEFT JOIN dms_documents ld ON ld.tenant_id=link.tenant_id AND ld.id=link.document_id
          WHERE o.tenant_id=$1 AND o.site_id=$2
          GROUP BY o.id,d.name,d.asset_number,e.name
          ORDER BY o.due_on ASC NULLS LAST,o.created_at DESC LIMIT 50`,
@@ -687,7 +691,59 @@ objectManagementRouter.get(
         ...row,
         ...classifyRequirement(row,(documents??[]).filter(document=>document.document_type===row.document_type)),
       })):null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,qualifications,handovers,devices});
+      // One general personnel overview, explicitly distinct from the binding
+      // per-shift verdict delivered by the staffing module.
+      const expiringQualifications=(qualifications??[]).filter(qualification=>qualification.computed_status==='expiring');
+      const invalidQualifications=(qualifications??[]).filter(qualification=>['expired','revoked','invalid'].includes(qualification.computed_status));
+      const staffIds=new Set((staffing??[]).map(assignment=>assignment.employee_id as string));
+      const missingAcknowledgements=(instructions??[]).flatMap(instruction=>{
+        if(instruction.status!=='approved'||instruction.requires_acknowledgement!==true)return [];
+        const acknowledged=new Set((instruction.acknowledgements??[]).map((acknowledgement:{employee_id:string})=>acknowledgement.employee_id));
+        const missing=(staffing??[]).filter(assignment=>staffIds.has(assignment.employee_id)&&!acknowledged.has(assignment.employee_id));
+        return missing.length?[{
+          instruction_id:instruction.id,title:instruction.title,version:instruction.version,
+          missing_employee_ids:missing.map(assignment=>assignment.employee_id),
+          missing_employees:missing.map(assignment=>({employee_id:assignment.employee_id,employee_name:assignment.employee_name})),
+        }]:[];
+      });
+      const personnelSummary=canReadStaffing?{
+        assigned_employee_count:staffIds.size,
+        expiring_qualification_count:expiringQualifications.length,
+        invalid_qualification_count:invalidQualifications.length,
+        expiring_qualifications:expiringQualifications.map(qualification=>({
+          employee_id:qualification.employee_id,employee_name:qualification.employee_name,
+          code:qualification.code,qualification_name:qualification.qualification_name,
+          days_until_expiry:qualification.days_until_expiry,
+        })),
+        pending_acknowledgement_count:missingAcknowledgements.length,
+        missing_acknowledgements:missingAcknowledgements,
+      }:null;
+      const recentPersonnelChanges=canReadStaffing?(await query(
+        `SELECT a.created_at AS occurred_at,a.event_type,a.entity_id,
+           NULLIF(a.details->>'employee_id','') AS employee_id,
+           e.name AS employee_name,u.email AS actor_email,a.details
+          FROM audit_events a
+          LEFT JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=NULLIF(a.details->>'employee_id','')::uuid
+          LEFT JOIN users u ON u.tenant_id=a.tenant_id AND u.id=a.actor_user_id
+          WHERE a.tenant_id=$1
+            AND (a.details->>'site_id'=$3 OR EXISTS (
+              SELECT 1 FROM employee_object_assignments oa
+              WHERE oa.tenant_id=a.tenant_id AND oa.site_id=$2
+                AND oa.employee_id::text=a.details->>'employee_id'))
+            AND a.event_type IN ('employee.object_assignment.created','employee.object_assignment.ended',
+              'employee.profile.updated','employee.absence.created','employee.absence.updated',
+              'employee.absence.cancelled','qualification.employee.updated','qualification.employee.deleted')
+          ORDER BY a.created_at DESC LIMIT 20`,
+        [user.tenantId,id,id],
+      )).rows:null;
+      const statusCounts=documents?documentStatusCounts(documents):null;
+      const warningCounts=documents?documentWarningCounts(documents):null;
+      const maintenanceStatusCounts=maintenanceOrders?maintenanceOrders.reduce<Record<string,number>>((counts,order)=>{
+        const computed=withMaintenanceStatus(order).computed_status;
+        counts[computed]=(counts[computed]??0)+1;
+        return counts;
+      },{planned:0,open:0,in_progress:0,overdue:0,completed:0,cancelled:0}):null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications,personnelSummary,recentPersonnelChanges,handovers,devices});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );

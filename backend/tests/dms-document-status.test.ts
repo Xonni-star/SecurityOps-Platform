@@ -2,6 +2,7 @@ import {describe,expect,it} from '@jest/globals';
 import {
   classifyDocument,
   classifyRequirement,
+  documentStatusCounts,
   documentWarningCounts,
   expiryBucket,
   type ClassifiableDocument,
@@ -72,6 +73,60 @@ describe('DMS document status classification', () => {
     expect(result.requirement_status).toBe('gueltig');
     expect(result.matching_document_id).toBe('valid-doc');
     expect(classifyRequirement(requirement, [], now)).toMatchObject({missing: true, requirement_status: 'fehlend'});
+  });
+
+  it('keeps reviewed, approved and valid as separate facts', () => {
+    const reviewed = classifyDocument(document({review_on: day(-5), reviewed_at: day(-4)}), now);
+    expect(reviewed.review_state).toBe('none');
+    expect(reviewed.computed_status).toBe('gueltig');
+    expect(reviewed.is_reviewed).toBe(true);
+    expect(reviewed.is_approved).toBe(true);
+    expect(reviewed.is_currently_valid).toBe(true);
+
+    const unreviewed = classifyDocument(document({review_on: day(-5)}), now);
+    expect(unreviewed.review_state).toBe('overdue');
+    expect(unreviewed.computed_status).toBe('pruefung_ausstehend');
+    expect(unreviewed.is_reviewed).toBe(false);
+  });
+
+  it('exposes requirement details instead of collapsing them into one status', () => {
+    const requirement = {id: 'requirement-2', document_type: 'Notfallplan', required: true};
+    const result = classifyRequirement(
+      requirement,
+      [{id: 'draft-doc', ...document({approval_status: 'draft', valid_until: day(4)})}],
+      now,
+    );
+    expect(result).toMatchObject({
+      missing: false,
+      has_available_version: true,
+      is_approved: false,
+      is_currently_valid: false,
+      is_reviewed: false,
+      review_state: 'none',
+      days_until_expiry: 4,
+    });
+    expect(classifyRequirement(requirement, [], now)).toMatchObject({
+      missing: true,
+      has_available_version: false,
+      is_approved: false,
+      is_currently_valid: false,
+      is_reviewed: false,
+    });
+  });
+
+  it('counts each document in exactly one status category', () => {
+    const documents = [
+      document(),
+      document({valid_until: day(3)}),
+      document({review_on: day(-1)}),
+      document({approval_status: 'draft'}),
+      document({valid_until: day(-1)}),
+    ];
+    expect(documentStatusCounts(documents, now)).toEqual({
+      gueltig: 1, lauf_bald_ab: 1, bald_pruefpflichtig: 0, abgelaufen: 1,
+      fehlend: 0, nicht_freigegeben: 1, pruefung_ausstehend: 1, noch_nicht_gueltig: 0,
+    });
+    expect(Object.values(documentStatusCounts(documents, now)).reduce((sum, value) => sum + value, 0)).toBe(documents.length);
   });
 
   it('counts warnings without double counting a document', () => {
