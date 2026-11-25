@@ -195,6 +195,44 @@ describe('Objektübersicht',()=>{
     expect(screen.getByRole('button',{name:'Dokument hochladen und prüfen'})).toBeTruthy();
   });
 
+  it('issues and returns site keys through the existing idempotent key APIs',async()=>{
+    const employee={id:'employee-1',name:'Mia Guard'};
+    let keyStatus='available';
+    const context=()=>({
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,
+      staffing:[{id:'assignment-1',employee_id:employee.id,employee_name:employee.name,assignment_type:'operational',role:'Objektschutz',starts_on:'2026-01-01',ends_on:null,primary_assignment:true,notes:null}],
+      shifts:null,patrols:null,
+      keys:{items:[{id:'key-1',key_code:'K-01',label:'Main entrance',key_type:'physical',status:keyStatus,holder_user_id:null,holder_employee_id:keyStatus==='issued'?employee.id:null,issued_at:null,returned_at:null,lost_at:null,deactivated_at:null}],recentMovements:[]},
+      keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    });
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers')return [];
+      if(path==='/employees')return [employee];
+      if(path==='/keys/key-1/issue'){keyStatus='issued';return {};}
+      if(path==='/keys/key-1/return'){keyStatus='available';return {};}
+      return context();
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Schlüssel & Zutritt'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Ausgabe vorbereiten'}));
+    fireEvent.change(screen.getByLabelText('Schlüsselhalter'),{target:{value:employee.id}});
+    fireEvent.change(screen.getByLabelText('Grund'),{target:{value:'Night shift access'}});
+    fireEvent.click(screen.getByRole('button',{name:'Schlüssel ausgeben'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/keys/key-1/issue',expect.objectContaining({method:'POST'})));
+    const issue=apiMock.mock.calls.find(([path])=>path==='/keys/key-1/issue')!;
+    expect(JSON.parse(issue[1].body)).toEqual(expect.objectContaining({holder_user_id:null,holder_employee_id:employee.id,reason:'Night shift access'}));
+    expect(JSON.parse(issue[1].body).client_mutation_id).toMatch(/^[0-9a-f-]{36}$/i);
+    fireEvent.click(await screen.findByRole('button',{name:'Rückgabe erfassen'}));
+    fireEvent.change(screen.getByLabelText('Grund'),{target:{value:'End of shift'}});
+    fireEvent.click(screen.getByRole('button',{name:'Rückgabe bestätigen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/keys/key-1/return',expect.objectContaining({method:'POST'})));
+    const returned=apiMock.mock.calls.find(([path])=>path==='/keys/key-1/return')!;
+    expect(JSON.parse(returned[1].body)).toEqual(expect.objectContaining({reason:'End of shift'}));
+    expect(JSON.parse(returned[1].body).client_mutation_id).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
   it('explains inaccessible key and DMS sections',async()=>{
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/sites')return sites.slice(0,1);

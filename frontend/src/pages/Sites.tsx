@@ -23,6 +23,7 @@ type EmployeeQualification={id:string;employee_id:string;employee_name:string;co
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
 type ObjectHazard={id:string;title:string;category:string;description:string;likelihood:number;impact:number;risk_score:number;protective_measures:string|null;required_actions:string|null;responsible_employee_id:string|null;due_on:string|null;review_on:string|null;status:string;location_id:string|null;location_name:string|null;responsible_employee_name:string|null};
+type KeyAction={keyId:string;action:'issue'|'return'};
 type Context={
   site:Site&{object_manager_name?:string|null;operations_manager_name?:string|null};
   customers:{customer_id:string;customer_name:string;relationship_type:string;relationship_status:string}[]|null;
@@ -97,6 +98,9 @@ export function Sites(){
   const [taskDue,setTaskDue]=useState('');
   const [taskAssignee,setTaskAssignee]=useState('');
   const [assignmentForm,setAssignmentForm]=useState({employee_id:'',assignment_type:'operational',role:'',starts_on:'',ends_on:'',notes:'',reason:''});
+  const [keyAction,setKeyAction]=useState<KeyAction|null>(null);
+  const [keyHolderEmployeeId,setKeyHolderEmployeeId]=useState('');
+  const [keyActionReason,setKeyActionReason]=useState('');
   const [details,setDetails]=useState({alias:'',site_type:'',description:'',object_manager_employee_id:'',operations_manager_employee_id:''});
   const writable=hasPermission('sites:write');
 
@@ -249,6 +253,17 @@ export function Sites(){
       await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
+  async function saveKeyAction(event:FormEvent){
+    event.preventDefault();if(!selected||!keyAction)return;
+    try{
+      const body={client_mutation_id:uuid(),reason:keyActionReason.trim()||null};
+      if(keyAction.action==='issue'){
+        if(!keyHolderEmployeeId)throw new Error('Bitte eine zugeordnete Mitarbeiterin oder einen zugeordneten Mitarbeiter auswählen.');
+        await api(`/keys/${keyAction.keyId}/issue`,{method:'POST',body:JSON.stringify({...body,holder_user_id:null,holder_employee_id:keyHolderEmployeeId})});
+      }else await api(`/keys/${keyAction.keyId}/return`,{method:'POST',body:JSON.stringify(body)});
+      setKeyAction(null);setKeyHolderEmployeeId('');setKeyActionReason('');await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
   const filtered=sites.filter(site=>(statusFilter==='all'||site.status===statusFilter)&&`${site.name} ${site.site_number??''} ${site.address??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const sorted=[...filtered].sort((a,b)=>String(a[sortKey]??'').localeCompare(String(b[sortKey]??''),'de')*(descending?-1:1));
   const pages=Math.max(1,Math.ceil(sorted.length/10));
@@ -257,6 +272,7 @@ export function Sites(){
   const selectedCustomers=selected?.customers??[];
   const selectedContracts=selected?.contracts??[];
   const assignableEmployees=employees.filter(employee=>!selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
+  const siteAssignedEmployees=employees.filter(employee=>selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
 
   return <section className="employee-management">
     {error&&<p role="alert" className="error">{error}</p>}
@@ -370,7 +386,16 @@ export function Sites(){
       </div>}
       {active==='schluessel'&&<div className="employee-detail-content">
       <h3>Schlüsselbestand</h3>
-      {selected.keys===null?<p>Keine Berechtigung für Schlüssel.</p>:selected.keys.items.length===0?<p>Keine Schlüssel für dieses Objekt erfasst.</p>:<ul>{selected.keys.items.map(key=><li key={key.id}><strong>{key.label}</strong> · {key.key_code} · {key.key_type} · {key.status==='available'?'Verfügbar':key.status==='issued'?'Ausgegeben':key.status==='lost'?'Verloren':'Deaktiviert'}{key.status==='issued'?(key.holder_employee_id?' · an Mitarbeitende ausgegeben':' · an Benutzer ausgegeben'):''}</li>)}</ul>}
+      {selected.keys===null?<p>Keine Berechtigung für Schlüssel.</p>:selected.keys.items.length===0?<p>Keine Schlüssel für dieses Objekt erfasst.</p>:<ul>{selected.keys.items.map(key=><li key={key.id}><strong>{key.label}</strong> · {key.key_code} · {key.key_type} · {key.status==='available'?'Verfügbar':key.status==='issued'?'Ausgegeben':key.status==='lost'?'Verloren':'Deaktiviert'}{key.status==='issued'?(key.holder_employee_id?' · an Mitarbeitende ausgegeben':' · an Benutzer ausgegeben'):''}
+        {key.status==='available'&&hasPermission('keys:issue')&&hasPermission('employees:read')&&siteAssignedEmployees.length>0&&<button type="button" onClick={()=>{setKeyAction({keyId:key.id,action:'issue'});setKeyHolderEmployeeId('');setKeyActionReason('');}}>Ausgabe vorbereiten</button>}
+        {key.status==='issued'&&hasPermission('keys:return')&&<button type="button" onClick={()=>{setKeyAction({keyId:key.id,action:'return'});setKeyActionReason('');}}>Rückgabe erfassen</button>}
+        {keyAction?.keyId===key.id&&<form onSubmit={saveKeyAction}>
+          <label>Grund<input required value={keyActionReason} onChange={event=>setKeyActionReason(event.target.value)}/></label>
+          {keyAction.action==='issue'&&<label>Schlüsselhalter<select required value={keyHolderEmployeeId} onChange={event=>setKeyHolderEmployeeId(event.target.value)}><option value="">Mitarbeitende auswählen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+          <button>{keyAction.action==='issue'?'Schlüssel ausgeben':'Rückgabe bestätigen'}</button>
+          <button type="button" onClick={()=>setKeyAction(null)}>Abbrechen</button>
+        </form>}
+      </li>)}</ul>}
       <h3>Schlüsselbunde</h3>
       {selected.keyBundles===null?<p>Keine Berechtigung für Schlüsselbunde.</p>:selected.keyBundles.length===0?<p>Keine Schlüsselbunde für dieses Objekt vorhanden.</p>:<ul>{selected.keyBundles.map(bundle=><li key={bundle.id}><strong>{bundle.name}</strong> · {bundle.status} · {bundle.item_count} Schlüssel ({bundle.issued_count} ausgegeben)</li>)}</ul>}
       <h3>Letzte Schlüsselbewegungen</h3>

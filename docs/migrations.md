@@ -199,8 +199,10 @@ document/version metadata are also projected from their owning tables. Each
 projection checks its own site-scoped permission independently; employee names
 in key movement history require `employees:read`. DMS results omit customer
 documents unless `customer_documents:read` is granted. Existing DMS upload and
-download routes remain the only file-storage flows. No key or document records
-are copied into object-specific tables.
+download routes remain the only file-storage flows. Individual key issue and
+return actions use the existing idempotent, audited key endpoints and are
+limited to employees assigned to the object in the UI. No key or document
+records are copied into object-specific tables.
 
 Site-linked alarms and incidents, active-customer follow-up tasks and the
 latest maintenance-category watchbook entries are projected with their
