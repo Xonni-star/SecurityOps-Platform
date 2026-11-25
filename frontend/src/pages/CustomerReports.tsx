@@ -4,7 +4,7 @@ import {useSearchParams} from 'react-router-dom';
 type Site={id:string;name:string};
 export function CustomerReports(){
   const [searchParams]=useSearchParams();const customerId=searchParams.get('customer_id');
-  const [sites,setSites]=useState<Site[]>([]);const [customerName,setCustomerName]=useState('');const [kind,setKind]=useState('control-walks');const [siteId,setSiteId]=useState('');const [from,setFrom]=useState('');const [to,setTo]=useState('');const [error,setError]=useState('');
+  const [sites,setSites]=useState<Site[]>([]);const [customerName,setCustomerName]=useState('');const [kind,setKind]=useState('control-walks');const [siteId,setSiteId]=useState(searchParams.get('site_id')??'');const [from,setFrom]=useState('');const [to,setTo]=useState('');const [error,setError]=useState('');
   useEffect(()=>{
     if(customerId){
       api<{customer:{name:string};sites:{site_id:string;site_name:string}[]}>(`/customers/${customerId}/profile`)

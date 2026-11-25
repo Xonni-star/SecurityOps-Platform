@@ -226,4 +226,16 @@ describe('Objektübersicht',()=>{
     expect(await screen.findByText('Night shift transfer')).toBeTruthy();
     expect(screen.getByText(/1\/2 Bestätigungen/)).toBeTruthy();
   });
+
+  it('links object report exports to the existing site-filtered report module',async()=>{
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:{
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,
+      keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Berichte'}));
+    const reportLink=await screen.findByRole('link',{name:'Berichte für dieses Objekt öffnen'});
+    expect(reportLink.getAttribute('href')).toBe('/customer-reports?site_id=0');
+  });
 });

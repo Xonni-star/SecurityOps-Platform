@@ -46,7 +46,7 @@ const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',act
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
 const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown'};
 type SiteForm=typeof emptySite;
-const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['qualifikationen','Qualifikationen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['einsaetze','Einsätze & Alarme'],['aufgaben','Aufgaben & Wartung'],['uebergaben','Übergaben'],['journal','Journal']] as const;
+const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['qualifikationen','Qualifikationen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['einsaetze','Einsätze & Alarme'],['berichte','Berichte'],['aufgaben','Aufgaben & Wartung'],['uebergaben','Übergaben'],['journal','Journal']] as const;
 
 function toBase64(file:File){
   return file.arrayBuffer().then(bytes=>{
@@ -313,6 +313,10 @@ export function Sites(){
       <h3>Einsätze</h3>
       {selected.incidents===null?<p>Keine Berechtigung für Einsätze.</p>:selected.incidents.length===0?<p>Keine Einsätze für dieses Objekt vorhanden.</p>:<ul>{selected.incidents.map(incident=><li key={incident.id}><strong>{incident.priority_name??'Einsatz'}</strong> · {incident.status} · {new Date(incident.created_at).toLocaleString('de-DE')} · {incident.assignees.length?incident.assignees.map(assignee=>assignee.name).join(', '):incident.assigned_count?`${incident.assigned_count} zugewiesen`:'Keine Zuweisung'}<p>{incident.description}</p></li>)}</ul>}
       {hasPermission('incidents:read')&&<button type="button" onClick={()=>navigate('/incidents')}>Einsatzverwaltung öffnen</button>}
+      </div>}
+      {active==='berichte'&&<div className="employee-detail-content">
+      <h3>Objektbezogene Berichte und Nachweise</h3>
+      {(hasPermission('customer_reports:export')||hasPermission('customer_portal:read'))?<><p>Die bestehende Berichtsfunktion kann Kontrollgänge, Wachbuch, Alarme oder Einsätze für dieses Objekt auswerten.</p><a href={`/customer-reports?site_id=${encodeURIComponent(selected.site.id)}`}>Berichte für dieses Objekt öffnen</a></>:<p>Keine Berechtigung für objektbezogene Berichte.</p>}
       </div>}
       {active==='aufgaben'&&<div className="employee-detail-content">
       <h3>Kundenaufgaben und Wiedervorlagen</h3>

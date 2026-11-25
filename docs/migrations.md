@@ -210,6 +210,11 @@ participant confirmation counts under `handover:read`; event and confirmation
 history remain in the dedicated handover module. No migration or secondary
 record store was needed.
 
+Object reports link to the existing audited report-export UI with the current
+site preselected. That module retains its existing site authorization, date
+filters, report types and CSV/PDF generation; no duplicate report store or
+export endpoint was added.
+
 Remaining gaps include any site-specific maintenance workflow beyond existing
 watchbook evidence.
 Offline evidence and conflict handling remain governed by the existing sync

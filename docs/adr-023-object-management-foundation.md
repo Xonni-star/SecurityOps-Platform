@@ -28,6 +28,8 @@ Site-verknüpfte Alarme und Einsätze werden unabhängig mit `alarms:read` und `
 
 Qualifikationen werden nur für aktuell oder zukünftig dem Objekt zugeordnete Mitarbeitende und nur bei gleichzeitiger Freigabe durch `employees:read` und `qualifications:read` gezeigt. Übergaben verwenden die bestehende `handover:read`-Site-Berechtigung; die Objektakte zeigt Status und Bestätigungszähler, während unveränderbare Ereignisdetails im bestehenden Übergabemodul verbleiben.
 
+Der Berichte-Unterpunkt verlinkt auf den vorhandenen auditierten Exportbereich und übergibt die aktuelle Site als Filter. Exporttypen, Datumsfilter, Berechtigungsprüfung und CSV-/PDF-Erzeugung verbleiben vollständig beim bestehenden Berichtsmodul.
+
 ## Risiken und Folgearbeiten
 
 Statusübergänge werden im CRUD validiert, um inkonsistente operative Zustände zu vermeiden. Schlüsselaktionen und DMS-Lebenszyklus bleiben in ihren bestehenden, separat berechtigten Modulen. Ein separates Wartungssystem existiert nicht und wird daher nicht simuliert.
