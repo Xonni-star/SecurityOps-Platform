@@ -55,7 +55,7 @@ test('customer management migration extends the CRM model with tenant-safe activ
 
 test('all repository migrations have a unique, gap-free version sequence',async()=>{
   const migrations=await loadMigrationFiles(join(process.cwd(),'migrations'));
-  expect(migrations[migrations.length-1]?.id).toBe('048_dms_document_requirements.sql');
+  expect(migrations[migrations.length-1]?.id).toBe('050_maintenance_orders.sql');
 });
 
 test('object staffing target migration adds a guarded site-level headcount',async()=>{
@@ -92,4 +92,23 @@ test('DMS document requirements migration creates a canonical per-object require
   expect(sql).toContain('CREATE TABLE IF NOT EXISTS dms_document_requirements');
   expect(sql).toContain('UNIQUE (tenant_id,site_id,document_type)');
   expect(sql).toContain('CREATE POLICY tenant_isolation');
+});
+
+test('DMS approval workflow migration stores approver identity without a parallel store',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','049_dms_approval_workflow.sql'),'utf8');
+  expect(sql).toContain('ALTER TABLE dms_documents');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS approved_by uuid');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS approved_at timestamptz');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS reviewed_at timestamptz');
+  expect(sql).not.toContain('CREATE TABLE');
+});
+
+test('maintenance workflow migration adds orders without a parallel asset table',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','050_maintenance_orders.sql'),'utf8');
+  expect(sql).toContain('CREATE TABLE IF NOT EXISTS maintenance_orders');
+  expect(sql).toContain('UNIQUE (tenant_id,order_number)');
+  expect(sql).toContain('FOREIGN KEY (tenant_id,device_id) REFERENCES devices(tenant_id,id)');
+  expect(sql).toContain('CREATE TABLE IF NOT EXISTS maintenance_order_documents');
+  expect(sql).toContain('CREATE POLICY tenant_isolation ON maintenance_orders');
+  expect(sql).not.toContain('CREATE TABLE IF NOT EXISTS assets');
 });

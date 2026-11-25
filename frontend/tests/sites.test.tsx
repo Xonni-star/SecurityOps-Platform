@@ -513,4 +513,154 @@ describe('Objektübersicht',()=>{
     const reportLink=await screen.findByRole('link',{name:'Berichte für dieses Objekt öffnen'});
     expect(reportLink.getAttribute('href')).toBe('/customer-reports?site_id=0');
   });
+
+  it('renders server-classified document statuses and sends approvals only through the workflow endpoints',async()=>{
+    const expiredDocument={
+      id:'document-1',title:'Security plan',description:null,document_status:'active',approval_status:'approved',
+      created_at:'2026-01-01T00:00:00Z',deleted_at:null,document_number:null,document_type:'Security plan',
+      responsible_employee_id:null,location_id:null,valid_from:null,valid_until:'2026-11-20',review_on:null,
+      versions:[{id:'version-1',version_no:1,size_bytes:128,content_type:'application/pdf',lifecycle_state:'available',created_at:'2026-01-01T00:00:00Z',retention_until:null}],
+      computed_status:'abgelaufen',status_label:'Abgelaufen',expiry_bucket:'expired',days_until_expiry:-5,
+      review_state:'none',is_approved:true,is_currently_valid:false,
+    };
+    const draftDocument={...expiredDocument,id:'document-2',title:'Shift plan',approval_status:'draft',computed_status:'nicht_freigegeben',status_label:'Nicht freigegeben',expiry_bucket:'no_expiry',days_until_expiry:null,is_approved:false};
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],staffing:[],shifts:[],patrols:null,
+      keys:null,keyBundles:null,documents:[expiredDocument,draftDocument],
+      documentRequirements:[{id:'requirement-1',document_type:'Security plan',required:true,responsible_employee_id:null,responsible_employee_name:null,missing:false,requirement_status:'abgelaufen',status_label:'Abgelaufen',matching_document_id:'document-1'}],
+      alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],qualifications:[],handovers:[],devices:[],
+    };
+    const prompt=vi.spyOn(window,'prompt').mockReturnValue('Veraltet');
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events:[]}:options?.method==='POST'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Dokumente'}));
+    expect((await screen.findAllByText(/Security plan/)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Abgelaufen/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/-5 Tage bis Ablauf/)).toBeTruthy();
+    expect(screen.getByText(/Nicht freigegeben/)).toBeTruthy();
+    expect(screen.queryByText(/Läuft innerhalb 30 Tage ab/)).toBeNull();
+    expect(screen.queryByRole('option',{name:'Freigegeben'})).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:'Freigabe anfordern'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/dms/documents/document-2/request-review',expect.objectContaining({method:'POST'})));
+    fireEvent.click(screen.getByRole('button',{name:'Zur Überarbeitung zurückgeben'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/dms/documents/document-1/return-for-revision',expect.objectContaining({method:'POST',body:JSON.stringify({reason:'Veraltet'})})));
+    fireEvent.click(screen.getAllByRole('button',{name:'Metadaten bearbeiten'})[0]);
+    fireEvent.click(screen.getByRole('button',{name:'Metadaten speichern'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/dms/documents/document-1',expect.objectContaining({method:'PATCH'})));
+    const patch=apiMock.mock.calls.find(([path,options])=>path==='/dms/documents/document-1'&&options?.method==='PATCH')!;
+    expect(JSON.parse(patch[1].body)).not.toHaveProperty('approval_status');
+    prompt.mockRestore();
+  });
+
+  it('creates, progresses and completes server-managed maintenance orders over existing devices',async()=>{
+    const device={id:'device-1',name:'Gate camera',asset_number:'A-1',status:'online',site_id:'0',last_seen_at:null,metadata:{},category:'Videoüberwachung',manufacturer:null,model:null,serial_number:null,location_id:null,responsible_employee_id:null,operational_status:'active',installed_on:null,commissioned_on:null,last_inspection_on:null,next_inspection_on:null,maintenance_interval_days:90,next_maintenance_on:'2026-11-01',last_maintenance_on:null,created_at:'2026-01-01T00:00:00Z',updated_at:'2026-01-01T00:00:00Z'};
+    const order={id:'order-1',site_id:'0',device_id:'device-1',device_name:'Gate camera',asset_number:'A-1',order_number:'MAIN-2026-000001',maintenance_type:'inspection',description:'Inspect camera',priority_code:'medium',due_on:'2026-11-01',status:'planned',computed_status:'overdue',status_label:'Überfällig',overdue:true,responsible_employee_id:null,responsible_employee_name:null,performed_work:null,result:null,remarks:null,next_maintenance_on:null,documents:[],created_at:'2026-01-01T00:00:00Z'};
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],staffing:[],shifts:[],patrols:null,
+      keys:null,keyBundles:null,documents:[],documentRequirements:[],alarms:[],incidents:[],customerTasks:[],maintenance:[],
+      maintenanceOrders:[order],qualifications:[],handovers:[],devices:[device],
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[]:path==='/watchbook/categories'?[{id:'maintenance-category',code:'maintenance',name:'Technik / Instandhaltung'}]:path==='/watchbook/priorities'?[{code:'medium',name:'Mittel'}]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events:[]}:options?.method==='POST'||options?.method==='PATCH'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Ausstattung & Technik'}));
+    expect(await screen.findByText(/MAIN-2026-000001/)).toBeTruthy();
+    expect(screen.getByText(/Überfällig/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Wartungsauftrag erfassen'}));
+    fireEvent.change(screen.getByLabelText('Anlage'),{target:{value:'device-1'}});
+    fireEvent.change(screen.getByLabelText('Beschreibung'),{target:{value:'Replace defective camera'}});
+    fireEvent.change(screen.getByLabelText('Fällig am'),{target:{value:'2026-12-01'}});
+    fireEvent.click(screen.getByRole('button',{name:'Auftrag anlegen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/maintenance-orders',expect.objectContaining({method:'POST'})));
+    const created=JSON.parse(apiMock.mock.calls.find(([path,options])=>path==='/sites/0/maintenance-orders'&&options?.method==='POST')![1].body);
+    expect(created).toEqual(expect.objectContaining({device_id:'device-1',description:'Replace defective camera',due_on:'2026-12-01',status:'planned'}));
+    expect(created).not.toHaveProperty('watchbook_entry_id');
+    fireEvent.click(screen.getByRole('button',{name:'In Bearbeitung nehmen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/maintenance-orders/order-1',expect.objectContaining({method:'PATCH',body:JSON.stringify({status:'in_progress'})})));
+    fireEvent.click(screen.getByRole('button',{name:'Abschließen'}));
+    fireEvent.change(screen.getByLabelText('Durchgeführte Arbeit'),{target:{value:'Camera replaced'}});
+    fireEvent.click(screen.getByRole('button',{name:'Abschluss erfassen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/maintenance-orders/order-1/complete',expect.objectContaining({method:'POST'})));
+    expect(JSON.parse(apiMock.mock.calls.find(([path])=>path==='/maintenance-orders/order-1/complete')![1].body)).toEqual(expect.objectContaining({performed_work:'Camera replaced'}));
+    fireEvent.click(screen.getAllByRole('button',{name:'Abbrechen'})[0]);
+    fireEvent.change(screen.getByLabelText('Begründung'),{target:{value:'Auftrag nicht mehr erforderlich'}});
+    fireEvent.click(screen.getByRole('button',{name:'Abbruch erfassen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/maintenance-orders/order-1/cancel',expect.objectContaining({method:'POST',body:JSON.stringify({reason:'Auftrag nicht mehr erforderlich'})})));
+  });
+
+  it('shows the authoritative shift eligibility verdict with reasons and evidence links',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],
+      staffing:[{id:'assignment-1',employee_id:'employee-1',employee_name:'Mia Guard',employee_number:null,employment_status:'active',assignment_type:'operational',role:'guard',starts_on:'2026-01-01',ends_on:null,primary_assignment:true,notes:null}],
+      shifts:[{id:'shift-1',period_id:'period-1',period_name:'November',period_status:'published',period_starts_at:'2026-11-01T00:00:00Z',period_ends_at:'2026-12-01T00:00:00Z',role_code:'night_guard',starts_at:'2026-11-25T08:00:00Z',ends_at:'2026-11-25T16:00:00Z',assigned_count:0,assignments:[]}],
+      patrols:null,keys:null,keyBundles:null,documents:null,documentRequirements:null,alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],
+      qualifications:[],handovers:[],devices:[],
+    };
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path==='/sites/0/shifts/shift-1/eligibility'?{
+      shift_id:'shift-1',site_id:'0',required_qualification_codes:['night_guard'],
+      employees:[{employee_id:'employee-1',employee_name:'Mia Guard',status:'ineligible',reasons:[{code:'missing_qualification',message:'Erforderliche Qualifikation fehlt',link:{type:'qualification',id:'qualification-1',label:'night_guard'}}],matched_qualification_codes:[],missing_qualification_codes:['night_guard']}],
+    }:path.startsWith('/sites/0/chronicle')?{site_id:'0',events:[]}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
+    expect(await screen.findByText('Nicht einsatzfähig')).toBeTruthy();
+    expect(screen.getByText(/Erforderliche Qualifikation fehlt/)).toBeTruthy();
+    expect(screen.getByRole('link',{name:/Nachweis öffnen/}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
+    expect(screen.queryByText('Einsatzfähig')).toBeNull();
+    expect(requestedPaths).toHaveBeenCalledWith('/sites/0/shifts/shift-1/eligibility');
+  });
+
+  it('filters the server chronicle and shows explicit loading and empty states',async()=>{
+    const events=[
+      {id:'event-2',site_id:'0',occurred_at:'2026-11-25T12:00:00Z',event_kind:'maintenance_order.completed',entity_type:'maintenance_order',entity_id:'order-1',category:'Technik & Wartung',summary:'Wartung abgeschlossen',details:{},actor_user_id:null,actor_email:null,actor_employee_name:null,source_table:'audit_events'},
+      {id:'event-1',site_id:'0',occurred_at:'2026-11-25T08:00:00Z',event_kind:'dms.document_uploaded',entity_type:'dms_document',entity_id:'document-1',category:'Dokumente',summary:'Dokument hochgeladen',details:{},actor_user_id:null,actor_email:'admin@example.test',actor_employee_name:null,source_table:'audit_events'},
+    ];
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],
+      journal:[{id:'entry-1',created_at:'2026-11-25T09:00:00Z',revision_no:1,content:'Shift report',status:'open',category_name:'Vorkommnis',priority_name:'Hoch'}],
+      staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:[],documentRequirements:[],alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],qualifications:[],handovers:[],devices:[],
+    };
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.includes('from=2030-01-01')?{site_id:'0',events:[]}:path.startsWith('/sites/0/chronicle?type=maintenance_order.completed')?{site_id:'0',events:[events[0]]}:path.startsWith('/sites/0/chronicle')?{site_id:'0',events}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
+    expect(await screen.findByRole('heading',{name:'Serverchronik mit Filtern'})).toBeTruthy();
+    const chronicleList=await waitFor(()=>{
+      const list=screen.getByRole('heading',{name:'Serverchronik mit Filtern'}).parentElement?.querySelector('ol');
+      if(!list)throw new Error('Chronik list not rendered');
+      return list;
+    });
+    expect(chronicleList.querySelectorAll('li')[0].textContent).toContain('Wartung abgeschlossen');
+    fireEvent.change(screen.getByLabelText('Ereignistyp filtern'),{target:{value:'maintenance_order.completed'}});
+    fireEvent.change(screen.getByLabelText('Chronik von'),{target:{value:'2026-11-25'}});
+    fireEvent.click(screen.getByRole('button',{name:'Chronik filtern'}));
+    await waitFor(()=>expect(requestedPaths).toHaveBeenCalledWith('/sites/0/chronicle?type=maintenance_order.completed&from=2026-11-25&limit=100'));
+    expect(await screen.findByText(/Wartung abgeschlossen/)).toBeTruthy();
+    expect(screen.queryByText(/Dokument hochgeladen/)).toBeNull();
+    fireEvent.change(screen.getByLabelText('Chronik von'),{target:{value:'2030-01-01'}});
+    fireEvent.click(screen.getByRole('button',{name:'Chronik filtern'}));
+    await waitFor(()=>expect(requestedPaths).toHaveBeenCalledWith('/sites/0/chronicle?type=maintenance_order.completed&from=2030-01-01&limit=100'));
+    expect(await screen.findByText('Keine Ereignisse für die gewählten Filter vorhanden.')).toBeTruthy();
+  });
+
+  it('shows real backend document and maintenance KPIs on the object overview',async()=>{
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?{sites:[],metrics:{
+      total_sites:3,active_sites:2,preparation_sites:1,restricted_sites:0,critical_sites:0,
+      sites_with_critical_hazards:0,sites_with_open_tasks:1,sites_with_understaffing:0,open_hazards:1,
+      overdue_measures:2,open_tasks:4,overdue_tasks:1,open_shifts:2,undercovered_shifts:1,expiring_contracts:1,
+      sites_without_available_documents:1,valid_documents:7,expired_documents:2,documents_expiring_7d:3,
+      documents_expiring_30d:4,documents_review_due:5,unapproved_documents:6,missing_required_documents:8,
+      open_maintenance:9,overdue_maintenance:10,
+    }}:[]);
+    renderSites();
+    await waitFor(()=>expect(screen.queryByText('Objekte werden geladen …')).toBeNull());
+    const metric=(label:string)=>screen.getByText(label).previousElementSibling?.textContent;
+    expect(metric('Gültige Dokumente')).toBe('7');
+    expect(metric('Abgelaufene Dokumente')).toBe('2');
+    expect(metric('Dokumente ≤ 7 Tage')).toBe('3');
+    expect(metric('Fehlende Pflichtdokumente')).toBe('8');
+    expect(metric('Offene Wartungsaufträge')).toBe('9');
+    expect(metric('Überfällige Wartungsaufträge')).toBe('10');
+  });
 });

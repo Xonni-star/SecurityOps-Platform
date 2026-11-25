@@ -3,7 +3,15 @@ import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
+import {classifyDocument,classifyRequirement} from '../services/dms-document-status.js';
+import {withMaintenanceStatus} from '../services/maintenance-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
+
+type ClassifiedObjectDocumentRow={
+  id:string;document_type:string|null;document_status:string|null;approval_status:string|null;
+  valid_from:string|null;valid_until:string|null;review_on:string|null;
+  versions:Array<{lifecycle_state:string|null}>|null;
+};
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
@@ -111,6 +119,7 @@ objectManagementRouter.get(
       const documentSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('dms:read',siteId));
       const watchbookSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('watchbook:read',siteId));
       const scheduleSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('scheduling:read',siteId));
+      const deviceSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('devices:read',siteId));
       const taskSiteIds=customerSiteIds;
       const hasContractRead=effectivePermissionScope(grants,'contracts:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
       const hasDocumentRead=effectivePermissionScope(grants,'dms:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
@@ -121,7 +130,10 @@ objectManagementRouter.get(
         assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;
         contract_statuses:string[]|null;open_hazard_count:number;critical_hazard_count:number;overdue_measure_count:number;
         open_task_count:number|null;overdue_task_count:number|null;open_shift_count:number|null;undercovered_shift_count:number|null;
-        required_staff_count:number;understaffed:boolean;available_document_count:number|null;last_activity:string|null;
+        required_staff_count:number;understaffed:boolean;available_document_count:number|null;
+        valid_document_count:number|null;unapproved_document_count:number|null;expired_document_count:number|null;
+        expiring_7d_document_count:number|null;expiring_30d_document_count:number|null;review_due_document_count:number|null;
+        missing_requirement_count:number|null;open_maintenance_count:number|null;overdue_maintenance_count:number|null;last_activity:string|null;
       };
       const sites=(await query<OverviewSite>(
         `WITH customer_summary AS (
@@ -167,16 +179,43 @@ objectManagementRouter.get(
            JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id
            WHERE sh.tenant_id=$1 AND sh.site_id=ANY($10::uuid[])
            GROUP BY sh.site_id
+         ), maintenance_summary AS (
+           SELECT m.site_id,
+             count(*) FILTER (WHERE m.status IN ('planned','open','in_progress'))::int AS open_maintenance_count,
+             count(*) FILTER (WHERE m.status IN ('planned','open','in_progress') AND m.due_on<CURRENT_DATE)::int AS overdue_maintenance_count
+           FROM maintenance_orders m
+           WHERE m.tenant_id=$1 AND m.site_id=ANY($11::uuid[])
+           GROUP BY m.site_id
          ), latest_document_versions AS (
            SELECT DISTINCT ON (v.document_id) v.document_id,v.lifecycle_state
            FROM dms_versions v JOIN dms_documents d ON d.tenant_id=v.tenant_id AND d.id=v.document_id
            WHERE v.tenant_id=$1 AND d.site_id=ANY($7::uuid[]) AND d.document_status='active'
            ORDER BY v.document_id,v.version_no DESC
          ), document_summary AS (
-           SELECT d.site_id,count(*) FILTER (WHERE latest.lifecycle_state='available')::int AS available_document_count
+           SELECT d.site_id,
+             count(*) FILTER (WHERE latest.lifecycle_state='available')::int AS available_document_count,
+             count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved'
+               AND (d.valid_from IS NULL OR d.valid_from<=CURRENT_DATE)
+               AND (d.valid_until IS NULL OR d.valid_until>=CURRENT_DATE))::int AS valid_document_count,
+             count(*) FILTER (WHERE latest.lifecycle_state IS DISTINCT FROM 'available' OR d.approval_status<>'approved')::int AS unapproved_document_count,
+             count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved' AND d.valid_until<CURRENT_DATE)::int AS expired_document_count,
+             count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved'
+               AND d.valid_until>=CURRENT_DATE AND d.valid_until<=CURRENT_DATE+7)::int AS expiring_7d_document_count,
+             count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved'
+               AND d.valid_until>CURRENT_DATE+7 AND d.valid_until<=CURRENT_DATE+30)::int AS expiring_30d_document_count,
+             count(*) FILTER (WHERE d.review_on IS NOT NULL AND d.review_on<=CURRENT_DATE+30)::int AS review_due_document_count,
+             (SELECT count(*)::int FROM dms_document_requirements r
+               WHERE r.tenant_id=d.tenant_id AND r.site_id=d.site_id AND r.required
+                 AND NOT EXISTS (
+                   SELECT 1 FROM dms_documents doc JOIN latest_document_versions lv ON lv.document_id=doc.id
+                   WHERE doc.tenant_id=r.tenant_id AND doc.site_id=r.site_id AND doc.document_type=r.document_type
+                     AND doc.document_status='active' AND doc.approval_status='approved' AND lv.lifecycle_state='available'
+                     AND (doc.valid_from IS NULL OR doc.valid_from<=CURRENT_DATE)
+                     AND (doc.valid_until IS NULL OR doc.valid_until>=CURRENT_DATE)
+                 ))::int AS missing_requirement_count
            FROM dms_documents d LEFT JOIN latest_document_versions latest ON latest.document_id=d.id
            WHERE d.tenant_id=$1 AND d.site_id=ANY($7::uuid[]) AND d.document_status='active'
-           GROUP BY d.site_id
+           GROUP BY d.site_id,d.tenant_id
          ), activity_summary AS (
            SELECT e.site_id,max(e.created_at) AS last_activity
            FROM watchbook_entries e
@@ -204,6 +243,15 @@ objectManagementRouter.get(
            CASE WHEN s.required_staff_count>0 AND s.id=ANY($5::uuid[])
              AND COALESCE(staff.assigned_employee_count,0)<s.required_staff_count THEN true ELSE false END AS understaffed,
            CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.available_document_count,0) ELSE NULL END AS available_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.valid_document_count,0) ELSE NULL END AS valid_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.unapproved_document_count,0) ELSE NULL END AS unapproved_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.expired_document_count,0) ELSE NULL END AS expired_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.expiring_7d_document_count,0) ELSE NULL END AS expiring_7d_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.expiring_30d_document_count,0) ELSE NULL END AS expiring_30d_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.review_due_document_count,0) ELSE NULL END AS review_due_document_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.missing_requirement_count,0) ELSE NULL END AS missing_requirement_count,
+           CASE WHEN s.id=ANY($11::uuid[]) THEN COALESCE(maintenance.open_maintenance_count,0) ELSE NULL END AS open_maintenance_count,
+           CASE WHEN s.id=ANY($11::uuid[]) THEN COALESCE(maintenance.overdue_maintenance_count,0) ELSE NULL END AS overdue_maintenance_count,
            GREATEST(s.updated_at,activity.last_activity) AS last_activity
          FROM sites s
          LEFT JOIN employees om ON om.tenant_id=s.tenant_id AND om.id=s.object_manager_employee_id
@@ -215,12 +263,13 @@ objectManagementRouter.get(
          LEFT JOIN task_summary tasks ON tasks.site_id=s.id
          LEFT JOIN shift_summary shifts ON shifts.site_id=s.id
          LEFT JOIN document_summary documents ON documents.site_id=s.id
+         LEFT JOIN maintenance_summary maintenance ON maintenance.site_id=s.id
          LEFT JOIN activity_summary activity ON activity.site_id=s.id
          WHERE s.tenant_id=$1 AND s.id=ANY($2::uuid[])
          ORDER BY s.name,s.id`,
-        [user.tenantId,visibleSiteIds,customerSiteIds,contractSiteIds,employeeSiteIds,visibleSiteIds,documentSiteIds,watchbookSiteIds,taskSiteIds,scheduleSiteIds],
+        [user.tenantId,visibleSiteIds,customerSiteIds,contractSiteIds,employeeSiteIds,visibleSiteIds,documentSiteIds,watchbookSiteIds,taskSiteIds,scheduleSiteIds,deviceSiteIds],
       )).rows;
-      const sum=(field:'active_contract_count'|'expiring_contract_count'|'assigned_employee_count'|'open_hazard_count'|'critical_hazard_count'|'overdue_measure_count'|'open_task_count'|'overdue_task_count'|'open_shift_count'|'undercovered_shift_count',authorized:boolean)=>
+      const sum=(field:'active_contract_count'|'expiring_contract_count'|'assigned_employee_count'|'open_hazard_count'|'critical_hazard_count'|'overdue_measure_count'|'open_task_count'|'overdue_task_count'|'open_shift_count'|'undercovered_shift_count'|'available_document_count'|'valid_document_count'|'unapproved_document_count'|'expired_document_count'|'expiring_7d_document_count'|'expiring_30d_document_count'|'review_due_document_count'|'missing_requirement_count'|'open_maintenance_count'|'overdue_maintenance_count',authorized:boolean)=>
         authorized?sites.reduce((total,site)=>total+(site[field]??0),0):null;
       const metrics={
         total_sites:visibleSites.length,
@@ -239,6 +288,15 @@ objectManagementRouter.get(
         undercovered_shifts:sum('undercovered_shift_count',scheduleSiteIds.length>0),
         expiring_contracts:sum('expiring_contract_count',hasContractRead),
         sites_without_available_documents:hasDocumentRead?sites.filter(site=>site.available_document_count===0).length:null,
+        valid_documents:sum('valid_document_count',hasDocumentRead),
+        expired_documents:sum('expired_document_count',hasDocumentRead),
+        documents_expiring_7d:sum('expiring_7d_document_count',hasDocumentRead),
+        documents_expiring_30d:sum('expiring_30d_document_count',hasDocumentRead),
+        documents_review_due:sum('review_due_document_count',hasDocumentRead),
+        unapproved_documents:sum('unapproved_document_count',hasDocumentRead),
+        missing_required_documents:sum('missing_requirement_count',hasDocumentRead),
+        open_maintenance:sum('open_maintenance_count',deviceSiteIds.length>0),
+        overdue_maintenance:sum('overdue_maintenance_count',deviceSiteIds.length>0),
       };
       res.json({sites,metrics});
     }catch(error){next(error);}
@@ -497,7 +555,7 @@ objectManagementRouter.get(
       )).rows:null;
       const canReadDocuments=canReadSiteData('dms:read');
       const canReadCustomerDocuments=canReadTenantData('customer_documents:read');
-      const documents=canReadDocuments?(await query(
+      const documents=canReadDocuments?(await query<ClassifiedObjectDocumentRow>(
         `SELECT d.id,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
           d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,d.approval_status,d.location_id,
           COALESCE(json_agg(json_build_object(
@@ -510,7 +568,7 @@ objectManagementRouter.get(
            AND ($3::boolean OR d.customer_id IS NULL)
          GROUP BY d.id ORDER BY d.created_at DESC`,
         [user.tenantId,id,canReadCustomerDocuments],
-      )).rows:null;
+      )).rows.map(row=>({...row,...classifyDocument(row)})):null;
       const alarms=canReadSiteData('alarms:read')?(await query(
         `SELECT a.id,a.site_id,a.type,a.description,a.severity,a.status,a.triggered_at,a.acknowledged_at,a.resolved_at,
           p.name AS priority_name
@@ -605,21 +663,31 @@ objectManagementRouter.get(
          ORDER BY name,last_seen_at DESC NULLS LAST`,
         [user.tenantId,id],
       )).rows:null;
-      const documentRequirements=canReadDocuments?(await query(
-        `SELECT r.id,r.document_type,r.required,r.responsible_employee_id,e.name AS responsible_employee_name,r.created_at,r.updated_at,
-          CASE WHEN r.required AND NOT EXISTS (
-            SELECT 1 FROM dms_documents d
-            WHERE d.tenant_id=r.tenant_id AND d.site_id=r.site_id AND d.document_status='active'
-              AND d.document_type=r.document_type AND d.approval_status='approved'
-              AND (d.valid_until IS NULL OR d.valid_until>=CURRENT_DATE)
-          ) THEN true ELSE false END AS missing
+      const requirementRows=canReadDocuments?(await query<{id:string;document_type:string;required:boolean|null}>(
+        `SELECT r.id,r.document_type,r.required,r.responsible_employee_id,e.name AS responsible_employee_name,r.created_at,r.updated_at
          FROM dms_document_requirements r
          LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.responsible_employee_id
          WHERE r.tenant_id=$1 AND r.site_id=$2
          ORDER BY r.document_type`,
         [user.tenantId,id],
-      )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentRequirements,alarms,incidents,customerTasks,maintenance,qualifications,handovers,devices});
+      )).rows:[];
+      const maintenanceOrders=canReadSiteData('devices:read')?(await query(
+        `SELECT o.*,d.name AS device_name,d.asset_number,e.name AS responsible_employee_name,
+          COALESCE(json_agg(json_build_object('id',link.id,'document_id',link.document_id) ORDER BY link.created_at) FILTER (WHERE link.id IS NOT NULL),'[]') AS documents
+         FROM maintenance_orders o
+         LEFT JOIN devices d ON d.tenant_id=o.tenant_id AND d.id=o.device_id AND d.device_kind='operational'
+         LEFT JOIN employees e ON e.tenant_id=o.tenant_id AND e.id=o.responsible_employee_id
+         LEFT JOIN maintenance_order_documents link ON link.tenant_id=o.tenant_id AND link.order_id=o.id
+         WHERE o.tenant_id=$1 AND o.site_id=$2
+         GROUP BY o.id,d.name,d.asset_number,e.name
+         ORDER BY o.due_on ASC NULLS LAST,o.created_at DESC LIMIT 50`,
+        [user.tenantId,id],
+      )).rows.map(row=>withMaintenanceStatus(row as Record<string,unknown>)):null;
+      const documentRequirements=canReadDocuments?requirementRows.map(row=>({
+        ...row,
+        ...classifyRequirement(row,(documents??[]).filter(document=>document.document_type===row.document_type)),
+      })):null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,qualifications,handovers,devices});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );
