@@ -31,6 +31,7 @@ const ids = {
   device: "00000000-0000-4000-8000-000000000108",
   nfcTag: "00000000-0000-4000-8000-000000000110",
   patrolAssignment: "00000000-0000-4000-8000-000000000111",
+  objectAssignment: "00000000-0000-4000-8000-000000000112",
 };
 
 const client = await pool.connect();
@@ -58,6 +59,14 @@ try {
     `INSERT INTO employees(id,tenant_id,name,email,title) VALUES($1,$2,'E2E Streife','e2e-employee@example.invalid','Wachschutz')
      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,name=EXCLUDED.name,email=EXCLUDED.email,title=EXCLUDED.title,updated_at=now()`,
     [ids.employee, ids.tenant],
+  );
+  await client.query(
+    `INSERT INTO employee_object_assignments(id,tenant_id,employee_id,site_id,assignment_type,role,starts_on,ends_on,primary_assignment,notes)
+     VALUES($1,$2,$3,$4,'operational','E2E Streife',CURRENT_DATE,NULL,false,'Isolated browser fixture')
+     ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,employee_id=EXCLUDED.employee_id,site_id=EXCLUDED.site_id,
+       assignment_type=EXCLUDED.assignment_type,role=EXCLUDED.role,starts_on=EXCLUDED.starts_on,ends_on=NULL,primary_assignment=false,
+       notes=EXCLUDED.notes,updated_at=now()`,
+    [ids.objectAssignment,ids.tenant,ids.employee,ids.site],
   );
   await client.query(
     `INSERT INTO devices(id,tenant_id,name,status,device_kind,metadata) VALUES($1,$2,'E2E Mobilgerät','online','authenticated','{"source":"playwright-e2e"}')

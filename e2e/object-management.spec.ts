@@ -64,13 +64,19 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await expect(page.getByRole('listitem').filter({hasText:`E2E-${suffix}`})).toBeVisible();
 
   await page.getByRole('button',{name:'Gebäude & Bereiche'}).click();
-  await page.getByPlaceholder('Bezeichnung').fill(`Gebäude ${suffix}`);
-  await page.getByPlaceholder('Code').fill(`G-${suffix}`);
+  await page.getByLabel('Bezeichnung').fill(`Gebäude ${suffix}`);
+  await page.getByLabel('Code').fill(`G-${suffix}`);
   await page.getByRole('button',{name:'Struktur anlegen'}).click();
   await expect(page.getByRole('listitem').filter({hasText:new RegExp(`Gebäude ${suffix}`)})).toBeVisible();
-  await page.getByPlaceholder('Bezeichnung').fill(`Zone ${suffix}`);
-  await page.getByRole('combobox',{name:'Strukturtyp'}).selectOption('zone');
+  await page.getByLabel('Bezeichnung').fill(`Bereich ${suffix}`);
+  await page.getByLabel('Code').fill(`B-${suffix}`);
+  await page.getByRole('combobox',{name:'Strukturtyp'}).selectOption('area');
   await page.getByRole('combobox',{name:'Übergeordnete Struktur'}).selectOption({label:`Gebäude ${suffix}`});
+  await page.getByRole('button',{name:'Struktur anlegen'}).click();
+  await expect(page.getByRole('listitem').filter({hasText:new RegExp(`Bereich ${suffix}`)})).toBeVisible();
+  await page.getByLabel('Bezeichnung').fill(`Zone ${suffix}`);
+  await page.getByRole('combobox',{name:'Strukturtyp'}).selectOption('zone');
+  await page.getByRole('combobox',{name:'Übergeordnete Struktur'}).selectOption({label:`Gebäude ${suffix} / Bereich ${suffix}`});
   await page.getByRole('combobox',{name:'Verantwortliche Person'}).selectOption(employeeId);
   await page.getByRole('button',{name:'Struktur anlegen'}).click();
   await expect(page.getByRole('listitem').filter({hasText:new RegExp(`Zone ${suffix} .* Verantwortlich: E2E Streife`)})).toBeVisible();
@@ -85,15 +91,16 @@ test('real API and browser flows manage the digital object file',async({page})=>
   const hazardResponse=page.waitForResponse(response=>response.url().includes(`/sites/${siteId}/hazards`)&&response.request().method()==='POST');
   await page.getByRole('button',{name:'Gefährdung erfassen'}).click();
   expect((await hazardResponse).status()).toBe(201);
-  await expect(page.getByText(new RegExp(`E2E Gefährdung ${suffix} · Risiko 12`))).toBeVisible();
-  await page.getByRole('button',{name:'Maßnahme hinzufügen'}).click();
+  const hazardItem=page.getByRole('listitem').filter({hasText:new RegExp(`E2E Gefährdung ${suffix} · Risiko 12`)});
+  await expect(hazardItem).toBeVisible();
+  await hazardItem.getByRole('button',{name:'Maßnahme hinzufügen'}).click();
   await page.getByLabel('Maßnahmentitel').fill(`E2E Maßnahme ${suffix}`);
   await page.getByLabel('Maßnahme fällig am').fill('2026-12-01');
   await page.getByLabel('Maßnahmenstatus').selectOption('in_progress');
   const measureResponse=page.waitForResponse(response=>response.url().includes('/measures')&&response.request().method()==='POST');
   await page.getByRole('button',{name:'Maßnahme erfassen'}).click();
   expect((await measureResponse).status()).toBe(201);
-  await expect(page.getByRole('listitem').filter({hasText:`E2E Maßnahme ${suffix}`})).toBeVisible();
+  await expect(hazardItem.getByText(`E2E Maßnahme ${suffix} · in_progress`)).toBeVisible();
 
   await page.getByRole('button',{name:'Dienstanweisungen'}).click();
   await expect(page).toHaveURL(new RegExp(`/sites/${siteId}/anweisungen$`));
