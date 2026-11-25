@@ -57,6 +57,34 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM schedule_periods p'))).toBe(false);
   });
 
+  it('returns instruction acknowledgement identities only with site-scoped employee read access',async()=>{
+    const acknowledgement={employee_id:'employee-1',employee_name:'Mia Guard',acknowledged_at:'2026-11-25T10:00:00Z'};
+    const instruction={id:'instruction-1',title:'Evacuation',version:2,status:'approved',requires_acknowledgement:true,acknowledgement_count:1};
+    const withEmployeeRead={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'sites:read',scope:'site'},{code:'employees:read',scope:'site'}]};
+    const withoutEmployeeRead={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'sites:read',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([withEmployeeRead]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM site_instructions i'))return result([{...instruction,acknowledgements:values?.[2]?[acknowledgement]:[]}]);
+      return result([]);
+    });
+    const visible=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(visible.status).toBe(200);
+    expect(visible.body.instructions[0].acknowledgements).toEqual([acknowledgement]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM site_instructions i'))?.[1]).toEqual([tenant,site,true]);
+
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([withoutEmployeeRead]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM site_instructions i'))return result([{...instruction,acknowledgements:values?.[2]?[acknowledgement]:[]}]);
+      return result([]);
+    });
+    const hidden=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(hidden.status).toBe(200);
+    expect(hidden.body.instructions[0]).toEqual(expect.objectContaining({acknowledgement_count:1,acknowledgements:[]}));
+    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('FROM site_instructions i')).at(-1)?.[1]).toEqual([tenant,site,false]);
+  });
+
   it('returns site-scoped employee assignments and upcoming shifts only with their read scopes',async()=>{
     const scoped={
       ...sessionUser,
@@ -474,12 +502,32 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.location.created')).toBe(true);
   });
 
+  it('requires building-area-zone parent types and rejects detached areas or zones',async()=>{
+    const parent='00000000-0000-4000-8000-0000000000de';
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([sessionUser]);
+      if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
+      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:parent,location_type:'zone'}]);
+      return result([]);
+    });
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    const wrongParent=await request(app).post(`/api/v1/sites/${site}/locations`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({name:'North area',location_type:'area',parent_id:parent});
+    expect(wrongParent.status).toBe(400);
+    expect(wrongParent.body.error).toContain('Parent location must be a building');
+    const missingParent=await request(app).post(`/api/v1/sites/${site}/locations`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({name:'North zone',location_type:'zone'});
+    expect(missingParent.status).toBe(400);
+    expect(missingParent.body.error).toContain('require a parent location');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_locations'))).toBe(false);
+  });
+
   it('updates hierarchy fields only for a location in the authorized site and audits the edit',async()=>{
     const location='00000000-0000-4000-8000-0000000000de';
     const employee='00000000-0000-4000-8000-0000000000dd';
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([sessionUser]);
-      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location}]);
+      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location,location_type:'building',parent_id:null}]);
       if(sql.includes('FROM employees WHERE'))return result([{id:employee}]);
       if(sql.includes('UPDATE object_locations SET'))return result([{id:location,name:'North Lobby',security_level:'high',responsible_employee_id:employee}]);
       return result([]);
@@ -501,7 +549,7 @@ describe('object management',()=>{
     const hazard='00000000-0000-4000-8000-0000000000e0';
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([sessionUser]);
-      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location}]);
+      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location,location_type:'building',parent_id:null}]);
       if(sql.includes('WITH RECURSIVE descendants'))return result([{id:child}]);
       if(sql.includes('FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:hazard,due_on:'2026-04-01',review_on:'2026-05-01',likelihood:2,impact:3}]);
       return result([]);
@@ -539,27 +587,63 @@ describe('object management',()=>{
     expect(audit?.[1]?.[5]).toEqual(expect.objectContaining({risk_score:12}));
   });
 
-  it('creates an approved instruction and records employee acknowledgement by version',async()=>{
+  it('creates sequential instruction versions and records acknowledgement by assigned employee',async()=>{
     const instruction='00000000-0000-4000-8000-0000000000df';
+    const nextInstruction='00000000-0000-4000-8000-0000000000e0';
     const employee='00000000-0000-4000-8000-0000000000dd';
+    let titleLookupCount=0;
     queryMock.mockImplementation(async(sql:string)=>{
-      if(sql.includes('FROM sessions'))return result([sessionUser]);
+      if(sql.includes('FROM sessions'))return result([{...sessionUser,permissions:[...sessionUser.permissions,'employees:read'],permission_grants:[{code:'employees:read',scope:'site'}]}]);
       if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
-      if(sql.includes('SELECT id,version,status FROM site_instructions'))return result([{id:instruction,version:2,status:'approved'}]);
-      if(sql.includes('SELECT id FROM employees WHERE'))return result([{id:employee}]);
-      if(sql.includes('INSERT INTO instruction_acknowledgements'))return result([{instruction_id:instruction,employee_id:employee,acknowledged_version:2}]);
-      if(sql.includes('INSERT INTO site_instructions'))return result([{id:instruction,version:2,status:'approved'}]);
+      if(sql.includes('SELECT id,version,status FROM site_instructions'))return result([{id:nextInstruction,version:2,status:'approved'}]);
+      if(sql.includes('SELECT id,version,title FROM site_instructions'))return result([{id:instruction,version:1,title:'Evacuation'}]);
+      if(sql.includes('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3'))return result(titleLookupCount++===0?[]:[{id:instruction}]);
+      if(sql.includes('FROM employees e'))return result([{id:employee}]);
+      if(sql.includes('INSERT INTO instruction_acknowledgements'))return result([{instruction_id:nextInstruction,employee_id:employee,acknowledged_version:2}]);
+      if(sql.includes('INSERT INTO site_instructions'))return result([sql.includes('RETURNING *')&&queryMock.mock.calls.at(-1)?.[1]?.[5]===2?{id:nextInstruction,version:2,status:'approved'}:{id:instruction,version:1,status:'approved'}]);
       return result([]);
     });
     const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
     const create=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
-      .send({title:'Evacuation',content:'Use the marked exit.',version:2,status:'approved',requires_acknowledgement:true});
+      .send({title:'Evacuation',content:'Use the marked exit.',version:1,status:'approved',requires_acknowledgement:true});
     expect(create.status).toBe(201);
-    const acknowledged=await request(app).post(`/api/v1/sites/${site}/instructions/${instruction}/acknowledgements`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+    const nextVersion=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Evacuation',content:'Use the marked east exit.',version:2,status:'approved',requires_acknowledgement:true,supersedes_id:instruction});
+    expect(nextVersion.status).toBe(201);
+    const acknowledged=await request(app).post(`/api/v1/sites/${site}/instructions/${nextInstruction}/acknowledgements`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({employee_id:employee});
     expect(acknowledged.status).toBe(201);
     expect(acknowledged.body.acknowledged_version).toBe(2);
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO instruction_acknowledgements')&&values?.[0]===tenant&&values?.[3]===2)).toBe(true);
+  });
+
+  it('rejects unchained instruction versions and acknowledgements from non-object employees',async()=>{
+    const instruction='00000000-0000-4000-8000-0000000000df';
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    const scoped={...sessionUser,permissions:[...sessionUser.permissions,'employees:read'],permission_grants:[{code:'employees:read',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
+      if(sql.includes('SELECT id,version,status FROM site_instructions'))return result([{id:instruction,version:1,status:'approved'}]);
+      if(sql.includes('SELECT id,version,title FROM site_instructions'))return result([{id:instruction,version:1,title:'Evacuation'}]);
+      if(sql.includes('ORDER BY version DESC LIMIT 1'))return result([{id:'00000000-0000-4000-8000-0000000000e0'}]);
+      return result([]);
+    });
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    const invalidVersion=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Evacuation',content:'Use the marked exit.',version:2,status:'draft'});
+    expect(invalidVersion.status).toBe(400);
+    expect(invalidVersion.body.error).toContain('start at version 1');
+    const changedTitle=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Different title',content:'Use the marked exit.',version:2,status:'draft',supersedes_id:instruction});
+    expect(changedTitle.status).toBe(400);
+    const staleVersion=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Evacuation',content:'Use the marked exit.',version:2,status:'draft',supersedes_id:instruction});
+    expect(staleVersion.status).toBe(409);
+    const unassignedAck=await request(app).post(`/api/v1/sites/${site}/instructions/${instruction}/acknowledgements`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({employee_id:employee});
+    expect(unassignedAck.status).toBe(404);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO instruction_acknowledgements'))).toBe(false);
   });
 
   it('validates hazard scoring inputs server-side',async()=>{

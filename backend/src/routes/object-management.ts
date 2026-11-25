@@ -31,6 +31,8 @@ const locationSchema=locationFields.extend({
   sort_order:z.number().int().min(0).max(100000).default(0),
 }).strict();
 const locationPatchSchema=locationFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
+type LocationType='building'|'area'|'zone';
+const parentTypeFor:Record<LocationType,LocationType|null>={building:null,area:'building',zone:'area'};
 const hazardFields=z.object({
   location_id:uuid.nullable().optional(),
   title:nonempty.max(160),
@@ -151,15 +153,22 @@ objectManagementRouter.get(
          WHERE h.tenant_id=$1 AND h.site_id=$2 ORDER BY h.status,h.risk_score DESC,h.title`,
         [req.user!.tenantId,id],
       )).rows;
+      const canReadStaffing=canReadSiteData('employees:read');
       const instructions=(await query(
         `SELECT i.*,l.name AS location_name,u.email AS created_by_email,
-          (SELECT count(*)::int FROM instruction_acknowledgements a WHERE a.tenant_id=i.tenant_id AND a.instruction_id=i.id AND a.acknowledged_version=i.version) AS acknowledgement_count
+          (SELECT count(*)::int FROM instruction_acknowledgements a WHERE a.tenant_id=i.tenant_id AND a.instruction_id=i.id AND a.acknowledged_version=i.version) AS acknowledgement_count,
+          CASE WHEN $3::boolean THEN COALESCE((
+            SELECT json_agg(json_build_object('employee_id',a.employee_id,'employee_name',ae.name,'acknowledged_at',a.acknowledged_at) ORDER BY ae.name)
+            FROM instruction_acknowledgements a
+            JOIN employees ae ON ae.tenant_id=a.tenant_id AND ae.id=a.employee_id
+            WHERE a.tenant_id=i.tenant_id AND a.instruction_id=i.id AND a.acknowledged_version=i.version
+          ),'[]'::json) ELSE '[]'::json END AS acknowledgements
          FROM site_instructions i
          LEFT JOIN object_locations l ON l.tenant_id=i.tenant_id AND l.id=i.location_id
          JOIN users u ON u.tenant_id=i.tenant_id AND u.id=i.created_by
          WHERE i.tenant_id=$1 AND i.site_id=$2 AND i.status<>'archived'
          ORDER BY i.title,i.version DESC`,
-        [req.user!.tenantId,id],
+        [req.user!.tenantId,id,canReadStaffing],
       )).rows;
       const canReadWatchbook=canReadSiteData('watchbook:read');
       const journal=canReadWatchbook?(await query(
@@ -177,7 +186,6 @@ objectManagementRouter.get(
          ORDER BY e.created_at DESC LIMIT 20`,
         [user.tenantId,id],
       )).rows:null;
-      const canReadStaffing=canReadSiteData('employees:read');
       const staffing=canReadStaffing?(await query(
         `SELECT oa.id,oa.employee_id,e.name AS employee_name,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
           oa.primary_assignment,oa.notes
@@ -386,8 +394,11 @@ objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requi
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
     if(!site)return res.status(404).json({error:'Site not found'});
     if(body.parent_id){
-      const parent=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.parent_id])).rows[0];
+      const parent=(await query('SELECT id,location_type FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.parent_id])).rows[0];
       if(!parent)return res.status(400).json({error:'Parent location not found in site'});
+      if(parent.location_type!==parentTypeFor[body.location_type])return res.status(400).json({error:`Parent location must be a ${parentTypeFor[body.location_type]??'root location'}`});
+    }else if(parentTypeFor[body.location_type]){
+      return res.status(400).json({error:`${body.location_type} locations require a parent location`});
     }
     if(body.responsible_employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
@@ -404,7 +415,7 @@ objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requi
 objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const locationId=uuid.parse(String(req.params.locationId)); const body=locationPatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
-    const current=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,locationId])).rows[0];
+    const current=(await query('SELECT id,location_type,parent_id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,locationId])).rows[0];
     if(!current)return res.status(404).json({error:'Location not found'});
     if(body.parent_id){
       const parent=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.parent_id])).rows[0];
@@ -420,6 +431,22 @@ objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requ
         [tenantId,siteId,locationId,body.parent_id],
       )).rows[0];
       if(body.parent_id===locationId||cycle)return res.status(400).json({error:'Parent location would create a hierarchy cycle'});
+    }
+    if(body.parent_id!==undefined||body.location_type!==undefined){
+      const locationType=(body.location_type??current.location_type) as LocationType;
+      const parentId=body.parent_id===undefined?current.parent_id:body.parent_id;
+      if(locationType==='building'&&parentId)return res.status(400).json({error:'Building locations cannot have a parent location'});
+      if(locationType!=='building'&&!parentId)return res.status(400).json({error:`${locationType} locations require a parent location`});
+      if(parentId){
+        const parent=(await query('SELECT location_type FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,parentId])).rows[0];
+        if(!parent)return res.status(400).json({error:'Parent location not found in site'});
+        if(parent.location_type!==parentTypeFor[locationType])return res.status(400).json({error:`Parent location must be a ${parentTypeFor[locationType]??'root location'}`});
+      }
+      if(body.location_type&&body.location_type!==current.location_type){
+        const children=(await query('SELECT location_type FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND parent_id=$3',[tenantId,siteId,locationId])).rows;
+        const expectedChildType=locationType==='building'?'area':locationType==='area'?'zone':null;
+        if(children.some(child=>child.location_type!==expectedChildType))return res.status(400).json({error:'Location type is incompatible with its existing child locations'});
+      }
     }
     if(body.responsible_employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
@@ -498,8 +525,15 @@ objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,re
       if(!location)return res.status(400).json({error:'Location not found in site'});
     }
     if(body.supersedes_id){
-      const previous=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.supersedes_id])).rows[0];
+      const previous=(await query('SELECT id,version,title FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.supersedes_id])).rows[0];
       if(!previous)return res.status(400).json({error:'Superseded instruction not found in site'});
+      if(body.title!==previous.title||body.version!==Number(previous.version)+1)return res.status(400).json({error:'A new instruction version must retain its title and increment the version by one'});
+      const latest=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,previous.title])).rows[0];
+      if(latest?.id!==previous.id)return res.status(409).json({error:'Only the latest instruction version can be superseded'});
+    }else{
+      if(body.version!==1)return res.status(400).json({error:'A new instruction must start at version 1'});
+      const existing=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,body.title])).rows[0];
+      if(existing)return res.status(409).json({error:'An existing instruction with this title must be superseded'});
     }
     if(body.status==='approved'&&!req.user!.isSystemAdmin&&req.user!.role==='viewer')return res.status(403).json({error:'Only operators may approve instructions'});
     const row=(await query(`INSERT INTO site_instructions(tenant_id,site_id,location_id,title,content,version,status,requires_acknowledgement,valid_from,valid_until,created_by,approved_by,approved_at,supersedes_id)
@@ -510,12 +544,16 @@ objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,re
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid instruction'});next(error);}
 });
 
-objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgements',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
+objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgements',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),requirePermission('employees:read',{allowedScopes:['tenant','site','system']}),requireSiteScope('employees:read'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId));
     const body=z.object({employee_id:uuid}).strict().parse(req.body); const tenantId=req.user!.tenantId;
     const instruction=(await query('SELECT id,version,status FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
-    const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.employee_id])).rows[0];
+    const employee=(await query(`SELECT e.id FROM employees e
+      WHERE e.tenant_id=$1 AND e.id=$2
+        AND EXISTS(SELECT 1 FROM employee_object_assignments oa
+          WHERE oa.tenant_id=e.tenant_id AND oa.site_id=$3 AND oa.employee_id=e.id
+            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE))`,[tenantId,body.employee_id,siteId])).rows[0];
     if(!instruction||!employee)return res.status(404).json({error:'Instruction or employee not found'});
     if(instruction.status!=='approved')return res.status(409).json({error:'Only approved instructions can be acknowledged'});
     const row=(await query(`INSERT INTO instruction_acknowledgements(tenant_id,instruction_id,employee_id,acknowledged_version)

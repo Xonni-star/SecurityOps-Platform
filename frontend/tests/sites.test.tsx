@@ -78,6 +78,34 @@ describe('Objektübersicht',()=>{
     expect(JSON.parse(update[1].body)).toEqual(expect.objectContaining({name:'North building',security_level:'high',parent_id:null}));
   });
 
+  it('creates only valid hierarchy levels and displays the full building path',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],
+      locations:[
+        {id:'building',parent_id:null,name:'Main building',code:'B1',location_type:'building',security_level:'medium',description:null,hazard_notes:null,access_rules:null,responsible_employee_id:null,responsible_employee_name:null,sort_order:0},
+        {id:'area',parent_id:'building',name:'North wing',code:null,location_type:'area',security_level:'medium',description:null,hazard_notes:null,access_rules:null,responsible_employee_id:null,responsible_employee_name:null,sort_order:0},
+        {id:'zone',parent_id:'area',name:'Cash room',code:null,location_type:'zone',security_level:'high',description:null,hazard_notes:null,access_rules:null,responsible_employee_id:null,responsible_employee_name:null,sort_order:0},
+      ],
+      hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:options?.method==='POST'&&path.endsWith('/locations')?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gebäude & Bereiche'}));
+    const zoneRow=screen.getAllByRole('listitem').find(item=>item.textContent?.includes('Cash room'));
+    expect(zoneRow?.textContent).toContain('Main building / North wing / Cash room');
+    fireEvent.change(screen.getByLabelText('Bezeichnung'),{target:{value:'South wing'}});
+    fireEvent.change(screen.getByLabelText('Strukturtyp'),{target:{value:'area'}});
+    const parent=screen.getByLabelText('Übergeordnete Struktur');
+    expect(within(parent).getByRole('option',{name:'Main building'})).toBeTruthy();
+    expect(within(parent).queryByRole('option',{name:'North wing'})).toBeNull();
+    fireEvent.change(parent,{target:{value:'building'}});
+    fireEvent.click(screen.getByRole('button',{name:'Struktur anlegen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/locations',expect.objectContaining({method:'POST'})));
+    const create=apiMock.mock.calls.find(([path,options])=>path==='/sites/0/locations'&&options?.method==='POST')!;
+    expect(JSON.parse(create[1].body)).toEqual(expect.objectContaining({name:'South wing',location_type:'area',parent_id:'building'}));
+  });
+
   it('edits risk assessment fields and status through the site-scoped API',async()=>{
     const context={
       site:sites[0],customers:[],contracts:[],locations:[],
@@ -95,6 +123,27 @@ describe('Objektübersicht',()=>{
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/hazards/hazard-1',expect.objectContaining({method:'PATCH'})));
     const update=apiMock.mock.calls.find(([path,options])=>path==='/sites/0/hazards/hazard-1'&&options?.method==='PATCH')!;
     expect(JSON.parse(update[1].body)).toEqual(expect.objectContaining({description:'Updated risk description',status:'mitigated',likelihood:2,impact:3}));
+  });
+
+  it('shows confirmed and outstanding acknowledgements for site-assigned staff',async()=>{
+    const context={
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],
+      instructions:[{id:'instruction-1',title:'Evacuation',content:'Use the marked exit.',version:1,status:'approved',requires_acknowledgement:true,acknowledgement_count:1,acknowledgements:[{employee_id:'employee-1',employee_name:'Mia Guard',acknowledged_at:'2026-11-25T10:00:00Z'}],location_name:null}],
+      journal:null,staffing:[
+        {employee_id:'employee-1',employee_name:'Mia Guard',assignment_id:'assignment-1',starts_on:'2026-01-01',ends_on:null,assignment_status:'active'},
+        {employee_id:'employee-2',employee_name:'Leo Guard',assignment_id:'assignment-2',starts_on:'2026-01-01',ends_on:null,assignment_status:'active'},
+      ],shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/employees'?[{id:'employee-1',name:'Mia Guard'},{id:'employee-2',name:'Leo Guard'}]:path==='/customers'?[]:options?.method==='POST'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Dienstanweisungen'}));
+    const status=await screen.findByRole('list',{name:'Kenntnisnahmestatus Evacuation v1'});
+    expect(within(status).getByText(/Mia Guard: Bestätigt am/)).toBeTruthy();
+    expect(within(status).getByText('Leo Guard: Ausstehend')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Mitarbeiter für Kenntnisnahme'),{target:{value:'employee-2'}});
+    fireEvent.click(screen.getByRole('button',{name:'Kenntnisnahme erfassen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/instructions/instruction-1/acknowledgements',expect.objectContaining({method:'POST',body:'{"employee_id":"employee-2"}'})));
   });
 
   it('shows real object staffing assignments and upcoming duty shifts',async()=>{

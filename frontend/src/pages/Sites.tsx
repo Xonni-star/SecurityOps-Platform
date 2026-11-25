@@ -21,6 +21,7 @@ type CustomerTask={id:string;customer_id:string;customer_name:string;title:strin
 type MaintenanceEntry={id:string;created_at:string;revision_no:number;content:string;status:string;priority_name:string};
 type WatchbookCategory={id:string;code:string;name:string};
 type WatchbookPriority={code:string;name:string};
+type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowledged_at:string};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
@@ -32,7 +33,7 @@ type Context={
   contracts:{id:string;contract_number:string;customer_name:string;status:string}[]|null;
   locations:ObjectLocation[];
   hazards:ObjectHazard[];
-  instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;location_name?:string|null}[];
+  instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;acknowledgements:InstructionAcknowledgement[];location_name?:string|null}[];
   journal:{id:string;created_at:string;revision_no:number;content:string;status:string;category_name:string;priority_name:string}[]|null;
   staffing:StaffingAssignment[]|null;
   shifts:ScheduledShift[]|null;
@@ -298,11 +299,18 @@ export function Sites(){
   const changeSort=(key:typeof sortKey)=>{if(key===sortKey)setDescending(!descending);else{setSortKey(key);setDescending(false);}setPage(1);};
   const selectedCustomers=selected?.customers??[];
   const selectedContracts=selected?.contracts??[];
+  const locationPath=(location:ObjectLocation,visited=new Set<string>()):string=>{
+    if(visited.has(location.id))return location.name;
+    const next=new Set(visited);next.add(location.id);
+    const parent=selected?.locations.find(candidate=>candidate.id===location.parent_id);
+    return parent?`${locationPath(parent,next)} / ${location.name}`:location.name;
+  };
   const assignableEmployees=employees.filter(employee=>!selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
   const siteAssignedEmployees=employees.filter(employee=>selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
   const availableShiftEmployees=(shift:ScheduledShift)=>siteAssignedEmployees.filter(employee=>!shift.assignments.some(assignment=>assignment.employee_id===employee.id));
   const selectedSiteId=selected?.site.id;
   const maintenanceReadable=selected?.maintenance!==null&&selected?.maintenance!==undefined;
+  const locationParentType=locationForm.location_type==='area'?'building':locationForm.location_type==='zone'?'area':null;
   useEffect(()=>{
     if(!selectedSiteId)return;
     setMaintenanceClientEntryId(uuid());
@@ -359,8 +367,8 @@ export function Sites(){
       {writable&&<form onSubmit={createLocation}>
         <label>Bezeichnung<input value={locationForm.name} onChange={e=>setLocationForm({...locationForm,name:e.target.value})} required/></label>
         <label>Code<input value={locationForm.code} onChange={e=>setLocationForm({...locationForm,code:e.target.value})}/></label>
-        <label>Strukturtyp<select aria-label="Strukturtyp" value={locationForm.location_type} onChange={e=>setLocationForm({...locationForm,location_type:e.target.value})}><option value="building">Gebäude</option><option value="area">Bereich</option><option value="zone">Zone</option></select></label>
-        <label>Übergeordnete Struktur<select aria-label="Übergeordnete Struktur" value={locationForm.parent_id} onChange={e=>setLocationForm({...locationForm,parent_id:e.target.value})}><option value="">Keine übergeordnete Struktur</option>{selected.locations.filter(location=>location.id!==editingLocation).map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+        <label>Strukturtyp<select aria-label="Strukturtyp" value={locationForm.location_type} onChange={e=>setLocationForm({...locationForm,location_type:e.target.value,parent_id:''})}><option value="building">Gebäude</option><option value="area">Bereich</option><option value="zone">Zone</option></select></label>
+        <label>Übergeordnete Struktur<select aria-label="Übergeordnete Struktur" required={locationForm.location_type!=='building'} value={locationForm.parent_id} onChange={e=>setLocationForm({...locationForm,parent_id:e.target.value})}><option value="">{locationForm.location_type==='building'?'Keine übergeordnete Struktur':'Übergeordnete Struktur auswählen'}</option>{selected.locations.filter(location=>location.id!==editingLocation&&location.location_type===locationParentType).map(location=><option key={location.id} value={location.id}>{locationPath(location)}</option>)}</select></label>
         <label>Sicherheitsstufe<select aria-label="Sicherheitsstufe" value={locationForm.security_level} onChange={e=>setLocationForm({...locationForm,security_level:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         {hasPermission('employees:read')&&<label>Verantwortliche Person<select aria-label="Verantwortliche Person" value={locationForm.responsible_employee_id} onChange={e=>setLocationForm({...locationForm,responsible_employee_id:e.target.value})}><option value="">Keine verantwortliche Person</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
         <label>Beschreibung<textarea value={locationForm.description} onChange={e=>setLocationForm({...locationForm,description:e.target.value})}/></label>
@@ -370,7 +378,7 @@ export function Sites(){
         <button>{editingLocation?'Struktur speichern':'Struktur anlegen'}</button>
         {editingLocation&&<button type="button" onClick={()=>{setEditingLocation(null);setLocationForm(emptyLocation);}}>Abbrechen</button>}
       </form>}
-      <ul>{selected.locations.map(location=><li key={location.id}>{location.parent_id?`${selected.locations.find(parent=>parent.id===location.parent_id)?.name??'–'} / `:''}{location.code||'–'} · {location.name} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editLocation(location)}>Bearbeiten</button>}</li>)}</ul>
+      <ul>{selected.locations.map(location=><li key={location.id}>{location.code||'–'} · {locationPath(location)} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editLocation(location)}>Bearbeiten</button>}</li>)}</ul>
       </div>}
       {active==='gefaehrdungen'&&<div className="employee-detail-content">
       <h3>Gefährdungen</h3>
@@ -397,8 +405,11 @@ export function Sites(){
       {active==='anweisungen'&&<div className="employee-detail-content">
       <h3>Dienstanweisungen</h3>
       {writable&&<form onSubmit={createInstruction}><label>Titel<input placeholder="Titel" value={instructionForm.title} onChange={e=>setInstructionForm({...instructionForm,title:e.target.value})} required/></label><label>Inhalt<textarea placeholder="Inhalt" value={instructionForm.content} onChange={e=>setInstructionForm({...instructionForm,content:e.target.value})} required/></label><label>Geltungsbereich<select aria-label="Anweisungsbereich" value={instructionForm.location_id} onChange={e=>setInstructionForm({...instructionForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Version<input type="number" min="1" value={instructionForm.version} onChange={e=>setInstructionForm({...instructionForm,version:Number(e.target.value)})}/></label><label>Gültig ab<input type="date" value={instructionForm.valid_from} onChange={e=>setInstructionForm({...instructionForm,valid_from:e.target.value})}/></label><label>Gültig bis<input type="date" value={instructionForm.valid_until} onChange={e=>setInstructionForm({...instructionForm,valid_until:e.target.value})}/></label><select aria-label="Anweisungsstatus" value={instructionForm.status} onChange={e=>setInstructionForm({...instructionForm,status:e.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option><option value="approved">Freigegeben</option></select><label><input type="checkbox" checked={instructionForm.requires_acknowledgement} onChange={e=>setInstructionForm({...instructionForm,requires_acknowledgement:e.target.checked})}/> Kenntnisnahme erforderlich</label><button>Anweisung speichern</button></form>}
-      {writable&&hasPermission('employees:read')&&<label>Mitarbeiter für Kenntnisnahme<select aria-label="Mitarbeiter für Kenntnisnahme" value={ackEmployee} onChange={e=>setAckEmployee(e.target.value)}><option value="">Mitarbeiter auswählen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
-      <ul>{selected.instructions.map(instruction=><li key={instruction.id}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>{writable&&<button type="button" onClick={()=>{setSupersedesId(instruction.id);setInstructionForm({title:instruction.title,content:instruction.content,status:'draft',version:instruction.version+1,requires_acknowledgement:instruction.requires_acknowledgement,location_id:'',valid_from:'',valid_until:''});}}>Neue Version vorbereiten</button>}{writable&&hasPermission('employees:read')&&instruction.status==='approved'&&<button type="button" disabled={!ackEmployee} onClick={()=>void acknowledge(instruction.id)}>Kenntnisnahme erfassen</button>}</li>)}</ul>
+      {writable&&hasPermission('employees:read')&&selected.staffing!==null&&<label>Mitarbeiter für Kenntnisnahme<select aria-label="Mitarbeiter für Kenntnisnahme" value={ackEmployee} onChange={e=>setAckEmployee(e.target.value)}><option value="">Mitarbeiter auswählen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+      <ul>{selected.instructions.map(instruction=><li key={instruction.id}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>{instruction.requires_acknowledgement&&hasPermission('employees:read')&&selected.staffing!==null&&<ul aria-label={`Kenntnisnahmestatus ${instruction.title} v${instruction.version}`}>
+        {instruction.acknowledgements.map(acknowledgement=><li key={acknowledgement.employee_id}>{acknowledgement.employee_name}: Bestätigt am {new Date(acknowledgement.acknowledged_at).toLocaleString('de-DE')}</li>)}
+        {siteAssignedEmployees.filter(employee=>!instruction.acknowledgements.some(acknowledgement=>acknowledgement.employee_id===employee.id)).map(employee=><li key={employee.id}>{employee.name}: Ausstehend</li>)}
+      </ul>}{writable&&<button type="button" onClick={()=>{setSupersedesId(instruction.id);setInstructionForm({title:instruction.title,content:instruction.content,status:'draft',version:instruction.version+1,requires_acknowledgement:instruction.requires_acknowledgement,location_id:'',valid_from:'',valid_until:''});}}>Neue Version vorbereiten</button>}{writable&&hasPermission('employees:read')&&selected.staffing!==null&&instruction.status==='approved'&&<button type="button" disabled={!ackEmployee} onClick={()=>void acknowledge(instruction.id)}>Kenntnisnahme erfassen</button>}</li>)}</ul>
       {supersedesId&&<p>Neue Version: {instructionForm.version}</p>}
       </div>}
       {active==='personal'&&<div className="employee-detail-content">
