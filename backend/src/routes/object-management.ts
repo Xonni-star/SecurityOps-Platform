@@ -91,6 +91,15 @@ function requireSiteScope(permission:string):RequestHandler{
   };
 }
 
+async function employeeAssignedToSite(tenantId:string,siteId:string,employeeId:string){
+  return Boolean((await query(
+    `SELECT 1 FROM employee_object_assignments oa
+     WHERE oa.tenant_id=$1 AND oa.site_id=$2 AND oa.employee_id=$3
+       AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)`,
+    [tenantId,siteId,employeeId],
+  )).rows[0]);
+}
+
 objectManagementRouter.get(
   '/sites/:id/object-context',
   requireAuth,
@@ -99,15 +108,6 @@ objectManagementRouter.get(
   async(req,res,next)=>{
     try{
       const id=uuid.parse(String(req.params.id));
-      const site=(await query(
-        `SELECT s.*,om.name AS object_manager_name,op.name AS operations_manager_name
-         FROM sites s
-         LEFT JOIN employees om ON om.tenant_id=s.tenant_id AND om.id=s.object_manager_employee_id
-         LEFT JOIN employees op ON op.tenant_id=s.tenant_id AND op.id=s.operations_manager_employee_id
-         WHERE s.tenant_id=$1 AND s.id=$2`,
-        [req.user!.tenantId,id],
-      )).rows[0];
-      if(!site)return res.status(404).json({error:'Not found'});
       const user=req.user!;
       const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
       const canReadTenantData=(code:string)=>{
@@ -122,6 +122,18 @@ objectManagementRouter.get(
           {tenantId:user.tenantId,siteId:id},
         );
       };
+      const canReadStaffing=canReadSiteData('employees:read');
+      const siteRow=(await query(
+        `SELECT s.*,CASE WHEN $3::boolean THEN om.name ELSE NULL END AS object_manager_name,
+          CASE WHEN $3::boolean THEN op.name ELSE NULL END AS operations_manager_name
+         FROM sites s
+         LEFT JOIN employees om ON om.tenant_id=s.tenant_id AND om.id=s.object_manager_employee_id
+         LEFT JOIN employees op ON op.tenant_id=s.tenant_id AND op.id=s.operations_manager_employee_id
+         WHERE s.tenant_id=$1 AND s.id=$2`,
+        [user.tenantId,id,canReadStaffing],
+      )).rows[0];
+      if(!siteRow)return res.status(404).json({error:'Not found'});
+      const site=canReadStaffing?siteRow:{...siteRow,object_manager_employee_id:null,operations_manager_employee_id:null};
       const customers=canReadTenantData('customers:read')?(await query(
         `SELECT cs.*,c.name AS customer_name,c.customer_number
          FROM customer_sites cs JOIN customers c ON c.tenant_id=cs.tenant_id AND c.id=cs.customer_id
@@ -139,21 +151,26 @@ objectManagementRouter.get(
         [req.user!.tenantId,id],
       )).rows:null;
       const locations=(await query(
-        `SELECT l.*,e.name AS responsible_employee_name
+        `SELECT l.id,l.tenant_id,l.site_id,l.parent_id,l.code,l.name,l.location_type,l.description,l.security_level,l.hazard_notes,l.access_rules,
+          CASE WHEN $3::boolean THEN l.responsible_employee_id ELSE NULL END AS responsible_employee_id,
+          l.sort_order,l.active,l.created_at,l.updated_at,
+          CASE WHEN $3::boolean THEN e.name ELSE NULL END AS responsible_employee_name
          FROM object_locations l
          LEFT JOIN employees e ON e.tenant_id=l.tenant_id AND e.id=l.responsible_employee_id
          WHERE l.tenant_id=$1 AND l.site_id=$2 ORDER BY l.parent_id NULLS FIRST,l.sort_order,l.name`,
-        [req.user!.tenantId,id],
+        [req.user!.tenantId,id,canReadStaffing],
       )).rows;
       const hazards=(await query(
-        `SELECT h.*,l.name AS location_name,e.name AS responsible_employee_name
+        `SELECT h.id,h.tenant_id,h.site_id,h.location_id,h.title,h.category,h.description,h.likelihood,h.impact,h.risk_score,h.protective_measures,h.required_actions,
+          CASE WHEN $3::boolean THEN h.responsible_employee_id ELSE NULL END AS responsible_employee_id,
+          h.due_on,h.review_on,h.status,h.created_by,h.created_at,h.updated_at,l.name AS location_name,
+          CASE WHEN $3::boolean THEN e.name ELSE NULL END AS responsible_employee_name
          FROM object_hazards h
          LEFT JOIN object_locations l ON l.tenant_id=h.tenant_id AND l.id=h.location_id
          LEFT JOIN employees e ON e.tenant_id=h.tenant_id AND e.id=h.responsible_employee_id
          WHERE h.tenant_id=$1 AND h.site_id=$2 ORDER BY h.status,h.risk_score DESC,h.title`,
-        [req.user!.tenantId,id],
+        [req.user!.tenantId,id,canReadStaffing],
       )).rows;
-      const canReadStaffing=canReadSiteData('employees:read');
       const instructions=(await query(
         `SELECT i.*,l.name AS location_name,u.email AS created_by_email,
           (SELECT count(*)::int FROM instruction_acknowledgements a WHERE a.tenant_id=i.tenant_id AND a.instruction_id=i.id AND a.acknowledged_version=i.version) AS acknowledgement_count,
@@ -401,8 +418,7 @@ objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requi
       return res.status(400).json({error:`${body.location_type} locations require a parent location`});
     }
     if(body.responsible_employee_id){
-      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
-      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
     }
     const row=(await query(`INSERT INTO object_locations(tenant_id,site_id,parent_id,code,name,location_type,description,security_level,hazard_notes,access_rules,responsible_employee_id,sort_order)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
@@ -449,8 +465,7 @@ objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requ
       }
     }
     if(body.responsible_employee_id){
-      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
-      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
     }
     const columns:Record<keyof typeof body,string>={parent_id:'parent_id',code:'code',name:'name',location_type:'location_type',description:'description',security_level:'security_level',hazard_notes:'hazard_notes',access_rules:'access_rules',responsible_employee_id:'responsible_employee_id',sort_order:'sort_order'};
     const patch=patchAssignments(body,columns,4);
@@ -475,8 +490,7 @@ objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,require
       if(!location)return res.status(400).json({error:'Location not found in site'});
     }
     if(body.responsible_employee_id){
-      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
-      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
     }
     const row=(await query(`INSERT INTO object_hazards(tenant_id,site_id,location_id,title,category,description,likelihood,impact,protective_measures,required_actions,responsible_employee_id,due_on,review_on,status,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
@@ -496,8 +510,7 @@ objectManagementRouter.patch('/sites/:id/hazards/:hazardId',requireAuth,requireC
       if(!location)return res.status(400).json({error:'Location not found in site'});
     }
     if(body.responsible_employee_id){
-      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
-      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
     }
     const dueOn=body.due_on===undefined?(current.due_on?String(current.due_on).slice(0,10):null):body.due_on;
     const reviewOn=body.review_on===undefined?(current.review_on?String(current.review_on).slice(0,10):null):body.review_on;

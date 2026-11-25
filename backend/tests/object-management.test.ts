@@ -64,24 +64,34 @@ describe('object management',()=>{
     const withoutEmployeeRead={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'sites:read',scope:'site'}]};
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([withEmployeeRead]);
-      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM sites s'))return result([{id:site,object_manager_employee_id:values?.[2]?'employee-1':null,operations_manager_employee_id:values?.[2]?'employee-1':null,object_manager_name:values?.[2]?'Mia Guard':null,operations_manager_name:values?.[2]?'Mia Guard':null}]);
+      if(sql.includes('FROM object_locations l'))return result([{id:'location-1',responsible_employee_id:values?.[2]? 'employee-1':null,responsible_employee_name:values?.[2]?'Mia Guard':null}]);
+      if(sql.includes('FROM object_hazards h'))return result([{id:'hazard-1',responsible_employee_id:values?.[2]?'employee-1':null,responsible_employee_name:values?.[2]?'Mia Guard':null}]);
       if(sql.includes('FROM site_instructions i'))return result([{...instruction,acknowledgements:values?.[2]?[acknowledgement]:[]}]);
       return result([]);
     });
     const visible=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(visible.status).toBe(200);
     expect(visible.body.instructions[0].acknowledgements).toEqual([acknowledgement]);
+    expect(visible.body.site).toEqual(expect.objectContaining({object_manager_employee_id:'employee-1',object_manager_name:'Mia Guard'}));
+    expect(visible.body.locations[0]).toEqual(expect.objectContaining({responsible_employee_id:'employee-1',responsible_employee_name:'Mia Guard'}));
+    expect(visible.body.hazards[0]).toEqual(expect.objectContaining({responsible_employee_id:'employee-1',responsible_employee_name:'Mia Guard'}));
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM site_instructions i'))?.[1]).toEqual([tenant,site,true]);
 
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([withoutEmployeeRead]);
-      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM sites s'))return result([{id:site,object_manager_employee_id:values?.[2]?'employee-1':null,operations_manager_employee_id:values?.[2]?'employee-1':null,object_manager_name:values?.[2]?'Mia Guard':null,operations_manager_name:values?.[2]?'Mia Guard':null}]);
+      if(sql.includes('FROM object_locations l'))return result([{id:'location-1',responsible_employee_id:values?.[2]?'employee-1':null,responsible_employee_name:values?.[2]?'Mia Guard':null}]);
+      if(sql.includes('FROM object_hazards h'))return result([{id:'hazard-1',responsible_employee_id:values?.[2]?'employee-1':null,responsible_employee_name:values?.[2]?'Mia Guard':null}]);
       if(sql.includes('FROM site_instructions i'))return result([{...instruction,acknowledgements:values?.[2]?[acknowledgement]:[]}]);
       return result([]);
     });
     const hidden=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(hidden.status).toBe(200);
+    expect(hidden.body.site).toEqual(expect.objectContaining({object_manager_employee_id:null,operations_manager_employee_id:null,object_manager_name:null,operations_manager_name:null}));
     expect(hidden.body.instructions[0]).toEqual(expect.objectContaining({acknowledgement_count:1,acknowledgements:[]}));
+    expect(hidden.body.locations[0]).toEqual(expect.objectContaining({responsible_employee_id:null,responsible_employee_name:null}));
+    expect(hidden.body.hazards[0]).toEqual(expect.objectContaining({responsible_employee_id:null,responsible_employee_name:null}));
     expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('FROM site_instructions i')).at(-1)?.[1]).toEqual([tenant,site,false]);
   });
 
@@ -483,12 +493,12 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_locations'))).toBe(false);
   });
 
-  it('creates a location with a tenant-validated responsible employee and audit event',async()=>{
+  it('creates a location with a site-assigned responsible employee and audit event',async()=>{
     const employee='00000000-0000-4000-8000-0000000000dd';
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([sessionUser]);
       if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
-      if(sql.includes('FROM employees WHERE'))return result([{id:employee}]);
+      if(sql.includes('FROM employee_object_assignments oa'))return result([{id:'assignment-1'}]);
       if(sql.includes('INSERT INTO object_locations'))return result([{id:'00000000-0000-4000-8000-0000000000de',responsible_employee_id:employee}]);
       return result([]);
     });
@@ -498,7 +508,7 @@ describe('object management',()=>{
       .send({name:'North building',location_type:'building',responsible_employee_id:employee});
     expect(response.status).toBe(201);
     expect(response.body.responsible_employee_id).toBe(employee);
-    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employees WHERE'))?.[1]).toEqual([tenant,employee]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_object_assignments oa'))?.[1]).toEqual([tenant,site,employee]);
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.location.created')).toBe(true);
   });
 
@@ -528,10 +538,11 @@ describe('object management',()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([sessionUser]);
       if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location,location_type:'building',parent_id:null}]);
-      if(sql.includes('FROM employees WHERE'))return result([{id:employee}]);
+      if(sql.includes('FROM employee_object_assignments oa'))return result([{id:'assignment-1'}]);
       if(sql.includes('UPDATE object_locations SET'))return result([{id:location,name:'North Lobby',security_level:'high',responsible_employee_id:employee}]);
       return result([]);
     });
+
     const response=await request(app).patch(`/api/v1/sites/${site}/locations/${location}`)
       .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
       .set('x-csrf-token','csrf-value')
@@ -541,6 +552,27 @@ describe('object management',()=>{
     const update=queryMock.mock.calls.find(([sql])=>String(sql).includes('UPDATE object_locations SET'));
     expect(update?.[1]).toEqual([tenant,site,location,null,'North Lobby','high',employee]);
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.location.updated')).toBe(true);
+  });
+
+  it('rejects off-site employees as location and hazard owners',async()=>{
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([sessionUser]);
+      if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
+      if(sql.includes('FROM employee_object_assignments oa'))return result([]);
+      return result([]);
+    });
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    const location=await request(app).post(`/api/v1/sites/${site}/locations`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({name:'North building',location_type:'building',responsible_employee_id:employee});
+    expect(location.status).toBe(400);
+    expect(location.body.error).toContain('assigned to this site');
+    const hazard=await request(app).post(`/api/v1/sites/${site}/hazards`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Entry risk',category:'unauthorized_access',description:'Unassigned guard',likelihood:2,impact:3,responsible_employee_id:employee});
+    expect(hazard.status).toBe(400);
+    expect(hazard.body.error).toContain('assigned to this site');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_locations'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_hazards'))).toBe(false);
   });
 
   it('rejects hierarchy cycles and hazard dates that violate the risk review window',async()=>{

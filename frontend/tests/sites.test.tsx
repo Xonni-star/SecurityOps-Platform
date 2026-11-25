@@ -110,13 +110,16 @@ describe('Objektübersicht',()=>{
     const context={
       site:sites[0],customers:[],contracts:[],locations:[],
       hazards:[{id:'hazard-1',title:'Loading bay fire risk',category:'fire',description:'Original risk',likelihood:2,impact:3,risk_score:6,protective_measures:'Extinguishers',required_actions:'Inspect monthly',responsible_employee_id:null,due_on:'2026-12-01',review_on:'2026-12-15',status:'open',location_id:null,location_name:null,responsible_employee_name:null}],
-      instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+      instructions:[],journal:null,staffing:[{id:'assignment-1',employee_id:'assigned',employee_name:'Site Guard'}],shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
     };
-    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:options?.method==='PATCH'?{}:context);
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'assigned',name:'Site Guard'},{id:'off-site',name:'Other employee'}]:options?.method==='PATCH'?{}:context);
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen'}));
     fireEvent.click(await screen.findByRole('button',{name:'Bearbeiten'}));
+    const owner=screen.getByLabelText('Gefährdungsverantwortliche Person');
+    expect(within(owner).getByRole('option',{name:'Site Guard'})).toBeTruthy();
+    expect(within(owner).queryByRole('option',{name:'Other employee'})).toBeNull();
     fireEvent.change(screen.getByLabelText('Beschreibung'),{target:{value:'Updated risk description'}});
     fireEvent.change(screen.getByLabelText('Status'),{target:{value:'mitigated'}});
     fireEvent.click(screen.getByRole('button',{name:'Gefährdung speichern'}));
