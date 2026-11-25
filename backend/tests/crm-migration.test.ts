@@ -55,7 +55,7 @@ test('customer management migration extends the CRM model with tenant-safe activ
 
 test('all repository migrations have a unique, gap-free version sequence',async()=>{
   const migrations=await loadMigrationFiles(join(process.cwd(),'migrations'));
-  expect(migrations[migrations.length-1]?.id).toBe('050_maintenance_orders.sql');
+  expect(migrations[migrations.length-1]?.id).toBe('051_maintenance_completion_audit.sql');
 });
 
 test('object staffing target migration adds a guarded site-level headcount',async()=>{
@@ -111,4 +111,13 @@ test('maintenance workflow migration adds orders without a parallel asset table'
   expect(sql).toContain('CREATE TABLE IF NOT EXISTS maintenance_order_documents');
   expect(sql).toContain('CREATE POLICY tenant_isolation ON maintenance_orders');
   expect(sql).not.toContain('CREATE TABLE IF NOT EXISTS assets');
+});
+
+test('maintenance completion audit migration records the completing user additively',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','051_maintenance_completion_audit.sql'),'utf8');
+  expect(sql).toContain('ALTER TABLE maintenance_orders');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS completed_by uuid');
+  expect(sql).toContain('maintenance_orders_tenant_completer_fk');
+  expect(sql).toContain('FOREIGN KEY (tenant_id, completed_by) REFERENCES users(tenant_id, id)');
+  expect(sql).not.toMatch(/DROP COLUMN|UPDATE maintenance_orders|DELETE FROM/i);
 });

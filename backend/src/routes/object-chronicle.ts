@@ -1,17 +1,68 @@
-import {Router,type RequestHandler} from 'express';
+import {Router} from 'express';
 import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requirePermission} from '../middleware/auth.js';
-import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
+import {createSitePermissionReader} from '../services/site-permissions.js';
 
 const uuid=z.string().uuid();
 const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
-function canRead(req:Parameters<RequestHandler>[0],permission:string,siteId:string){
-  const user=req.user!;
-  const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
-  const scope=effectivePermissionScope(grants,permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-  return scope!==null&&canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId});
+type ChronicleLink={target:string;label:string;permission:string};
+type ChronicleRow={
+  event_kind:string;entity_type:string|null;entity_id:string|null;site_id:string|null;
+  details:Record<string,unknown>|null;
+};
+
+function detailId(details:Record<string,unknown>|null,key:string):string|null{
+  const value=details?.[key];
+  return typeof value==='string'?value:null;
+}
+
+/**
+ * Derives an existing frontend route from the real event data. Never invents
+ * a target: if the event carries no usable id there is no link, and the
+ * frontend shows a plain text hint instead.
+ */
+export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
+  const site=row.site_id;
+  const details=row.details;
+  const employeeId=detailId(details,'employee_id');
+  const documentId=detailId(details,'document_id');
+  const customerId=detailId(details,'customer_id');
+  const siteTab=(section:string,label:string,permission:string):ChronicleLink|null=>
+    site?{target:`/sites/${site}/${section}`,label,permission}:null;
+  switch(row.entity_type){
+    case 'maintenance_order':return siteTab('technik','Wartungsauftrag öffnen','devices:read');
+    case 'dms_document':return siteTab('dokumente','Dokument öffnen','dms:read');
+    case 'dms_document_requirement':return siteTab('dokumente','Pflichtdokument öffnen','dms:read');
+    case 'device':return siteTab('technik','Gerät öffnen','devices:read');
+    case 'object_location':return siteTab('struktur','Bereich öffnen','sites:read');
+    case 'object_hazard':return siteTab('gefaehrdungen','Gefährdung öffnen','sites:read');
+    case 'site_instructions':return siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
+    case 'instruction_acknowledgements':return employeeId
+      ?{target:`/employees/${employeeId}`,label:'Kenntnisnahme öffnen',permission:'employees:read'}
+      :siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
+    case 'employee_object_assignment':return employeeId
+      ?{target:`/employees/${employeeId}`,label:'Mitarbeiterprofil öffnen',permission:'employees:read'}
+      :siteTab('personal','Personalübersicht öffnen','employees:read');
+    case 'customer_site':return customerId
+      ?{target:`/customers/${customerId}`,label:'Kunde öffnen',permission:'customers:read'}
+      :siteTab('kunden','Kunden & Verträge öffnen','customers:read');
+    case 'key':case 'key_bundle':return siteTab('schluessel','Schlüssel öffnen','keys:read');
+    case 'schedule_period':case 'schedule_shift':case 'schedule_assignment':return siteTab('dienstplanung','Dienstplanung öffnen','scheduling:read');
+    case 'watchbook_entry':return {target:'/watchbook',label:'Wachbucheintrag öffnen',permission:'watchbook:read'};
+    case 'alarm':return {target:'/alarms',label:'Alarm öffnen',permission:'alarms:read'};
+    case 'incident':return {target:'/incidents',label:'Vorfall öffnen',permission:'incidents:read'};
+    case 'handover':return {target:'/handovers',label:'Übergabe öffnen',permission:'handover:read'};
+  }
+  if(row.event_kind.startsWith('qualification'))return employeeId
+    ?{target:`/employees/${employeeId}/qualifikationen`,label:'Qualifikationsnachweis öffnen',permission:'qualifications:read'}
+    :{target:'/qualifications',label:'Qualifikationen öffnen',permission:'qualifications:read'};
+  if(row.event_kind.startsWith('employee'))return employeeId
+    ?{target:`/employees/${employeeId}`,label:'Mitarbeiterprofil öffnen',permission:'employees:read'}
+    :siteTab('personal','Personalübersicht öffnen','employees:read');
+  if(documentId)return siteTab('dokumente','Dokument öffnen','dms:read');
+  return null;
 }
 
 function category(eventKind:string){
@@ -38,10 +89,11 @@ export const objectChronicleRouter=Router();
 objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('sites:read',{allowedScopes:['tenant','site','own','system']}),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id));
-    if(!canRead(req,'sites:read',siteId))return res.status(403).json({error:'Permission scope does not include this site'});
+    const canRead=createSitePermissionReader(req);
+    if(!await canRead('sites:read',siteId))return res.status(403).json({error:'Permission scope does not include this site'});
     const filters=z.object({type:z.string().max(120).optional(),from:isoDate.optional(),to:isoDate.optional(),limit:z.coerce.number().int().min(1).max(500).optional()}).strict().parse(req.query);
     const patternMap:Record<string,string[]>={
-      'sites:read':['site.location.%','site.hazard.%','site.customer_link%'],
+      'sites:read':['site.location.%','site.hazard.%','site.hazard_measure.%','site.customer_link%'],
       'devices:read':['devices.%','maintenance_order.%'],
       'dms:read':['dms.%','site.document_requirement.%'],
       'watchbook:read':['watchbook.%','site.instruction.%'],
@@ -53,7 +105,10 @@ objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('
       'incidents:read':['incident.%'],
       'handover:read':['handover.%'],
     };
-    const patterns=Object.entries(patternMap).flatMap(([permission,values])=>canRead(req,permission,siteId)?values:[]);
+    const patterns:string[]=[];
+    for(const [permission,values] of Object.entries(patternMap)){
+      if(await canRead(permission,siteId))patterns.push(...values);
+    }
     const types=filters.type?filters.type.split(',').map(value=>value.trim()).filter(Boolean):[];
     const rows=(await query(
       `WITH audit_source AS (
@@ -125,6 +180,10 @@ objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('
       [req.user!.tenantId,siteId,patterns.length?patterns:null,filters.from?`${filters.from}T00:00:00Z`:null,
         filters.to?`${filters.to}T00:00:00Z`:null,filters.limit??100,types.length?types:null],
     )).rows;
-    res.json({site_id:siteId,events:rows.map(row=>({...row,category:category(String(row.event_kind))}))});
+    res.json({site_id:siteId,events:rows.map(row=>({
+      ...row,
+      category:category(String(row.event_kind)),
+      link:chronicleLink(row as ChronicleRow),
+    }))});
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid chronicle filter'});next(error);}
 });

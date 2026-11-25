@@ -38,10 +38,15 @@ qualificationsRouter.post('/employees/:employeeId/qualifications',requirePermiss
     if(!employee)return res.status(404).json({error:'Employee not found'});
     const catalog=(await query('SELECT code FROM qualification_catalog WHERE tenant_id=$1 AND code=$2 AND active=true',[req.user!.tenantId,body.code])).rows[0];
     if(!catalog)return res.status(400).json({error:'Qualification code is not active in the catalog'});
+    // Site assignment is added to audit details so the object chronicle can
+    // show which object the qualification change belongs to.
+    const assignment=(await query(`SELECT site_id FROM employee_object_assignments
+      WHERE tenant_id=$1 AND employee_id=$2 AND starts_on<=CURRENT_DATE AND (ends_on IS NULL OR ends_on>=CURRENT_DATE)
+      ORDER BY primary_assignment DESC,starts_on DESC LIMIT 1`,[req.user!.tenantId,req.params.employeeId])).rows[0];
     const row=(await query(`INSERT INTO employee_qualifications(tenant_id,employee_id,code,valid_from,valid_until,document_id,issuing_authority,status,notes,updated_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now()) ON CONFLICT(tenant_id,employee_id,code) DO UPDATE SET valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,document_id=EXCLUDED.document_id,issuing_authority=EXCLUDED.issuing_authority,status=EXCLUDED.status,notes=EXCLUDED.notes,revoked_at=CASE WHEN EXCLUDED.status='revoked' THEN now() ELSE NULL END,updated_at=now() RETURNING *`,
       [req.user!.tenantId,req.params.employeeId,body.code,body.valid_from??null,body.valid_until??null,body.document_id??null,body.issuing_authority??null,body.status,body.notes??null])).rows[0];
-    await recordAudit(req.user!.tenantId,req.user!.id,'qualification.employee.updated','employee_qualification',row.id,{reason:body.reason,employee_id:req.params.employeeId,code:body.code,valid_from:body.valid_from??null,valid_until:body.valid_until??null});
+    await recordAudit(req.user!.tenantId,req.user!.id,'qualification.employee.updated','employee_qualification',row.id,{reason:body.reason,employee_id:req.params.employeeId,site_id:assignment?.site_id??null,code:body.code,valid_from:body.valid_from??null,valid_until:body.valid_until??null});
     res.status(201).json(row);
   }catch(error){next(error);}
 });
@@ -50,7 +55,10 @@ qualificationsRouter.delete('/employees/:employeeId/qualifications/:id',requireP
     const body=z.object({reason:nonempty.max(500)}).strict().parse(req.body);
     const row=(await query('DELETE FROM employee_qualifications WHERE tenant_id=$1 AND employee_id=$2 AND id=$3 RETURNING id,code',[req.user!.tenantId,req.params.employeeId,req.params.id])).rows[0];
     if(!row)return res.status(404).json({error:'Qualification not found'});
-    await recordAudit(req.user!.tenantId,req.user!.id,'qualification.employee.deleted','employee_qualification',row.id,{reason:body.reason,employee_id:req.params.employeeId,code:row.code});
+    const assignment=(await query(`SELECT site_id FROM employee_object_assignments
+      WHERE tenant_id=$1 AND employee_id=$2 AND starts_on<=CURRENT_DATE AND (ends_on IS NULL OR ends_on>=CURRENT_DATE)
+      ORDER BY primary_assignment DESC,starts_on DESC LIMIT 1`,[req.user!.tenantId,req.params.employeeId])).rows[0];
+    await recordAudit(req.user!.tenantId,req.user!.id,'qualification.employee.deleted','employee_qualification',row.id,{reason:body.reason,employee_id:req.params.employeeId,site_id:assignment?.site_id??null,code:row.code});
     res.status(204).send();
   }catch(error){next(error);}
 });
