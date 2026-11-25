@@ -8,10 +8,130 @@ import {withMaintenanceStatus} from '../services/maintenance-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 type ClassifiedObjectDocumentRow={
-  id:string;document_type:string|null;document_status:string|null;approval_status:string|null;
-  valid_from:string|null;valid_until:string|null;review_on:string|null;
+  id:string;title:string;document_type:string|null;document_status:string|null;approval_status:string|null;
+  valid_from:string|null;valid_until:string|null;review_on:string|null;reviewed_at:string|Date|null;
   versions:Array<{lifecycle_state:string|null}>|null;
 };
+
+type QualificationRow={
+  id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;
+  valid_from:string|null;valid_until:string|null;status:string;computed_status:string;
+  days_until_expiry?:number|null;document_id?:string|null;issuing_authority?:string|null;
+  notes?:string|null;revoked_at?:string|Date|null;updated_at?:string|Date|null;
+  catalog_active?:boolean|null;evidence_title?:string|null;evidence_document_status?:string|null;
+  evidence_approval_status?:string|null;evidence_valid_from?:string|Date|null;
+  evidence_valid_until?:string|Date|null;evidence_review_on?:string|Date|null;
+  evidence_reviewed_at?:string|Date|null;evidence_lifecycle_state?:string|null;
+};
+type QualificationIssue={code:string;label:string;detail:string;severity:'critical'|'high'|'medium'};
+type EnrichedQualification=QualificationRow&{
+  issue:QualificationIssue;evidence_status:string;evidence_label:string;
+  evidence_document_id:string|null;evidence_document_title:string|null;
+  last_checked_at:string|null;employee_url:string;
+};
+type PriorityAction={
+  id:string;site_id?:string|null;site_name?:string|null;entity_id?:string|null;employee_id?:string|null;
+  severity:'critical'|'high'|'medium';category:string;title:string;detail:string;
+  due_on:string|null;tab:string;permission:string;target:string;
+};
+
+const evidenceLabels:Record<string,string>={
+  gueltig:'Nachweis gültig',lauf_bald_ab:'Nachweis läuft bald ab',
+  bald_pruefpflichtig:'Nachweis bald prüfpflichtig',abgelaufen:'Nachweis abgelaufen',
+  fehlend:'Nachweis fehlt',nicht_freigegeben:'Nachweis nicht freigegeben',
+  pruefung_ausstehend:'Nachweisprüfung ausstehend',noch_nicht_gueltig:'Nachweis noch nicht gültig',
+  missing:'Kein Nachweis verknüpft',not_found:'Verknüpfter Nachweis nicht gefunden',
+};
+const blockingIssueCodes=new Set(['revoked','invalid','expired','expired_evidence','unapproved_evidence','missing_evidence']);
+const invalidIssueCodes=new Set(['revoked','invalid','expired','expired_evidence']);
+const issueSeverity:Record<string,QualificationIssue['severity']>={
+  revoked:'critical',invalid:'critical',expired:'critical',expired_evidence:'critical',
+  unapproved_evidence:'high',missing_evidence:'high',expiring:'medium',none:'medium',
+};
+
+function asDateValue(value:unknown):string|Date|null{
+  if(value===null||value===undefined)return null;
+  return value instanceof Date?value:String(value);
+}
+function utcDayValue(value:unknown,now=new Date()):number{
+  const date=value instanceof Date?value:new Date(`${String(value).slice(0,10)}T00:00:00Z`);
+  const valid=Number.isNaN(date.getTime())?now:date;
+  return Date.UTC(valid.getUTCFullYear(),valid.getUTCMonth(),valid.getUTCDate());
+}
+function daysUntilValue(value:unknown,now=new Date()):number|null{
+  if(value===null||value===undefined||value==='')return null;
+  const today=Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate());
+  return Math.round((utcDayValue(value,now)-today)/86_400_000);
+}
+function timestampValue(value:unknown):string|null{
+  if(value===null||value===undefined)return null;
+  if(value instanceof Date)return value.toISOString();
+  const date=new Date(String(value));
+  return Number.isNaN(date.getTime())?String(value):date.toISOString();
+}
+function classifyEvidence(row:QualificationRow,now=new Date()):{status:string;label:string}{
+  if(!row.document_id)return {status:'missing',label:evidenceLabels.missing};
+  if(!row.evidence_document_status&&!row.evidence_lifecycle_state)return {status:'not_found',label:evidenceLabels.not_found};
+  const classification=classifyDocument({
+    document_status:row.evidence_document_status,
+    approval_status:row.evidence_approval_status,
+    valid_from:asDateValue(row.evidence_valid_from),
+    valid_until:asDateValue(row.evidence_valid_until),
+    review_on:asDateValue(row.evidence_review_on),
+    reviewed_at:asDateValue(row.evidence_reviewed_at),
+    versions:row.evidence_lifecycle_state?[{lifecycle_state:row.evidence_lifecycle_state}]:[],
+  },now);
+  return {status:classification.computed_status,label:evidenceLabels[classification.computed_status]??classification.status_label};
+}
+function qualificationIssue(row:QualificationRow,days:number|null,evidence:{status:string;label:string}):QualificationIssue{
+  const status=String(row.status??'');
+  if(status==='revoked'||row.revoked_at)return {
+    code:'revoked',label:'Widerrufen',detail:row.revoked_at?`Widerrufen am ${timestampValue(row.revoked_at)?.slice(0,10)}`:'Qualifikationsnachweis wurde widerrufen',severity:'critical',
+  };
+  if(status==='invalid'||row.catalog_active===false)return {
+    code:'invalid',label:'Ungültig',detail:'Qualifikation ist ungültig oder im Katalog nicht mehr aktiv',severity:'critical',
+  };
+  if(status==='expired'||days!==null&&days<0)return {
+    code:'expired',label:'Abgelaufen',detail:days!==null?`Seit ${Math.abs(days)} Tagen abgelaufen`:'Qualifikation ist abgelaufen',severity:'critical',
+  };
+  if(row.computed_status==='expiring'||days!==null&&days<=90)return {
+    code:'expiring',label:'Läuft bald ab',detail:days!==null?`Noch ${days} Tage gültig`:'Qualifikation läuft in Kürze ab',severity:'medium',
+  };
+  if(evidence.status==='missing'||evidence.status==='not_found')return {
+    code:'missing_evidence',label:'Nachweis fehlt',detail:evidence.label,severity:'high',
+  };
+  if(evidence.status==='abgelaufen'||evidence.status==='noch_nicht_gueltig')return {
+    code:'expired_evidence',label:'Nachweis nicht gültig',detail:evidence.label,severity:'critical',
+  };
+  if(['nicht_freigegeben','pruefung_ausstehend'].includes(evidence.status))return {
+    code:'unapproved_evidence',label:'Nachweis nicht freigegeben',detail:evidence.label,severity:'high',
+  };
+  return {code:'none',label:'Gültig',detail:'Keine offene Qualifikationswarnung',severity:'medium'};
+}
+function enrichQualifications(rows:QualificationRow[],now=new Date()):EnrichedQualification[]{
+  return rows.map(row=>{
+    const days=row.days_until_expiry??daysUntilValue(row.valid_until,now);
+    const evidence=classifyEvidence(row,now);
+    return {
+      ...row,
+      days_until_expiry:days,
+      issue:qualificationIssue(row,days,evidence),
+      evidence_status:evidence.status,
+      evidence_label:evidence.label,
+      evidence_document_id:row.document_id??null,
+      evidence_document_title:row.evidence_title??null,
+      last_checked_at:timestampValue(row.updated_at),
+      employee_url:`/employees/${row.employee_id}/qualifikationen`,
+    };
+  });
+}
+
+function sortPriorityActions(actions:PriorityAction[],limit=40):PriorityAction[]{
+  const rank:Record<PriorityAction['severity'],number>={critical:0,high:1,medium:2};
+  return actions.sort((left,right)=>rank[left.severity]-rank[right.severity]
+    ||String(left.due_on??'9999-12-31').localeCompare(String(right.due_on??'9999-12-31'))
+    ||left.title.localeCompare(right.title)).slice(0,limit);
+}
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
@@ -116,6 +236,7 @@ objectManagementRouter.get(
       const customerSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('customers:read',siteId));
       const contractSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('contracts:read',siteId));
       const employeeSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('employees:read',siteId));
+      const qualificationSiteIds=employeeSiteIds.filter(siteId=>canReadSiteData('qualifications:read',siteId));
       const documentSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('dms:read',siteId));
       const watchbookSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('watchbook:read',siteId));
       const scheduleSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('scheduling:read',siteId));
@@ -298,7 +419,147 @@ objectManagementRouter.get(
         open_maintenance:sum('open_maintenance_count',deviceSiteIds.length>0),
         overdue_maintenance:sum('overdue_maintenance_count',deviceSiteIds.length>0),
       };
-      res.json({sites,metrics});
+      const priorityActions=(await query<PriorityAction>(
+        `WITH action_source AS (
+          SELECT h.site_id,
+            CASE WHEN h.risk_score>=20 THEN 'critical'::text ELSE 'high'::text END AS severity,
+            'Gefährdungen'::text AS category,
+            'Kritische Gefährdung: '||h.title AS title,
+            'Risikoscore '||h.risk_score||COALESCE(' · '||l.name,'') AS detail,
+            h.due_on::date AS due_on,'gefaehrdungen'::text AS tab,'sites:read'::text AS permission,
+            h.id::text AS entity_id,NULL::text AS employee_id
+          FROM object_hazards h
+          LEFT JOIN object_locations l ON l.tenant_id=h.tenant_id AND l.id=h.location_id
+          WHERE h.tenant_id=$1 AND h.site_id=ANY($2::uuid[]) AND h.status='open' AND h.risk_score>=15
+          UNION ALL
+          SELECT m.site_id,'high'::text,'Maßnahmen',
+            'Überfällige Maßnahme: '||m.title,
+            COALESCE('Gefährdung: '||h.title,'Maßnahme ohne verknüpfte Gefährdung'),
+            m.due_on::date,'gefaehrdungen','sites:read',m.id::text,NULL::text
+          FROM object_hazard_measures m
+          LEFT JOIN object_hazards h ON h.tenant_id=m.tenant_id AND h.id=m.hazard_id
+          WHERE m.tenant_id=$1 AND m.site_id=ANY($2::uuid[])
+            AND m.status IN ('open','in_progress') AND m.due_on<CURRENT_DATE
+          UNION ALL
+          SELECT i.site_id,'high'::text,'Dienstanweisungen',
+            'Freigabe ausstehend: '||i.title,'Version '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
+          FROM site_instructions i
+          WHERE i.tenant_id=$1 AND i.site_id=ANY($3::uuid[]) AND i.status='pending_approval'
+          UNION ALL
+          SELECT i.site_id,'high'::text,'Dienstanweisungen',
+            'Dienstanweisung abgelaufen: '||i.title,'Version '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
+          FROM site_instructions i
+          WHERE i.tenant_id=$1 AND i.site_id=ANY($3::uuid[]) AND i.status='approved'
+            AND i.valid_until IS NOT NULL AND i.valid_until<CURRENT_DATE
+          UNION ALL
+          SELECT i.site_id,'medium'::text,'Dienstanweisungen',
+            'Kenntnisnahme ausstehend: '||i.title,
+            count(DISTINCT oa.employee_id)||' zugeordnete Mitarbeitende ohne Bestätigung',
+            i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
+          FROM site_instructions i
+          JOIN employee_object_assignments oa ON oa.tenant_id=i.tenant_id AND oa.site_id=i.site_id
+            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+          WHERE i.tenant_id=$1 AND i.site_id=ANY($9::uuid[]) AND i.status='approved' AND i.requires_acknowledgement
+            AND NOT EXISTS (
+              SELECT 1 FROM instruction_acknowledgements ia
+              WHERE ia.tenant_id=i.tenant_id AND ia.instruction_id=i.id
+                AND ia.employee_id=oa.employee_id AND ia.acknowledged_version=i.version
+            )
+          GROUP BY i.id,i.site_id,i.title,i.version,i.valid_until
+          UNION ALL
+          SELECT r.site_id,'high'::text,'Dokumente',
+            'Pflichtdokument fehlt: '||r.document_type,
+            COALESCE(e.name,'Keine verantwortliche Person hinterlegt'),NULL::date,'dokumente','dms:read',r.id::text,NULL::text
+          FROM dms_document_requirements r
+          LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.responsible_employee_id
+          WHERE r.tenant_id=$1 AND r.site_id=ANY($4::uuid[]) AND r.required
+            AND NOT EXISTS (
+              SELECT 1 FROM dms_documents d
+              JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+              WHERE d.tenant_id=r.tenant_id AND d.site_id=r.site_id AND d.document_type=r.document_type
+                AND d.document_status='active' AND d.approval_status='approved'
+                AND (d.valid_from IS NULL OR d.valid_from<=CURRENT_DATE)
+                AND (d.valid_until IS NULL OR d.valid_until>=CURRENT_DATE)
+            )
+          UNION ALL
+          SELECT d.site_id,'high'::text,'Dokumente',
+            'Dokument abgelaufen: '||d.title,'Ablaufdatum '||d.valid_until::text,d.valid_until::date,'dokumente','dms:read',d.id::text,NULL::text
+          FROM dms_documents d
+          WHERE d.tenant_id=$1 AND d.site_id=ANY($4::uuid[]) AND d.document_status='active'
+            AND d.approval_status='approved' AND d.valid_until<CURRENT_DATE
+            AND EXISTS (SELECT 1 FROM dms_versions v WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available')
+          UNION ALL
+          SELECT d.site_id,'high'::text,'Dokumente',
+            'Dokumentfreigabe ausstehend: '||d.title,'Freigabe und/oder verfügbare Version prüfen',d.valid_until::date,'dokumente','dms:read',d.id::text,NULL::text
+          FROM dms_documents d
+          WHERE d.tenant_id=$1 AND d.site_id=ANY($4::uuid[]) AND d.document_status='active'
+            AND (d.approval_status<>'approved' OR NOT EXISTS (
+              SELECT 1 FROM dms_versions v WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+            ))
+          UNION ALL
+          SELECT d.site_id,'high'::text,'Dokumente',
+            'Dokumentprüfung fällig: '||d.title,'Prüffrist '||d.review_on::text,d.review_on,'dokumente','dms:read',d.id::text,NULL::text
+          FROM dms_documents d
+          WHERE d.tenant_id=$1 AND d.site_id=ANY($4::uuid[]) AND d.document_status='active'
+            AND d.review_on<CURRENT_DATE
+            AND (d.reviewed_at IS NULL OR d.reviewed_at::date<d.review_on)
+          UNION ALL
+          SELECT o.site_id,'high'::text,'Technik & Wartung',
+            'Überfälliger Wartungsauftrag: '||o.order_number,
+            COALESCE(d.name,'Gerät nicht zugeordnet')||' · '||o.description,o.due_on::date,'technik','devices:read',o.id::text,NULL::text
+          FROM maintenance_orders o
+          LEFT JOIN devices d ON d.tenant_id=o.tenant_id AND d.id=o.device_id
+          WHERE o.tenant_id=$1 AND o.site_id=ANY($5::uuid[])
+            AND o.status IN ('planned','open','in_progress') AND o.due_on<CURRENT_DATE
+          UNION ALL
+          SELECT cs.site_id,'high'::text,'Aufgaben',
+            'Überfällige Aufgabe: '||ct.title,'Kunde: '||c.name,ct.due_at::date,'aufgaben','customers:read',ct.id::text,NULL::text
+          FROM customer_tasks ct
+          JOIN customer_sites cs ON cs.tenant_id=ct.tenant_id AND cs.customer_id=ct.customer_id AND cs.relationship_status='active'
+          JOIN customers c ON c.tenant_id=ct.tenant_id AND c.id=ct.customer_id
+          WHERE ct.tenant_id=$1 AND cs.site_id=ANY($6::uuid[]) AND ct.status='open' AND ct.due_at<now()
+          UNION ALL
+          SELECT sh.site_id,'medium'::text,'Dienstplanung',
+            'Schicht ohne Besetzung: '||sh.role_code,'Planung: '||p.name,sh.starts_at::date,'dienstplanung','scheduling:read',sh.id::text,NULL::text
+          FROM schedule_shifts sh
+          JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id
+          WHERE sh.tenant_id=$1 AND sh.site_id=ANY($7::uuid[]) AND p.status='published' AND sh.ends_at>=now()
+            AND NOT EXISTS (
+              SELECT 1 FROM schedule_assignments sa WHERE sa.tenant_id=sh.tenant_id AND sa.shift_id=sh.id AND sa.status='assigned'
+            )
+          UNION ALL
+          SELECT oa.site_id,
+            CASE WHEN q.status IN ('revoked','invalid','expired') OR q.valid_until<CURRENT_DATE THEN 'critical'::text
+                 WHEN q.document_id IS NULL THEN 'high'::text ELSE 'medium'::text END,
+            'Personal','Qualifikation prüfen: '||e.name||' · '||COALESCE(c.name,q.code),
+            CASE WHEN q.status='revoked' THEN 'Qualifikation widerrufen'
+                 WHEN q.status='invalid' OR c.active=false THEN 'Qualifikation ungültig oder Katalogeintrag inaktiv'
+                 WHEN q.valid_until<CURRENT_DATE THEN 'Qualifikation abgelaufen'
+                 WHEN q.document_id IS NULL THEN 'Kein Nachweis verknüpft'
+                 ELSE 'Qualifikation läuft bald ab' END,
+            q.valid_until,'personal','qualifications:read',q.id::text,q.employee_id::text
+          FROM employee_qualifications q
+          JOIN employee_object_assignments oa ON oa.tenant_id=q.tenant_id AND oa.employee_id=q.employee_id
+            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+          JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
+          LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
+          WHERE q.tenant_id=$1 AND oa.site_id=ANY($8::uuid[])
+            AND (q.status IN ('revoked','invalid','expired') OR q.valid_until<CURRENT_DATE
+              OR q.valid_until<=CURRENT_DATE+INTERVAL '90 days' OR q.document_id IS NULL)
+        )
+        SELECT a.*,s.name AS site_name,
+          CASE WHEN a.employee_id IS NOT NULL
+            THEN '/employees/'||a.employee_id||'/qualifikationen'
+            ELSE '/sites/'||a.site_id||'/'||a.tab END AS target
+        FROM action_source a
+        JOIN sites s ON s.tenant_id=$1 AND s.id=a.site_id
+        ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+          a.due_on ASC NULLS LAST,a.title ASC
+        LIMIT 40`,
+        [user.tenantId,visibleSiteIds,watchbookSiteIds,documentSiteIds,deviceSiteIds,taskSiteIds,scheduleSiteIds,
+          qualificationSiteIds,employeeSiteIds.filter(siteId=>watchbookSiteIds.includes(siteId))],
+      )).rows;
+      res.json({sites,metrics,priorityActions:sortPriorityActions(priorityActions)});
     }catch(error){next(error);}
   },
 );
@@ -625,9 +886,14 @@ objectManagementRouter.get(
          ORDER BY e.created_at DESC LIMIT 20`,
         [user.tenantId,id],
       )).rows:null;
-      const qualifications=canReadStaffing&&canReadSiteData('qualifications:read')?(await query(
+      const qualifications=canReadStaffing&&canReadSiteData('qualifications:read')?(await query<QualificationRow>(
         `SELECT q.id,q.employee_id,e.name AS employee_name,q.code,c.name AS qualification_name,
-          q.valid_from,q.valid_until,q.status,
+          q.valid_from,q.valid_until,q.status,q.document_id,q.issuing_authority,q.notes,q.revoked_at,q.updated_at,
+          c.active AS catalog_active,
+          d.title AS evidence_title,d.document_status AS evidence_document_status,
+          d.approval_status AS evidence_approval_status,d.valid_from AS evidence_valid_from,
+          d.valid_until AS evidence_valid_until,d.review_on AS evidence_review_on,d.reviewed_at AS evidence_reviewed_at,
+          latest.lifecycle_state AS evidence_lifecycle_state,
           CASE WHEN q.status IN ('revoked','invalid') THEN q.status
             WHEN q.valid_until IS NULL THEN 'valid'
             WHEN q.valid_until<CURRENT_DATE THEN 'expired'
@@ -638,6 +904,12 @@ objectManagementRouter.get(
          FROM employee_qualifications q
          JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
          LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
+          LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+          LEFT JOIN LATERAL (
+            SELECT v.lifecycle_state FROM dms_versions v
+            WHERE v.tenant_id=q.tenant_id AND v.document_id=q.document_id
+            ORDER BY v.version_no DESC LIMIT 1
+          ) latest ON true
          WHERE q.tenant_id=$1 AND EXISTS (
            SELECT 1 FROM employee_object_assignments oa
            WHERE oa.tenant_id=q.tenant_id AND oa.employee_id=q.employee_id AND oa.site_id=$2
@@ -646,6 +918,7 @@ objectManagementRouter.get(
          ORDER BY e.name,c.name,q.valid_until NULLS LAST LIMIT 200`,
         [user.tenantId,id],
       )).rows:null;
+      const enrichedQualifications=qualifications?enrichQualifications(qualifications):null;
       const handovers=canReadSiteData('handover:read')?(await query(
         `SELECT h.id,h.shift_id,h.title,h.status,h.created_at,
           (SELECT count(*)::int FROM handover_participants p
@@ -666,7 +939,7 @@ objectManagementRouter.get(
          ORDER BY name,last_seen_at DESC NULLS LAST`,
         [user.tenantId,id],
       )).rows:null;
-      const requirementRows=canReadDocuments?(await query<{id:string;document_type:string;required:boolean|null}>(
+      const requirementRows=canReadDocuments?(await query<{id:string;document_type:string;required:boolean|null;responsible_employee_name:string|null}>(
         `SELECT r.id,r.document_type,r.required,r.responsible_employee_id,e.name AS responsible_employee_name,r.created_at,r.updated_at
          FROM dms_document_requirements r
          LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.responsible_employee_id
@@ -686,35 +959,57 @@ objectManagementRouter.get(
          GROUP BY o.id,d.name,d.asset_number,e.name
          ORDER BY o.due_on ASC NULLS LAST,o.created_at DESC LIMIT 50`,
         [user.tenantId,id],
-      )).rows.map(row=>withMaintenanceStatus(row as Record<string,unknown>)):null;
+      )).rows.map((row):Record<string,unknown>=>{
+        const order=withMaintenanceStatus(row as Record<string,unknown>) as Record<string,unknown>;
+        const links=Array.isArray(order.documents)?order.documents as Array<Record<string,unknown>>:[];
+        return {...order,documents:links.map(link=>{
+          const classified=documents?.find(document=>document.id===link.document_id);
+          return {
+            ...link,
+            document_status:classified?.status_label??link.document_status??null,
+            computed_status:classified?.computed_status??null,
+          };
+        })};
+      }):null;
       const documentRequirements=canReadDocuments?requirementRows.map(row=>({
         ...row,
         ...classifyRequirement(row,(documents??[]).filter(document=>document.document_type===row.document_type)),
       })):null;
       // One general personnel overview, explicitly distinct from the binding
       // per-shift verdict delivered by the staffing module.
-      const expiringQualifications=(qualifications??[]).filter(qualification=>qualification.computed_status==='expiring');
-      const invalidQualifications=(qualifications??[]).filter(qualification=>['expired','revoked','invalid'].includes(qualification.computed_status));
-      const staffIds=new Set((staffing??[]).map(assignment=>assignment.employee_id as string));
+      const enriched=enrichedQualifications??[];
+      const issueRank:Record<QualificationIssue['severity'],number>={critical:0,high:1,medium:2};
+      const expiringQualifications=enriched.filter(qualification=>qualification.issue.code==='expiring');
+      const invalidQualifications=enriched.filter(qualification=>invalidIssueCodes.has(qualification.issue.code));
+      const qualificationIssues=enriched.filter(qualification=>qualification.issue.code!=='none')
+        .sort((left,right)=>issueRank[left.issue.severity]-issueRank[right.issue.severity]
+          ||left.employee_name.localeCompare(right.employee_name));
+      const staffingById=new Map((staffing??[]).map(assignment=>[assignment.employee_id as string,assignment]));
+      const staffIds=new Set(staffingById.keys());
       const missingAcknowledgements=(instructions??[]).flatMap(instruction=>{
         if(instruction.status!=='approved'||instruction.requires_acknowledgement!==true)return [];
         const acknowledged=new Set((instruction.acknowledgements??[]).map((acknowledgement:{employee_id:string})=>acknowledgement.employee_id));
-        const missing=(staffing??[]).filter(assignment=>staffIds.has(assignment.employee_id)&&!acknowledged.has(assignment.employee_id));
+        const missing=[...staffingById.values()].filter(assignment=>!acknowledged.has(assignment.employee_id as string));
         return missing.length?[{
           instruction_id:instruction.id,title:instruction.title,version:instruction.version,
+          target:`/sites/${id}/anweisungen`,
           missing_employee_ids:missing.map(assignment=>assignment.employee_id),
-          missing_employees:missing.map(assignment=>({employee_id:assignment.employee_id,employee_name:assignment.employee_name})),
+          missing_employees:missing.map(assignment=>({
+            employee_id:assignment.employee_id,
+            employee_name:assignment.employee_name,
+            employee_url:`/employees/${assignment.employee_id}`,
+          })),
         }]:[];
       });
       const personnelSummary=canReadStaffing?{
         assigned_employee_count:staffIds.size,
         expiring_qualification_count:expiringQualifications.length,
         invalid_qualification_count:invalidQualifications.length,
-        expiring_qualifications:expiringQualifications.map(qualification=>({
-          employee_id:qualification.employee_id,employee_name:qualification.employee_name,
-          code:qualification.code,qualification_name:qualification.qualification_name,
-          days_until_expiry:qualification.days_until_expiry,
-        })),
+        qualification_issue_count:qualificationIssues.length,
+        blocking_qualification_issue_count:qualificationIssues.filter(qualification=>blockingIssueCodes.has(qualification.issue.code)).length,
+        expiring_qualifications:expiringQualifications,
+        invalid_qualifications:invalidQualifications,
+        qualification_issues:qualificationIssues,
         pending_acknowledgement_count:missingAcknowledgements.length,
         missing_acknowledgements:missingAcknowledgements,
       }:null;
@@ -743,7 +1038,109 @@ objectManagementRouter.get(
         counts[computed]=(counts[computed]??0)+1;
         return counts;
       },{planned:0,open:0,in_progress:0,overdue:0,completed:0,cancelled:0}):null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications,personnelSummary,recentPersonnelChanges,handovers,devices});
+      const now=new Date();
+      const today=now.toISOString().slice(0,10);
+      const day=(value:unknown):string|null=>{
+        if(value===null||value===undefined||value==='')return null;
+        return value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);
+      };
+      const sectionTarget=(tab:string)=>`/sites/${id}/${tab}`;
+      const actions:PriorityAction[]=[];
+      for(const hazard of hazards??[]){
+        if(hazard.status==='open'&&hazard.risk_score>=15)actions.push({
+          id:`hazard-${hazard.id}`,site_id:id,entity_id:hazard.id,
+          severity:hazard.risk_score>=20?'critical':'high',category:'Gefährdungen',
+          title:`Kritische Gefährdung: ${hazard.title}`,
+          detail:`Risikoscore ${hazard.risk_score}${hazard.location_name?` · ${hazard.location_name}`:''}`,
+          due_on:day(hazard.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen'),
+        });
+        for(const measure of hazard.measures??[]){
+          if(['open','in_progress'].includes(measure.status)&&measure.due_on&&day(measure.due_on)!<today)actions.push({
+            id:`measure-${measure.id}`,site_id:id,entity_id:measure.id,severity:'high',category:'Maßnahmen',
+            title:`Überfällige Maßnahme: ${measure.title}`,detail:`Gefährdung: ${hazard.title}`,
+            due_on:day(measure.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen'),
+          });
+        }
+      }
+      for(const instruction of instructions??[]){
+        if(instruction.status==='pending_approval')actions.push({
+          id:`instruction-approval-${instruction.id}`,site_id:id,entity_id:instruction.id,severity:'high',category:'Dienstanweisungen',
+          title:`Freigabe ausstehend: ${instruction.title}`,detail:`Version ${instruction.version}`,
+          due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:sectionTarget('anweisungen'),
+        });
+        if(instruction.status==='approved'&&instruction.valid_until&&day(instruction.valid_until)!<today)actions.push({
+          id:`instruction-expired-${instruction.id}`,site_id:id,entity_id:instruction.id,severity:'high',category:'Dienstanweisungen',
+          title:`Dienstanweisung abgelaufen: ${instruction.title}`,detail:`Version ${instruction.version}`,
+          due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:sectionTarget('anweisungen'),
+        });
+      }
+      for(const acknowledgement of missingAcknowledgements)actions.push({
+        id:`acknowledgement-${acknowledgement.instruction_id}`,site_id:id,entity_id:acknowledgement.instruction_id,
+        severity:'medium',category:'Dienstanweisungen',
+        title:`Kenntnisnahme ausstehend: ${acknowledgement.title}`,
+        detail:acknowledgement.missing_employees.map(employee=>employee.employee_name).join(', '),
+        due_on:null,tab:'anweisungen',permission:'watchbook:read',target:acknowledgement.target,
+      });
+      for(const requirement of documentRequirements??[]){
+        if(!requirement.missing)continue;
+        actions.push({
+          id:`requirement-${requirement.id}`,site_id:id,entity_id:requirement.id,severity:'high',category:'Dokumente',
+          title:`Pflichtdokument fehlt: ${requirement.document_type}`,
+          detail:requirement.responsible_employee_name??'Keine verantwortliche Person hinterlegt',
+          due_on:null,tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
+        });
+      }
+      for(const document of documents??[]){
+        if(document.computed_status==='abgelaufen')actions.push({
+          id:`document-expired-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
+          title:`Dokument abgelaufen: ${document.title}`,detail:day(document.valid_until)?`Ablaufdatum ${day(document.valid_until)}`:'Ablaufdatum nicht hinterlegt',
+          due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
+        });
+        if(document.computed_status==='nicht_freigegeben')actions.push({
+          id:`document-unapproved-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
+          title:`Dokumentfreigabe ausstehend: ${document.title}`,detail:'Freigabe und/oder verfügbare Version prüfen',
+          due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
+        });
+        if(document.review_state==='overdue')actions.push({
+          id:`document-review-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
+          title:`Dokumentprüfung fällig: ${document.title}`,detail:day(document.review_on)?`Prüffrist ${day(document.review_on)}`:'Prüffrist überfällig',
+          due_on:day(document.review_on),tab:'dokumente',permission:'dms:read',target:sectionTarget('dokumente'),
+        });
+      }
+      for(const order of maintenanceOrders??[]){
+        const computed=String(order.computed_status??order.status??'');
+        if(!['planned','open','in_progress','overdue'].includes(computed))continue;
+        actions.push({
+          id:`maintenance-${String(order.id)}`,site_id:id,entity_id:String(order.id),severity:computed==='overdue'?'critical':'medium',
+          category:'Technik & Wartung',title:`${computed==='overdue'?'Überfälliger':'Offener'} Wartungsauftrag: ${String(order.order_number??'')}`,
+          detail:`${String(order.device_name??'Gerät nicht zugeordnet')} · ${String(order.description??'')}`,
+          due_on:day(order.due_on),tab:'technik',permission:'devices:read',target:sectionTarget('technik'),
+        });
+      }
+      for(const task of customerTasks??[]){
+        if(task.status!=='open'||!task.due_at||new Date(String(task.due_at)).getTime()>=now.getTime())continue;
+        actions.push({
+          id:`task-${task.id}`,site_id:id,entity_id:task.id,severity:'high',category:'Aufgaben',
+          title:`Überfällige Aufgabe: ${task.title}`,detail:`Kunde: ${task.customer_name??'unbekannt'}`,
+          due_on:day(task.due_at),tab:'aufgaben',permission:'customers:read',target:sectionTarget('aufgaben'),
+        });
+      }
+      for(const shift of shifts??[]){
+        if(shift.period_status!=='published'||shift.assigned_count>0||new Date(String(shift.ends_at)).getTime()<now.getTime())continue;
+        actions.push({
+          id:`shift-${shift.id}`,site_id:id,entity_id:shift.id,severity:'medium',category:'Dienstplanung',
+          title:`Schicht ohne Besetzung: ${shift.role_code}`,detail:`Planung: ${shift.period_name}`,
+          due_on:day(shift.starts_at),tab:'dienstplanung',permission:'scheduling:read',target:sectionTarget('dienstplanung'),
+        });
+      }
+      for(const qualification of qualificationIssues)actions.push({
+        id:`qualification-${qualification.id}`,site_id:id,entity_id:qualification.id,employee_id:qualification.employee_id,
+        severity:issueSeverity[qualification.issue.code]??'medium',category:'Personal',
+        title:`Qualifikation prüfen: ${qualification.employee_name} · ${qualification.qualification_name??qualification.code}`,
+        detail:`${qualification.issue.detail} · ${qualification.evidence_label}`,
+        due_on:day(qualification.valid_until),tab:'personal',permission:'qualifications:read',target:qualification.employee_url,
+      });
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications:enrichedQualifications,personnelSummary,recentPersonnelChanges,handovers,devices,priorityActions:sortPriorityActions(actions,12)});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );

@@ -560,7 +560,7 @@ describe('Objektübersicht',()=>{
 
   it('creates, progresses and completes server-managed maintenance orders over existing devices',async()=>{
     const device={id:'device-1',name:'Gate camera',asset_number:'A-1',status:'online',site_id:'0',last_seen_at:null,metadata:{},category:'Videoüberwachung',manufacturer:null,model:null,serial_number:null,location_id:null,responsible_employee_id:null,operational_status:'active',installed_on:null,commissioned_on:null,last_inspection_on:null,next_inspection_on:null,maintenance_interval_days:90,next_maintenance_on:'2026-11-01',last_maintenance_on:null,created_at:'2026-01-01T00:00:00Z',updated_at:'2026-01-01T00:00:00Z'};
-    const order={id:'order-1',site_id:'0',device_id:'device-1',device_name:'Gate camera',asset_number:'A-1',order_number:'MAIN-2026-000001',maintenance_type:'inspection',description:'Inspect camera',priority_code:'medium',due_on:'2026-11-01',status:'planned',computed_status:'overdue',status_label:'Überfällig',overdue:true,responsible_employee_id:null,responsible_employee_name:null,performed_work:null,result:null,remarks:null,next_maintenance_on:null,documents:[],created_at:'2026-01-01T00:00:00Z'};
+    const order={id:'order-1',site_id:'0',device_id:'device-1',device_name:'Gate camera',asset_number:'A-1',order_number:'MAIN-2026-000001',maintenance_type:'inspection',description:'Inspect camera',priority_code:'medium',due_on:'2026-11-01T00:00:00.000Z',status:'planned',computed_status:'overdue',status_label:'Überfällig',overdue:true,responsible_employee_id:null,responsible_employee_name:null,performed_work:null,result:null,remarks:null,next_maintenance_on:null,documents:[],created_at:'2026-01-01T00:00:00Z'};
     const context={
       site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],staffing:[],shifts:[],patrols:null,
       keys:null,keyBundles:null,documents:[],documentRequirements:[],alarms:[],incidents:[],customerTasks:[],maintenance:[],
@@ -572,6 +572,7 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Ausstattung & Technik'}));
     expect(await screen.findByText(/MAIN-2026-000001/)).toBeTruthy();
     expect(screen.getByText(/Überfällig/)).toBeTruthy();
+    expect(screen.getByText(/fällig am 1\.11\.2026/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Wartungsauftrag erfassen'}));
     fireEvent.change(screen.getByLabelText('Anlage'),{target:{value:'device-1'}});
     fireEvent.change(screen.getByLabelText('Beschreibung'),{target:{value:'Replace defective camera'}});
@@ -611,7 +612,8 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
     expect(await screen.findByText('Nicht einsatzfähig')).toBeTruthy();
     expect(screen.getByText(/Erforderliche Qualifikation fehlt/)).toBeTruthy();
-    expect(screen.getByRole('link',{name:/Nachweis öffnen/}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
+    expect(screen.getByRole('link',{name:/Nachweis night_guard/}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
+    expect(screen.getByText('missing_qualification')).toBeTruthy();
     expect(screen.queryByText('Einsatzfähig')).toBeNull();
     expect(requestedPaths).toHaveBeenCalledWith('/sites/0/shifts/shift-1/eligibility');
   });
@@ -750,5 +752,90 @@ describe('Objektübersicht',()=>{
     expect(screen.getByRole('link',{name:'Wartungsauftrag öffnen'}).getAttribute('href')).toBe('/sites/0/technik');
     fireEvent.click(screen.getByRole('button',{name:'Journal'}));
     expect(await screen.findByRole('link',{name:'Wartungsauftrag öffnen'})).toBeTruthy();
+  });
+
+  it('renders concrete dashboard priority actions and hides actions without permission',async()=>{
+    const priorityActions=[
+      {id:'hazard-1',site_id:'0',site_name:'Objekt 01',entity_id:'hazard-1',employee_id:null,severity:'critical' as const,category:'Gefährdungen',title:'Kritische Gefährdung: Brand',detail:'Risikoscore 20',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:'/sites/0/gefaehrdungen'},
+      {id:'qualification-1',site_id:'0',site_name:'Objekt 01',entity_id:'qualification-1',employee_id:'employee-1',severity:'medium' as const,category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen'},
+    ];
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?{sites:[],metrics:{total_sites:1,active_sites:1,preparation_sites:0,restricted_sites:0,critical_sites:1},priorityActions}:[]);
+    renderSites();
+    const actions=await screen.findByRole('region',{name:'Dringende Aufgaben in allen Objekten'});
+    expect(within(actions).getByRole('link',{name:'Kritische Gefährdung: Brand'}).getAttribute('href')).toBe('/sites/0/gefaehrdungen');
+    expect(within(actions).getByRole('link',{name:'Qualifikation prüfen: Mia Guard'}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
+    expect(actions.textContent).toContain('Kritisch');
+    expect(actions.textContent).toContain('Objekt 01');
+    expect(actions.textContent).toContain('fällig 24.11.2026');
+    expect(actions.textContent).toContain('Risikoscore 20');
+
+    cleanup();
+    permissionMock.mockImplementation(code=>code==='sites:read');
+    renderSites();
+    const restricted=await screen.findByRole('region',{name:'Dringende Aufgaben in allen Objekten'});
+    expect(within(restricted).queryByRole('link',{name:'Qualifikation prüfen: Mia Guard'})).toBeNull();
+    expect(within(restricted).getByRole('link',{name:'Kritische Gefährdung: Brand'})).toBeTruthy();
+  });
+
+  it('shows concrete qualification issues, evidence checks and permission-aware acknowledgement links on the object overview',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],
+      staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:[],documentRequirements:[],
+      alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],devices:[],
+      qualifications:[],
+      personnelSummary:{
+        assigned_employee_count:2,expiring_qualification_count:0,invalid_qualification_count:1,
+        qualification_issue_count:1,blocking_qualification_issue_count:1,
+        expiring_qualifications:[],invalid_qualifications:[],
+        qualification_issues:[{id:'q-1',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',qualification_name:'Erste Hilfe',valid_from:'2026-01-01',valid_until:'2030-01-01',status:'revoked',computed_status:'revoked',issue:{code:'revoked',label:'Widerrufen',detail:'Nur mit Freigabe einsetzbar',severity:'critical'},evidence_status:'not_found',evidence_label:'Verknüpfter Nachweis nicht gefunden',evidence_document_id:'document-1',evidence_document_title:null,last_checked_at:'2026-11-20T09:00:00Z',employee_url:'/employees/employee-1/qualifikationen?tab=nachweise'}],
+        pending_acknowledgement_count:1,
+        missing_acknowledgements:[{instruction_id:'instruction-1',title:'Evacuation',version:2,target:'/sites/0/anweisungen',missing_employee_ids:['employee-2'],missing_employees:[{employee_id:'employee-2',employee_name:'Leo Guard',employee_url:'/employees/employee-2'}]}],
+      },
+      priorityActions:[{id:'qualification-q-1',site_id:'0',site_name:'Objekt 01',entity_id:'q-1',employee_id:'employee-1',severity:'critical' as const,category:'Personal',title:'Qualifikation widerrufen: Mia Guard',detail:'Nur mit Freigabe einsetzbar',due_on:null,tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen?tab=nachweise'}],
+    };
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events:[]}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    const overviewActions=await screen.findByRole('region',{name:'Nächste Schritte nach Dringlichkeit'});
+    expect(within(overviewActions).getByRole('link',{name:'Qualifikation widerrufen: Mia Guard'}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen?tab=nachweise');
+    const personnel=await screen.findByRole('heading',{name:'Personalüberblick'});
+    const personnelSection=personnel.parentElement!;
+    expect(within(personnelSection).getByText(/Widerrufen: Nur mit Freigabe einsetzbar/)).toBeTruthy();
+    expect(within(personnelSection).getByText(/Verknüpfter Nachweis nicht gefunden/)).toBeTruthy();
+    expect(within(personnelSection).getByText(/zuletzt geprüft 20.11.2026/)).toBeTruthy();
+    expect(within(personnelSection).getByRole('link',{name:'Nachweis öffnen'}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen?tab=nachweise');
+    expect(within(personnelSection).getByText(/Allgemeine Personalübersicht/)).toBeTruthy();
+    expect(within(personnelSection).getByRole('link',{name:'Dienstanweisung öffnen'}).getAttribute('href')).toBe('/sites/0/anweisungen');
+  });
+
+  it('shows an explicit hint when a chronicle event has no permitted record link',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:[],
+      staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:[],documentRequirements:[],
+      alarms:[],incidents:[],customerTasks:[],maintenance:[],maintenanceOrders:[],devices:[],
+      qualifications:[],handovers:[],
+    };
+    const events=[
+      {id:'event-1',site_id:'0',occurred_at:'2026-11-25T12:00:00Z',event_kind:'maintenance_order.completed',entity_type:'maintenance_order',entity_id:'order-1',category:'Technik & Wartung',summary:'Wartung abgeschlossen',details:{},actor_user_id:null,actor_email:null,actor_employee_name:null,source_table:'audit_events',link:{target:'/sites/0/technik',label:'Wartungsauftrag öffnen',permission:'devices:read'}},
+      {id:'event-2',site_id:'0',occurred_at:'2026-11-25T08:00:00Z',event_kind:'site.instruction.created',entity_type:'site_instructions',entity_id:null,category:'Objekt',summary:'Dienstanweisung erstellt',details:{},actor_user_id:null,actor_email:null,actor_employee_name:null,source_table:'audit_events',link:null},
+    ];
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path.startsWith('/sites/0/chronicle')?{site_id:'0',events}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
+    const journal=await screen.findByRole('heading',{name:'Serverchronik mit Filtern'});
+    const list=journal.parentElement!.querySelector('ol')!;
+    expect(within(list as HTMLElement).getByRole('link',{name:'Wartungsauftrag öffnen'})).toBeTruthy();
+    expect(within(list as HTMLElement).getAllByText('Kein direkter Datensatzlink').length).toBe(1);
+
+    cleanup();
+    permissionMock.mockImplementation(code=>code==='sites:read');
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
+    const restricted=await screen.findByRole('heading',{name:'Serverchronik mit Filtern'});
+    const restrictedList=restricted.parentElement!.querySelector('ol')!;
+    expect(within(restrictedList as HTMLElement).queryByRole('link',{name:'Wartungsauftrag öffnen'})).toBeNull();
+    expect(within(restrictedList as HTMLElement).getAllByText('Kein direkter Datensatzlink').length).toBe(2);
   });
 });

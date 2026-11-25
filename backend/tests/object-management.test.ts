@@ -108,6 +108,52 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('SELECT s.id FROM sites s'))?.[1]).toEqual([tenant, [site]]);
   });
 
+  it('returns concrete, sorted priority actions from real dashboard records',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'sites:read',scope:'site'},
+        {code:'employees:read',scope:'site'},
+        {code:'qualifications:read',scope:'site'},
+        {code:'customers:read',scope:'tenant'},
+        {code:'contracts:read',scope:'tenant'},
+        {code:'dms:read',scope:'site'},
+        {code:'watchbook:read',scope:'site'},
+        {code:'scheduling:read',scope:'site'},
+        {code:'devices:read',scope:'site'},
+      ],
+    };
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('SELECT s.id FROM sites s'))return result([{id:site}]);
+      if(sql.includes('WITH customer_summary AS'))return result([{
+        id:site,name:'Headquarters',site_number:'S-1',address:'Berlin',alias:null,site_type:'Leitstelle',
+        status:'active',security_classification:'critical',object_manager_employee_id:null,object_manager_name:null,
+        operations_manager_employee_id:null,operations_manager_name:null,customer_names:['North Client'],
+        assigned_employee_count:2,active_contract_count:1,expiring_contract_count:1,open_hazard_count:2,
+        contract_statuses:['active'],open_task_count:0,overdue_task_count:0,open_shift_count:0,undercovered_shift_count:0,
+        critical_hazard_count:0,required_staff_count:0,understaffed:false,
+        overdue_measure_count:3,available_document_count:0,last_activity:'2026-11-25T10:00:00Z',
+      }]);
+      if(sql.includes('WITH action_source AS'))return result([
+        {id:'task-1',site_id:site,site_name:'Headquarters',entity_id:'task-1',employee_id:null,severity:'high',category:'Aufgaben',title:'Überfällige Aufgabe: Report',detail:'Kunde: North Client',due_on:'2026-11-20',tab:'aufgaben',permission:'customers:read',target:`/sites/${site}/aufgaben`},
+        {id:'hazard-1',site_id:site,site_name:'Headquarters',entity_id:'hazard-1',employee_id:null,severity:'critical',category:'Gefährdungen',title:'Kritische Gefährdung: Fire',detail:'Risikoscore 22',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:`/sites/${site}/gefaehrdungen`},
+        {id:'qualification-1',site_id:site,site_name:'Headquarters',entity_id:'q-1',employee_id:'employee-1',severity:'medium',category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen'},
+      ]);
+      return result([]);
+    });
+
+    const response=await request(app).get('/api/v1/sites/overview-dashboard').set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect((response.body.priorityActions as Array<{id:string;severity:string}>).map(action=>[action.id,action.severity])).toEqual([
+      ['hazard-1','critical'],['task-1','high'],['qualification-1','medium'],
+    ]);
+    expect(response.body.priorityActions[2].target).toBe('/employees/employee-1/qualifikationen');
+    const priorityCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH action_source AS'));
+    expect(priorityCall?.[1]).toEqual([tenant,[site],[site],[site],[site],[site],[site],[site],[site]]);
+  });
+
   it('does not request customer, contract, employee or DMS aggregates without their read scopes',async()=>{
     const sitesOnly={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'sites:read',scope:'tenant'}]};
     queryMock.mockImplementation(async(sql:string)=>{
@@ -365,10 +411,88 @@ describe('object management',()=>{
 
     const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    expect(response.body.qualifications).toEqual([qualification]);
+    expect(response.body.qualifications).toEqual([expect.objectContaining({
+      ...qualification,
+      days_until_expiry:null,
+      issue:expect.objectContaining({code:'expiring',severity:'medium'}),
+      evidence_status:'missing',
+      evidence_label:'Kein Nachweis verknüpft',
+      evidence_document_id:null,
+      evidence_document_title:null,
+      last_checked_at:null,
+      employee_url:'/employees/employee-1/qualifikationen',
+    })]);
     expect(response.body.handovers).toEqual([handover]);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_qualifications q'))?.[1]).toEqual([tenant,site]);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM handover_records h'))?.[1]).toEqual([tenant,site]);
+  });
+
+  it('returns concrete qualification issues, last checks and missing acknowledgement links',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'sites:read',scope:'site'},
+        {code:'employees:read',scope:'site'},
+        {code:'qualifications:read',scope:'site'},
+        {code:'watchbook:read',scope:'site'},
+      ],
+    };
+    const qualifications=[
+      {id:'q-revoked',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',qualification_name:'Erste Hilfe',status:'revoked',computed_status:'revoked',valid_until:'2030-01-01',days_until_expiry:1200,document_id:'document-1',revoked_at:'2026-11-01T10:00:00Z',updated_at:'2026-11-20T09:00:00Z'},
+      {id:'q-missing',employee_id:'employee-2',employee_name:'Leo Guard',code:'security',qualification_name:'Sicherheitsdienst',status:'valid',computed_status:'valid',valid_until:'2030-01-01',days_until_expiry:1200,updated_at:'2026-11-21T09:00:00Z'},
+      {id:'q-expiring',employee_id:'employee-3',employee_name:'Nora Guard',code:'first_aid',qualification_name:'Erste Hilfe',status:'valid',computed_status:'expiring',valid_until:'2026-12-20',days_until_expiry:25,updated_at:'2026-11-22T09:00:00Z'},
+    ];
+    const staffing=[
+      {id:'assignment-1',employee_id:'employee-1',employee_name:'Mia Guard'},
+      {id:'assignment-2',employee_id:'employee-2',employee_name:'Leo Guard'},
+      {id:'assignment-3',employee_id:'employee-3',employee_name:'Nora Guard'},
+      {id:'assignment-4',employee_id:'employee-3',employee_name:'Nora Guard'},
+    ];
+    const instruction={id:'instruction-1',title:'Evacuation',version:2,status:'approved',requires_acknowledgement:true,
+      acknowledgements:[{employee_id:'employee-1',employee_name:'Mia Guard',acknowledged_at:'2026-11-25T10:00:00Z'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM employee_qualifications q'))return result(qualifications);
+      if(sql.includes('FROM employee_object_assignments oa'))return result(staffing);
+      if(sql.includes('FROM site_instructions i'))return result([instruction]);
+      return result([]);
+    });
+
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.qualifications[0]).toEqual(expect.objectContaining({
+      issue:expect.objectContaining({code:'revoked',label:'Widerrufen',severity:'critical'}),
+      evidence_status:'not_found',
+      evidence_label:'Verknüpfter Nachweis nicht gefunden',
+      evidence_document_id:'document-1',
+      last_checked_at:'2026-11-20T09:00:00.000Z',
+      employee_url:'/employees/employee-1/qualifikationen',
+    }));
+    expect(response.body.qualifications[1].issue).toEqual(expect.objectContaining({code:'missing_evidence',label:'Nachweis fehlt',severity:'high'}));
+    expect(response.body.personnelSummary).toEqual(expect.objectContaining({
+      assigned_employee_count:3,
+      expiring_qualification_count:1,
+      invalid_qualification_count:1,
+      qualification_issue_count:3,
+      blocking_qualification_issue_count:2,
+      missing_acknowledgements:[expect.objectContaining({
+        instruction_id:'instruction-1',
+        target:`/sites/${site}/anweisungen`,
+        missing_employee_ids:['employee-2','employee-3'],
+      })],
+    }));
+    const actions=response.body.priorityActions as Array<{id:string;severity:string;target:string}>;
+    expect(actions.map(action=>action.id)).toEqual(expect.arrayContaining([
+      'qualification-q-revoked','qualification-q-missing','qualification-q-expiring','acknowledgement-instruction-1',
+    ]));
+    expect(actions.find(action=>action.id==='qualification-q-revoked')).toEqual(expect.objectContaining({
+      severity:'critical',target:'/employees/employee-1/qualifikationen',
+    }));
+    expect(actions.find(action=>action.id==='acknowledgement-instruction-1')).toEqual(expect.objectContaining({
+      severity:'medium',target:`/sites/${site}/anweisungen`,
+    }));
   });
 
   it('rejects a site-scoped user outside their assigned sites before reading or writing',async()=>{
@@ -884,5 +1008,28 @@ describe('object management',()=>{
       expect.objectContaining({id:'req-3',missing:true,requirement_status:'fehlend',matching_document_id:null}),
     ]);
     expect(String(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM dms_document_requirements r'))?.[0])).not.toContain('CASE WHEN r.required');
+  });
+
+  it('reports the same DMS status on object documents and linked maintenance evidence',async()=>{
+    const scoped={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'dms:read',scope:'site'},{code:'devices:read',scope:'site'}]};
+    const document={id:'doc-valid',title:'Prüfprotokoll',document_status:'active',approval_status:'approved',valid_until:'2099-01-01',review_on:null,reviewed_at:null,versions:[{lifecycle_state:'available'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site,status:'active'}]);
+      if(sql.includes('FROM dms_documents d'))return result([document]);
+      if(sql.includes('FROM maintenance_orders o'))return result([{
+        id:'order-1',site_id:site,device_id:null,order_number:'WO-1',maintenance_type:'inspection',
+        description:'Prüfung',priority_code:'high',due_on:null,status:'open',responsible_employee_id:null,
+        created_at:null,
+        documents:[{id:'link-1',document_id:document.id,document_title:document.title,document_status:'active'}],
+      }]);
+      return result([]);
+    });
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.documents).toEqual([expect.objectContaining({id:document.id,computed_status:'gueltig',status_label:'Gültig'})]);
+    expect(response.body.maintenanceOrders[0].documents).toEqual([expect.objectContaining({
+      document_id:document.id,document_status:'Gültig',computed_status:'gueltig',
+    })]);
   });
 });

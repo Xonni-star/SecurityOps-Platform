@@ -7,15 +7,18 @@ import {createSitePermissionReader} from '../services/site-permissions.js';
 const uuid=z.string().uuid();
 const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
-type ChronicleLink={target:string;label:string;permission:string};
+type ChronicleLink={target:string;label:string;permission:string;entity_id?:string|null;entity_type?:string|null};
 type ChronicleRow={
   event_kind:string;entity_type:string|null;entity_id:string|null;site_id:string|null;
   details:Record<string,unknown>|null;
 };
 
+function usableId(value:unknown):string|null{
+  return typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)?value:null;
+}
+
 function detailId(details:Record<string,unknown>|null,key:string):string|null{
-  const value=details?.[key];
-  return typeof value==='string'?value:null;
+  return usableId(details?.[key]);
 }
 
 /**
@@ -23,7 +26,7 @@ function detailId(details:Record<string,unknown>|null,key:string):string|null{
  * a target: if the event carries no usable id there is no link, and the
  * frontend shows a plain text hint instead.
  */
-export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
+function deriveChronicleLink(row:ChronicleRow):ChronicleLink|null{
   const site=row.site_id;
   const details=row.details;
   const employeeId=detailId(details,'employee_id');
@@ -32,20 +35,20 @@ export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
   const siteTab=(section:string,label:string,permission:string):ChronicleLink|null=>
     site?{target:`/sites/${site}/${section}`,label,permission}:null;
   switch(row.entity_type){
-    case 'maintenance_order':return siteTab('technik','Wartungsauftrag öffnen','devices:read');
-    case 'dms_document':return siteTab('dokumente','Dokument öffnen','dms:read');
-    case 'dms_document_requirement':return siteTab('dokumente','Pflichtdokument öffnen','dms:read');
-    case 'device':return siteTab('technik','Gerät öffnen','devices:read');
-    case 'object_location':return siteTab('struktur','Bereich öffnen','sites:read');
-    case 'object_hazard':return siteTab('gefaehrdungen','Gefährdung öffnen','sites:read');
-    case 'site_instructions':return siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
-    case 'instruction_acknowledgements':return employeeId
+    case 'maintenance_order':case 'maintenance_orders':return siteTab('technik','Wartungsauftrag öffnen','devices:read');
+    case 'dms_document':case 'dms_documents':return siteTab('dokumente','Dokument öffnen','dms:read');
+    case 'dms_document_requirement':case 'dms_document_requirements':return siteTab('dokumente','Pflichtdokument öffnen','dms:read');
+    case 'device':case 'devices':return siteTab('technik','Gerät öffnen','devices:read');
+    case 'object_location':case 'object_locations':return siteTab('struktur','Bereich öffnen','sites:read');
+    case 'object_hazard':case 'object_hazards':case 'object_hazard_measure':case 'object_hazard_measures':return siteTab('gefaehrdungen','Gefährdung öffnen','sites:read');
+    case 'site_instruction':case 'site_instructions':return siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
+    case 'instruction_acknowledgement':case 'instruction_acknowledgements':return employeeId
       ?{target:`/employees/${employeeId}`,label:'Kenntnisnahme öffnen',permission:'employees:read'}
       :siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
-    case 'employee_object_assignment':return employeeId
+    case 'employee_object_assignment':case 'employee_object_assignments':return employeeId
       ?{target:`/employees/${employeeId}`,label:'Mitarbeiterprofil öffnen',permission:'employees:read'}
       :siteTab('personal','Personalübersicht öffnen','employees:read');
-    case 'customer_site':return customerId
+    case 'customer_site':case 'customer_sites':return customerId
       ?{target:`/customers/${customerId}`,label:'Kunde öffnen',permission:'customers:read'}
       :siteTab('kunden','Kunden & Verträge öffnen','customers:read');
     case 'key':case 'key_bundle':return siteTab('schluessel','Schlüssel öffnen','keys:read');
@@ -63,6 +66,20 @@ export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
     :siteTab('personal','Personalübersicht öffnen','employees:read');
   if(documentId)return siteTab('dokumente','Dokument öffnen','dms:read');
   return null;
+}
+
+/**
+ * Section links stay section-level, but entity-specific links carry the real
+ * record id so the UI can label the target precisely and omit broken links.
+ */
+export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
+  const link=deriveChronicleLink(row);
+  if(!link)return null;
+  const entityId=usableId(row.entity_id);
+  if(entityId&&(link.target.includes('/employees/')||link.target.includes('/customers/'))){
+    return {...link,entity_id:entityId,entity_type:row.entity_type};
+  }
+  return link;
 }
 
 function category(eventKind:string){
@@ -130,7 +147,7 @@ objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('
              (SELECT oa.site_id FROM employee_object_assignments oa WHERE oa.tenant_id=a.tenant_id AND oa.id=a.entity_id::uuid),
              (SELECT n.site_id FROM nfc_devices n WHERE n.tenant_id=a.tenant_id AND n.id=a.entity_id::uuid)
            ) AS site_id,
-           a.created_at AS occurred_at,a.event_type AS event_kind,a.entity_type,a.entity_id,
+           a.created_at AS occurred_at,a.event_type AS event_kind,a.entity_type,a.entity_id::text AS entity_id,
            a.actor_user_id,NULL::uuid AS actor_employee_id,'audit_events'::text AS source_table,
            COALESCE(a.details->>'title',a.details->>'description',a.event_type) AS summary,
            a.details AS details,1 AS source_priority
