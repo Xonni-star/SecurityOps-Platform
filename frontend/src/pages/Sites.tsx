@@ -25,7 +25,8 @@ type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowl
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
-type ObjectHazard={id:string;title:string;category:string;description:string;likelihood:number;impact:number;risk_score:number;protective_measures:string|null;required_actions:string|null;responsible_employee_id:string|null;due_on:string|null;review_on:string|null;status:string;location_id:string|null;location_name:string|null;responsible_employee_name:string|null};
+type HazardMeasure={id:string;hazard_id:string;title:string;description:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;due_on:string|null;status:'open'|'in_progress'|'completed'|'cancelled';completed_at:string|null};
+type ObjectHazard={id:string;title:string;category:string;description:string;likelihood:number;impact:number;risk_score:number;protective_measures:string|null;responsible_employee_id:string|null;due_on:string|null;review_on:string|null;status:string;location_id:string|null;location_name:string|null;responsible_employee_name:string|null;measures:HazardMeasure[]};
 type KeyAction={keyId:string;action:'issue'|'return'};
 type Context={
   site:Site&{object_manager_name?:string|null;operations_manager_name?:string|null};
@@ -33,7 +34,7 @@ type Context={
   contracts:{id:string;contract_number:string;customer_name:string;status:string}[]|null;
   locations:ObjectLocation[];
   hazards:ObjectHazard[];
-  instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;acknowledgements:InstructionAcknowledgement[];location_name?:string|null}[];
+  instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;acknowledgements:InstructionAcknowledgement[];location_name?:string|null;can_approve?:boolean}[];
   journal:{id:string;created_at:string;revision_no:number;content:string;status:string;category_name:string;priority_name:string}[]|null;
   staffing:StaffingAssignment[]|null;
   shifts:ScheduledShift[]|null;
@@ -53,7 +54,8 @@ const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',mediu
 const hazardCategories:Record<string,string>={burglary:'Einbruch',theft:'Diebstahl',vandalism:'Vandalismus',fire:'Brand',robbery:'Raub',unauthorized_access:'Unbefugter Zutritt',sabotage:'Sabotage',conflict:'Konflikt',technical:'Technisch',environmental:'Umwelt',other:'Sonstige'};
 const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown'};
 const emptyLocation={name:'',location_type:'building',code:'',parent_id:'',responsible_employee_id:'',security_level:'unknown',description:'',hazard_notes:'',access_rules:'',sort_order:0};
-const emptyHazard={title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:'',required_actions:''};
+const emptyHazard={title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:''};
+const emptyMeasure={title:'',description:'',responsible_employee_id:'',due_on:'',status:'open' as const};
 type SiteForm=typeof emptySite;
 const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['qualifikationen','Qualifikationen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['einsaetze','Einsätze & Alarme'],['berichte','Berichte'],['aufgaben','Aufgaben & Wartung'],['uebergaben','Übergaben'],['journal','Journal']] as const;
 
@@ -90,6 +92,9 @@ export function Sites(){
   const [editingLocation,setEditingLocation]=useState<string|null>(null);
   const [hazardForm,setHazardForm]=useState(emptyHazard);
   const [editingHazard,setEditingHazard]=useState<string|null>(null);
+  const [measureHazardId,setMeasureHazardId]=useState<string|null>(null);
+  const [editingMeasureId,setEditingMeasureId]=useState<string|null>(null);
+  const [measureForm,setMeasureForm]=useState<{title:string;description:string;responsible_employee_id:string;due_on:string;status:HazardMeasure['status']}>(emptyMeasure);
   const [instructionForm,setInstructionForm]=useState({title:'',content:'',status:'draft',version:1,requires_acknowledgement:false,location_id:'',valid_from:'',valid_until:''});
   const [supersedesId,setSupersedesId]=useState('');
   const [ackEmployee,setAckEmployee]=useState('');
@@ -214,17 +219,42 @@ export function Sites(){
     }
     catch(e){setError((e as Error).message);}
   }
+  async function saveHazardMeasure(event:FormEvent){
+    event.preventDefault();if(!selected||!measureHazardId)return;
+    try{
+      const body={...measureForm,description:measureForm.description.trim()||null,responsible_employee_id:measureForm.responsible_employee_id||null,due_on:measureForm.due_on||null};
+      const path=`/sites/${selected.site.id}/hazards/${measureHazardId}/measures`;
+      await api(editingMeasureId?`${path}/${editingMeasureId}`:path,{method:editingMeasureId?'PATCH':'POST',body:JSON.stringify(body)});
+      setMeasureForm(emptyMeasure);setMeasureHazardId(null);setEditingMeasureId(null);await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
+  function editHazardMeasure(hazard:ObjectHazard,measure?:HazardMeasure){
+    setMeasureHazardId(hazard.id);setEditingMeasureId(measure?.id??null);
+    setMeasureForm(measure?{title:measure.title,description:measure.description??'',responsible_employee_id:measure.responsible_employee_id??'',due_on:measure.due_on??'',status:measure.status}:emptyMeasure);
+  }
   function editLocation(location:ObjectLocation){
     setEditingLocation(location.id);
     setLocationForm({name:location.name,location_type:location.location_type,code:location.code??'',parent_id:location.parent_id??'',responsible_employee_id:location.responsible_employee_id??'',security_level:location.security_level,description:location.description??'',hazard_notes:location.hazard_notes??'',access_rules:location.access_rules??'',sort_order:location.sort_order});
   }
   function editHazard(hazard:ObjectHazard){
     setEditingHazard(hazard.id);
-    setHazardForm({title:hazard.title,category:hazard.category,description:hazard.description,likelihood:hazard.likelihood,impact:hazard.impact,location_id:hazard.location_id??'',responsible_employee_id:hazard.responsible_employee_id??'',due_on:hazard.due_on??'',review_on:hazard.review_on??'',status:hazard.status,protective_measures:hazard.protective_measures??'',required_actions:hazard.required_actions??''});
+    setHazardForm({title:hazard.title,category:hazard.category,description:hazard.description,likelihood:hazard.likelihood,impact:hazard.impact,location_id:hazard.location_id??'',responsible_employee_id:hazard.responsible_employee_id??'',due_on:hazard.due_on??'',review_on:hazard.review_on??'',status:hazard.status,protective_measures:hazard.protective_measures??''});
   }
   async function createInstruction(event:FormEvent){
     event.preventDefault();if(!selected)return;
     try{await api(`/sites/${selected.site.id}/instructions`,{method:'POST',body:JSON.stringify({...instructionForm,location_id:instructionForm.location_id||null,valid_from:instructionForm.valid_from||null,valid_until:instructionForm.valid_until||null,supersedes_id:supersedesId||null})});setInstructionForm({title:'',content:'',status:'draft',version:1,requires_acknowledgement:false,location_id:'',valid_from:'',valid_until:''});setSupersedesId('');await refreshContext();setError('');}
+    catch(e){setError((e as Error).message);}
+  }
+  async function approveInstruction(instructionId:string){
+    if(!selected)return;
+    try{await api(`/sites/${selected.site.id}/instructions/${instructionId}/approve`,{method:'POST'});await refreshContext();setError('');}
+    catch(e){setError((e as Error).message);}
+  }
+  async function returnInstructionForRevision(instructionId:string){
+    if(!selected)return;
+    const reason=window.prompt('Grund für die Rückgabe zur Überarbeitung');
+    if(!reason?.trim())return;
+    try{await api(`/sites/${selected.site.id}/instructions/${instructionId}/return-for-revision`,{method:'POST',body:JSON.stringify({reason:reason.trim()})});await refreshContext();setError('');}
     catch(e){setError((e as Error).message);}
   }
   async function uploadSiteDocument(event:FormEvent){
@@ -395,18 +425,42 @@ export function Sites(){
         <label>Fällig am<input type="date" value={hazardForm.due_on} onChange={e=>setHazardForm({...hazardForm,due_on:e.target.value})}/></label>
         <label>Überprüfung am<input type="date" value={hazardForm.review_on} onChange={e=>setHazardForm({...hazardForm,review_on:e.target.value})}/></label>
         <label>Schutzmaßnahmen<textarea value={hazardForm.protective_measures} onChange={e=>setHazardForm({...hazardForm,protective_measures:e.target.value})}/></label>
-        <label>Erforderliche Maßnahmen<textarea value={hazardForm.required_actions} onChange={e=>setHazardForm({...hazardForm,required_actions:e.target.value})}/></label>
         <button>{editingHazard?'Gefährdung speichern':'Gefährdung erfassen'}</button>
         {editingHazard&&<button type="button" onClick={()=>{setEditingHazard(null);setHazardForm(emptyHazard);}}>Abbrechen</button>}
       </form>}
       <table aria-label="Risikomatrix"><caption>Erfasste Gefährdungen nach Eintritt und Auswirkung</caption><thead><tr><th scope="col">Eintritt / Auswirkung</th>{[1,2,3,4,5].map(impact=><th scope="col" key={impact}>{impact}</th>)}</tr></thead><tbody>{[5,4,3,2,1].map(likelihood=><tr key={likelihood}><th scope="row">{likelihood}</th>{[1,2,3,4,5].map(impact=>{const count=selected.hazards.filter(hazard=>hazard.risk_score===likelihood*impact).length;return <td key={impact} aria-label={`${likelihood} mal ${impact}: ${count} Gefährdungen`}>{count}</td>;})}</tr>)}</tbody></table>
-      <ul>{selected.hazards.map(hazard=><li key={hazard.id}>{hazard.title} · Risiko {hazard.risk_score} · {hazard.status}{hazard.location_name?` · ${hazard.location_name}`:''} · Verantwortlich: {hazard.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editHazard(hazard)}>Bearbeiten</button>}</li>)}</ul>
+      <ul>{selected.hazards.map(hazard=><li key={hazard.id}>
+        <strong>{hazard.title}</strong> · Risiko {hazard.risk_score} · {hazard.status}{hazard.location_name?` · ${hazard.location_name}`:''} · Verantwortlich: {hazard.responsible_employee_name||'–'}
+        {hazard.protective_measures&&<p>Bestehende Schutzmaßnahmen: {hazard.protective_measures}</p>}
+        {writable&&<button type="button" onClick={()=>editHazard(hazard)}>Gefährdung bearbeiten</button>}
+        {writable&&<button type="button" onClick={()=>editHazardMeasure(hazard)}>Maßnahme hinzufügen</button>}
+        <ul aria-label={`Maßnahmen ${hazard.title}`}>
+          {hazard.measures.map(measure=><li key={measure.id}>
+            {measure.title} · {measure.status}{measure.due_on?` · Fällig am ${measure.due_on}`:''}{measure.responsible_employee_name?` · Verantwortlich: ${measure.responsible_employee_name}`:''}
+            {measure.description&&<p>{measure.description}</p>}
+            {measure.completed_at&&<p>Abgeschlossen am {new Date(measure.completed_at).toLocaleString('de-DE')}</p>}
+            {writable&&<button type="button" onClick={()=>editHazardMeasure(hazard,measure)}>Maßnahme bearbeiten</button>}
+          </li>)}
+          {hazard.measures.length===0&&<li>Keine Maßnahmen erfasst.</li>}
+        </ul>
+        {measureHazardId===hazard.id&&writable&&<form onSubmit={saveHazardMeasure}>
+          <label>Maßnahmentitel<input value={measureForm.title} onChange={event=>setMeasureForm({...measureForm,title:event.target.value})} required/></label>
+          <label>Maßnahmenbeschreibung<textarea value={measureForm.description} onChange={event=>setMeasureForm({...measureForm,description:event.target.value})}/></label>
+          {hasPermission('employees:read')&&<label>Maßnahmenverantwortliche Person<select aria-label="Maßnahmenverantwortliche Person" value={measureForm.responsible_employee_id} onChange={event=>setMeasureForm({...measureForm,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+          <label>Maßnahme fällig am<input type="date" value={measureForm.due_on} onChange={event=>setMeasureForm({...measureForm,due_on:event.target.value})}/></label>
+          <label>Maßnahmenstatus<select aria-label="Maßnahmenstatus" value={measureForm.status} onChange={event=>setMeasureForm({...measureForm,status:event.target.value as HazardMeasure['status']})}><option value="open">Offen</option><option value="in_progress">In Bearbeitung</option><option value="completed">Abgeschlossen</option><option value="cancelled">Abgebrochen</option></select></label>
+          <button>{editingMeasureId?'Maßnahme speichern':'Maßnahme erfassen'}</button>
+          <button type="button" onClick={()=>{setMeasureForm(emptyMeasure);setMeasureHazardId(null);setEditingMeasureId(null);}}>Abbrechen</button>
+        </form>}
+      </li>)}</ul>
       </div>}
       {active==='anweisungen'&&<div className="employee-detail-content">
       <h3>Dienstanweisungen</h3>
-      {writable&&<form onSubmit={createInstruction}><label>Titel<input placeholder="Titel" value={instructionForm.title} onChange={e=>setInstructionForm({...instructionForm,title:e.target.value})} required/></label><label>Inhalt<textarea placeholder="Inhalt" value={instructionForm.content} onChange={e=>setInstructionForm({...instructionForm,content:e.target.value})} required/></label><label>Geltungsbereich<select aria-label="Anweisungsbereich" value={instructionForm.location_id} onChange={e=>setInstructionForm({...instructionForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Version<input type="number" min="1" value={instructionForm.version} onChange={e=>setInstructionForm({...instructionForm,version:Number(e.target.value)})}/></label><label>Gültig ab<input type="date" value={instructionForm.valid_from} onChange={e=>setInstructionForm({...instructionForm,valid_from:e.target.value})}/></label><label>Gültig bis<input type="date" value={instructionForm.valid_until} onChange={e=>setInstructionForm({...instructionForm,valid_until:e.target.value})}/></label><select aria-label="Anweisungsstatus" value={instructionForm.status} onChange={e=>setInstructionForm({...instructionForm,status:e.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option><option value="approved">Freigegeben</option></select><label><input type="checkbox" checked={instructionForm.requires_acknowledgement} onChange={e=>setInstructionForm({...instructionForm,requires_acknowledgement:e.target.checked})}/> Kenntnisnahme erforderlich</label><button>Anweisung speichern</button></form>}
+      {writable&&<form onSubmit={createInstruction}><label>Titel<input placeholder="Titel" value={instructionForm.title} onChange={e=>setInstructionForm({...instructionForm,title:e.target.value})} required/></label><label>Inhalt<textarea placeholder="Inhalt" value={instructionForm.content} onChange={e=>setInstructionForm({...instructionForm,content:e.target.value})} required/></label><label>Geltungsbereich<select aria-label="Anweisungsbereich" value={instructionForm.location_id} onChange={e=>setInstructionForm({...instructionForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Version<input type="number" min="1" value={instructionForm.version} onChange={e=>setInstructionForm({...instructionForm,version:Number(e.target.value)})}/></label><label>Gültig ab<input type="date" value={instructionForm.valid_from} onChange={e=>setInstructionForm({...instructionForm,valid_from:e.target.value})}/></label><label>Gültig bis<input type="date" value={instructionForm.valid_until} onChange={e=>setInstructionForm({...instructionForm,valid_until:e.target.value})}/></label><select aria-label="Anweisungsstatus" value={instructionForm.status} onChange={e=>setInstructionForm({...instructionForm,status:e.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option></select><label><input type="checkbox" checked={instructionForm.requires_acknowledgement} onChange={e=>setInstructionForm({...instructionForm,requires_acknowledgement:e.target.checked})}/> Kenntnisnahme erforderlich</label><button>Anweisung speichern</button></form>}
       {writable&&hasPermission('employees:read')&&selected.staffing!==null&&<label>Mitarbeiter für Kenntnisnahme<select aria-label="Mitarbeiter für Kenntnisnahme" value={ackEmployee} onChange={e=>setAckEmployee(e.target.value)}><option value="">Mitarbeiter auswählen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
-      <ul>{selected.instructions.map(instruction=><li key={instruction.id}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>{instruction.requires_acknowledgement&&hasPermission('employees:read')&&selected.staffing!==null&&<ul aria-label={`Kenntnisnahmestatus ${instruction.title} v${instruction.version}`}>
+      <ul>{selected.instructions.map(instruction=><li key={instruction.id}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>
+        {instruction.status==='pending_approval'&&instruction.can_approve&&<><button type="button" onClick={()=>void approveInstruction(instruction.id)}>Freigabe erteilen</button><button type="button" onClick={()=>void returnInstructionForRevision(instruction.id)}>Zur Überarbeitung zurückgeben</button></>}
+        {instruction.requires_acknowledgement&&hasPermission('employees:read')&&selected.staffing!==null&&<ul aria-label={`Kenntnisnahmestatus ${instruction.title} v${instruction.version}`}>
         {instruction.acknowledgements.map(acknowledgement=><li key={acknowledgement.employee_id}>{acknowledgement.employee_name}: Bestätigt am {new Date(acknowledgement.acknowledged_at).toLocaleString('de-DE')}</li>)}
         {siteAssignedEmployees.filter(employee=>!instruction.acknowledgements.some(acknowledgement=>acknowledgement.employee_id===employee.id)).map(employee=><li key={employee.id}>{employee.name}: Ausstehend</li>)}
       </ul>}{writable&&<button type="button" onClick={()=>{setSupersedesId(instruction.id);setInstructionForm({title:instruction.title,content:instruction.content,status:'draft',version:instruction.version+1,requires_acknowledgement:instruction.requires_acknowledgement,location_id:'',valid_from:'',valid_until:''});}}>Neue Version vorbereiten</button>}{writable&&hasPermission('employees:read')&&selected.staffing!==null&&instruction.status==='approved'&&<button type="button" disabled={!ackEmployee} onClick={()=>void acknowledge(instruction.id)}>Kenntnisnahme erfassen</button>}</li>)}</ul>

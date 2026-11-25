@@ -86,6 +86,14 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await page.getByRole('button',{name:'Gefährdung erfassen'}).click();
   expect((await hazardResponse).status()).toBe(201);
   await expect(page.getByText(new RegExp(`E2E Gefährdung ${suffix} · Risiko 12`))).toBeVisible();
+  await page.getByRole('button',{name:'Maßnahme hinzufügen'}).click();
+  await page.getByLabel('Maßnahmentitel').fill(`E2E Maßnahme ${suffix}`);
+  await page.getByLabel('Maßnahme fällig am').fill('2026-12-01');
+  await page.getByLabel('Maßnahmenstatus').selectOption('in_progress');
+  const measureResponse=page.waitForResponse(response=>response.url().includes('/measures')&&response.request().method()==='POST');
+  await page.getByRole('button',{name:'Maßnahme erfassen'}).click();
+  expect((await measureResponse).status()).toBe(201);
+  await expect(page.getByRole('listitem').filter({hasText:`E2E Maßnahme ${suffix}`})).toBeVisible();
 
   await page.getByRole('button',{name:'Dienstanweisungen'}).click();
   await expect(page).toHaveURL(new RegExp(`/sites/${siteId}/anweisungen$`));
@@ -94,16 +102,13 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await expect(instructionTitle).toHaveValue(`E2E Anweisung ${suffix}`);
   await page.getByLabel('Inhalt').fill('Dokumentierter Ablauf für den E2E-Test.');
   await page.getByLabel('Anweisungsbereich').selectOption({label:`Zone ${suffix}`});
-  await page.getByLabel('Anweisungsstatus').selectOption('approved');
+  await page.getByLabel('Anweisungsstatus').selectOption('pending_approval');
   await page.getByLabel('Kenntnisnahme erforderlich').check();
   const instructionResponse=page.waitForResponse(response=>response.url().includes(`/sites/${siteId}/instructions`)&&response.request().method()==='POST',{timeout:10000});
   await page.getByRole('button',{name:'Anweisung speichern'}).click();
   expect((await instructionResponse).status()).toBe(201);
   const instructionItem=page.getByRole('listitem').filter({hasText:`E2E Anweisung ${suffix} v1`});
   await expect(instructionItem).toBeVisible();
-  await page.getByLabel('Mitarbeiter für Kenntnisnahme').selectOption(employeeId);
-  const acknowledgementResponse=page.waitForResponse(response=>response.url().includes('/acknowledgements')&&response.request().method()==='POST');
-  await instructionItem.getByRole('button',{name:'Kenntnisnahme erfassen'}).click();
-  expect((await acknowledgementResponse).status()).toBe(201);
-  await expect(page.getByText(/Kenntnisnahmen: 1/)).toBeVisible();
+  await expect(instructionItem.getByRole('button',{name:'Freigabe erteilen'})).toHaveCount(0);
+  await expect(instructionItem.getByText(/Kenntnisnahmen: 0/)).toBeVisible();
 });

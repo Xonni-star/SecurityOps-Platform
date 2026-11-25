@@ -41,7 +41,6 @@ const hazardFields=z.object({
   likelihood:z.number().int().min(1).max(5),
   impact:z.number().int().min(1).max(5),
   protective_measures:z.string().trim().max(10000).nullable().optional(),
-  required_actions:z.string().trim().max(10000).nullable().optional(),
   responsible_employee_id:uuid.nullable().optional(),
   due_on:z.string().date().nullable().optional(),
   review_on:z.string().date().nullable().optional(),
@@ -50,6 +49,15 @@ const hazardFields=z.object({
 const hazardSchema=hazardFields.extend({status:z.enum(['open','mitigated','accepted','closed']).default('open')}).strict()
   .refine(value=>!value.due_on||!value.review_on||value.review_on>=value.due_on,{message:'review_on must be on or after due_on'});
 const hazardPatchSchema=hazardFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
+const hazardMeasureFields=z.object({
+  title:nonempty.max(160),
+  description:z.string().trim().max(4000).nullable().optional(),
+  responsible_employee_id:uuid.nullable().optional(),
+  due_on:z.string().date().nullable().optional(),
+  status:z.enum(['open','in_progress','completed','cancelled']),
+}).strict();
+const hazardMeasureSchema=hazardMeasureFields.extend({status:z.enum(['open','in_progress','completed','cancelled']).default('open')}).strict();
+const hazardMeasurePatchSchema=hazardMeasureFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
 const instructionSchema=z.object({
   location_id:uuid.nullable().optional(),
   title:nonempty.max(200),
@@ -123,6 +131,7 @@ objectManagementRouter.get(
         );
       };
       const canReadStaffing=canReadSiteData('employees:read');
+      const canApproveInstructions=canReadSiteData('site_instructions:approve');
       const siteRow=(await query(
         `SELECT s.*,CASE WHEN $3::boolean THEN om.name ELSE NULL END AS object_manager_name,
           CASE WHEN $3::boolean THEN op.name ELSE NULL END AS operations_manager_name
@@ -161,10 +170,21 @@ objectManagementRouter.get(
         [req.user!.tenantId,id,canReadStaffing],
       )).rows;
       const hazards=(await query(
-        `SELECT h.id,h.tenant_id,h.site_id,h.location_id,h.title,h.category,h.description,h.likelihood,h.impact,h.risk_score,h.protective_measures,h.required_actions,
+        `SELECT h.id,h.tenant_id,h.site_id,h.location_id,h.title,h.category,h.description,h.likelihood,h.impact,h.risk_score,h.protective_measures,
           CASE WHEN $3::boolean THEN h.responsible_employee_id ELSE NULL END AS responsible_employee_id,
           h.due_on,h.review_on,h.status,h.created_by,h.created_at,h.updated_at,l.name AS location_name,
-          CASE WHEN $3::boolean THEN e.name ELSE NULL END AS responsible_employee_name
+          CASE WHEN $3::boolean THEN e.name ELSE NULL END AS responsible_employee_name,
+          COALESCE((
+            SELECT json_agg(json_build_object(
+              'id',m.id,'hazard_id',m.hazard_id,'title',m.title,'description',m.description,
+              'responsible_employee_id',CASE WHEN $3::boolean THEN m.responsible_employee_id ELSE NULL END,
+              'responsible_employee_name',CASE WHEN $3::boolean THEN me.name ELSE NULL END,
+              'due_on',m.due_on,'status',m.status,'completed_at',m.completed_at
+            ) ORDER BY m.due_on NULLS LAST,m.created_at,m.id)
+            FROM object_hazard_measures m
+            LEFT JOIN employees me ON me.tenant_id=m.tenant_id AND me.id=m.responsible_employee_id
+            WHERE m.tenant_id=h.tenant_id AND m.site_id=h.site_id AND m.hazard_id=h.id
+          ),'[]'::json) AS measures
          FROM object_hazards h
          LEFT JOIN object_locations l ON l.tenant_id=h.tenant_id AND l.id=h.location_id
          LEFT JOIN employees e ON e.tenant_id=h.tenant_id AND e.id=h.responsible_employee_id
@@ -173,6 +193,7 @@ objectManagementRouter.get(
       )).rows;
       const instructions=(await query(
         `SELECT i.*,l.name AS location_name,u.email AS created_by_email,
+          CASE WHEN $4::boolean AND i.created_by<>$5 THEN true ELSE false END AS can_approve,
           (SELECT count(*)::int FROM instruction_acknowledgements a WHERE a.tenant_id=i.tenant_id AND a.instruction_id=i.id AND a.acknowledged_version=i.version) AS acknowledgement_count,
           CASE WHEN $3::boolean THEN COALESCE((
             SELECT json_agg(json_build_object('employee_id',a.employee_id,'employee_name',ae.name,'acknowledged_at',a.acknowledged_at) ORDER BY ae.name)
@@ -185,7 +206,7 @@ objectManagementRouter.get(
          JOIN users u ON u.tenant_id=i.tenant_id AND u.id=i.created_by
          WHERE i.tenant_id=$1 AND i.site_id=$2 AND i.status<>'archived'
          ORDER BY i.title,i.version DESC`,
-        [req.user!.tenantId,id,canReadStaffing],
+        [req.user!.tenantId,id,canReadStaffing,canApproveInstructions,user.id],
       )).rows;
       const canReadWatchbook=canReadSiteData('watchbook:read');
       const journal=canReadWatchbook?(await query(
@@ -492,9 +513,9 @@ objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,require
     if(body.responsible_employee_id){
       if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
     }
-    const row=(await query(`INSERT INTO object_hazards(tenant_id,site_id,location_id,title,category,description,likelihood,impact,protective_measures,required_actions,responsible_employee_id,due_on,review_on,status,created_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-      [tenantId,siteId,body.location_id??null,body.title,body.category,body.description,body.likelihood,body.impact,body.protective_measures??null,body.required_actions??null,body.responsible_employee_id??null,body.due_on??null,body.review_on??null,body.status,req.user!.id])).rows[0];
+    const row=(await query(`INSERT INTO object_hazards(tenant_id,site_id,location_id,title,category,description,likelihood,impact,protective_measures,responsible_employee_id,due_on,review_on,status,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [tenantId,siteId,body.location_id??null,body.title,body.category,body.description,body.likelihood,body.impact,body.protective_measures??null,body.responsible_employee_id??null,body.due_on??null,body.review_on??null,body.status,req.user!.id])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.hazard.created','object_hazards',row.id,{site_id:siteId,risk_score:body.likelihood*body.impact});
     res.status(201).json(row);
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
@@ -515,7 +536,7 @@ objectManagementRouter.patch('/sites/:id/hazards/:hazardId',requireAuth,requireC
     const dueOn=body.due_on===undefined?(current.due_on?String(current.due_on).slice(0,10):null):body.due_on;
     const reviewOn=body.review_on===undefined?(current.review_on?String(current.review_on).slice(0,10):null):body.review_on;
     if(dueOn&&reviewOn&&reviewOn<dueOn)return res.status(400).json({error:'review_on must be on or after due_on'});
-    const columns:Record<keyof typeof body,string>={location_id:'location_id',title:'title',category:'category',description:'description',likelihood:'likelihood',impact:'impact',protective_measures:'protective_measures',required_actions:'required_actions',responsible_employee_id:'responsible_employee_id',due_on:'due_on',review_on:'review_on',status:'status'};
+    const columns:Record<keyof typeof body,string>={location_id:'location_id',title:'title',category:'category',description:'description',likelihood:'likelihood',impact:'impact',protective_measures:'protective_measures',responsible_employee_id:'responsible_employee_id',due_on:'due_on',review_on:'review_on',status:'status'};
     const patch=patchAssignments(body,columns,4);
     const row=(await query(
       `UPDATE object_hazards SET ${patch.assignments},updated_at=now()
@@ -528,9 +549,44 @@ objectManagementRouter.patch('/sites/:id/hazards/:hazardId',requireAuth,requireC
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
 });
 
+objectManagementRouter.post('/sites/:id/hazards/:hazardId/measures',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id)); const hazardId=uuid.parse(String(req.params.hazardId)); const body=hazardMeasureSchema.parse(req.body); const tenantId=req.user!.tenantId;
+    const hazard=(await query('SELECT id FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,hazardId])).rows[0];
+    if(!hazard)return res.status(404).json({error:'Hazard not found'});
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    const row=(await query(`INSERT INTO object_hazard_measures(tenant_id,site_id,hazard_id,title,description,responsible_employee_id,due_on,status,completed_at,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $8='completed' THEN now() ELSE NULL END,$9) RETURNING *`,
+      [tenantId,siteId,hazardId,body.title,body.description??null,body.responsible_employee_id??null,body.due_on??null,body.status,req.user!.id])).rows[0];
+    await recordAudit(tenantId,req.user!.id,'site.hazard_measure.created','object_hazard_measures',row.id,{site_id:siteId,hazard_id:hazardId,status:body.status,due_on:body.due_on??null});
+    res.status(201).json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard measure'});next(error);}
+});
+
+objectManagementRouter.patch('/sites/:id/hazards/:hazardId/measures/:measureId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id)); const hazardId=uuid.parse(String(req.params.hazardId)); const measureId=uuid.parse(String(req.params.measureId)); const body=hazardMeasurePatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
+    const current=(await query('SELECT id,status FROM object_hazard_measures WHERE tenant_id=$1 AND site_id=$2 AND hazard_id=$3 AND id=$4',[tenantId,siteId,hazardId,measureId])).rows[0];
+    if(!current)return res.status(404).json({error:'Hazard measure not found'});
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    const columns:Record<keyof typeof body,string>={title:'title',description:'description',responsible_employee_id:'responsible_employee_id',due_on:'due_on',status:'status'};
+    const patch=patchAssignments(body,columns,6);
+    const status=body.status??current.status;
+    const row=(await query(
+      `UPDATE object_hazard_measures SET ${patch.assignments},completed_at=CASE WHEN $4='completed' THEN COALESCE(completed_at,now()) ELSE NULL END,updated_at=now()
+       WHERE tenant_id=$1 AND site_id=$2 AND hazard_id=$3 AND id=$5 RETURNING *`,
+      [tenantId,siteId,hazardId,status,measureId,...patch.values],
+    )).rows[0];
+    if(!row)return res.status(404).json({error:'Hazard measure not found'});
+    await recordAudit(tenantId,req.user!.id,'site.hazard_measure.updated','object_hazard_measures',measureId,{site_id:siteId,hazard_id:hazardId,changed_fields:Object.keys(body),status});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard measure'});next(error);}
+});
+
 objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=instructionSchema.parse(req.body); const tenantId=req.user!.tenantId;
+    if(body.status==='approved'||body.status==='archived')return res.status(400).json({error:'Instructions must be submitted for approval and cannot be created as approved or archived'});
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
     if(!site)return res.status(404).json({error:'Site not found'});
     if(body.location_id){
@@ -548,20 +604,59 @@ objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,re
       const existing=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,body.title])).rows[0];
       if(existing)return res.status(409).json({error:'An existing instruction with this title must be superseded'});
     }
-    if(body.status==='approved'&&!req.user!.isSystemAdmin&&req.user!.role==='viewer')return res.status(403).json({error:'Only operators may approve instructions'});
     const row=(await query(`INSERT INTO site_instructions(tenant_id,site_id,location_id,title,content,version,status,requires_acknowledgement,valid_from,valid_until,created_by,approved_by,approved_at,supersedes_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $7='approved' THEN now() ELSE NULL END,$13) RETURNING *`,
-      [tenantId,siteId,body.location_id??null,body.title,body.content,body.version,body.status,body.requires_acknowledgement,body.valid_from??null,body.valid_until??null,req.user!.id,body.status==='approved'?req.user!.id:null,body.supersedes_id??null])).rows[0];
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,NULL,$12) RETURNING *`,
+      [tenantId,siteId,body.location_id??null,body.title,body.content,body.version,body.status,body.requires_acknowledgement,body.valid_from??null,body.valid_until??null,req.user!.id,body.supersedes_id??null])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.instruction.created','site_instructions',row.id,{site_id:siteId,version:body.version,status:body.status});
     res.status(201).json(row);
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid instruction'});next(error);}
+});
+
+objectManagementRouter.post('/sites/:id/instructions/:instructionId/approve',requireAuth,requireCsrf,requirePermission('site_instructions:approve',{allowedScopes:['tenant','site','system']}),requireSiteScope('site_instructions:approve'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId)); const tenantId=req.user!.tenantId;
+    const current=(await query('SELECT id,status,created_by,version,title FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
+    if(!current)return res.status(404).json({error:'Instruction not found'});
+    if(current.created_by===req.user!.id)return res.status(403).json({error:'Instruction authors cannot approve their own instruction'});
+    if(current.status!=='pending_approval')return res.status(409).json({error:'Only pending instructions can be approved'});
+    const latest=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,current.title])).rows[0];
+    if(latest?.id!==current.id)return res.status(409).json({error:'Only the latest instruction version can be approved'});
+    const row=(await query(`UPDATE site_instructions SET status='approved',approved_by=$4,approved_at=now(),updated_at=now()
+      WHERE tenant_id=$1 AND site_id=$2 AND id=$3 AND status='pending_approval' AND created_by<>$4
+        AND NOT EXISTS(SELECT 1 FROM site_instructions newer WHERE newer.tenant_id=site_instructions.tenant_id AND newer.site_id=site_instructions.site_id AND newer.title=site_instructions.title AND newer.version>site_instructions.version)
+      RETURNING *`,
+      [tenantId,siteId,instructionId,req.user!.id])).rows[0];
+    if(!row)return res.status(409).json({error:'Instruction status changed before approval'});
+    await recordAudit(tenantId,req.user!.id,'site.instruction.approved','site_instructions',instructionId,{site_id:siteId,version:current.version});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid instruction id'});next(error);}
+});
+
+objectManagementRouter.post('/sites/:id/instructions/:instructionId/return-for-revision',requireAuth,requireCsrf,requirePermission('site_instructions:approve',{allowedScopes:['tenant','site','system']}),requireSiteScope('site_instructions:approve'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId)); const body=z.object({reason:nonempty.max(4000)}).strict().parse(req.body); const tenantId=req.user!.tenantId;
+    const current=(await query('SELECT id,status,created_by,version,title FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
+    if(!current)return res.status(404).json({error:'Instruction not found'});
+    if(current.created_by===req.user!.id)return res.status(403).json({error:'Instruction authors cannot return their own instruction'});
+    if(current.status!=='pending_approval')return res.status(409).json({error:'Only pending instructions can be returned for revision'});
+    const latest=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,current.title])).rows[0];
+    if(latest?.id!==current.id)return res.status(409).json({error:'Only the latest instruction version can be returned for revision'});
+    const row=(await query(`UPDATE site_instructions SET status='draft',approved_by=NULL,approved_at=NULL,updated_at=now()
+      WHERE tenant_id=$1 AND site_id=$2 AND id=$3 AND status='pending_approval' AND created_by<>$4
+        AND NOT EXISTS(SELECT 1 FROM site_instructions newer WHERE newer.tenant_id=site_instructions.tenant_id AND newer.site_id=site_instructions.site_id AND newer.title=site_instructions.title AND newer.version>site_instructions.version)
+      RETURNING *`,
+      [tenantId,siteId,instructionId,req.user!.id])).rows[0];
+    if(!row)return res.status(409).json({error:'Instruction status changed before it could be returned'});
+    await recordAudit(tenantId,req.user!.id,'site.instruction.returned_for_revision','site_instructions',instructionId,{site_id:siteId,version:current.version,reason:body.reason});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid return for revision'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgements',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),requirePermission('employees:read',{allowedScopes:['tenant','site','system']}),requireSiteScope('employees:read'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId));
     const body=z.object({employee_id:uuid}).strict().parse(req.body); const tenantId=req.user!.tenantId;
-    const instruction=(await query('SELECT id,version,status FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
+    const instruction=(await query('SELECT id,version,status,title,requires_acknowledgement FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
     const employee=(await query(`SELECT e.id FROM employees e
       WHERE e.tenant_id=$1 AND e.id=$2
         AND EXISTS(SELECT 1 FROM employee_object_assignments oa
@@ -569,10 +664,25 @@ objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgem
             AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE))`,[tenantId,body.employee_id,siteId])).rows[0];
     if(!instruction||!employee)return res.status(404).json({error:'Instruction or employee not found'});
     if(instruction.status!=='approved')return res.status(409).json({error:'Only approved instructions can be acknowledged'});
+    if(!instruction.requires_acknowledgement)return res.status(409).json({error:'This instruction does not require acknowledgement'});
+    const latestApproved=(await query("SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 AND status='approved' ORDER BY version DESC LIMIT 1",[tenantId,siteId,instruction.title])).rows[0];
+    if(latestApproved?.id!==instruction.id)return res.status(409).json({error:'Only the current approved version can be acknowledged'});
     const row=(await query(`INSERT INTO instruction_acknowledgements(tenant_id,instruction_id,employee_id,acknowledged_version)
-      VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING *`,[tenantId,instructionId,body.employee_id,instruction.version])).rows[0];
-    if(row)await recordAudit(tenantId,req.user!.id,'site.instruction.acknowledged','instruction_acknowledgements',instructionId,{site_id:siteId,employee_id:body.employee_id,version:instruction.version});
-    res.status(row?201:200).json(row??{acknowledged:true,version:instruction.version});
+      SELECT $1,$2,$3,$4
+      WHERE EXISTS(
+        SELECT 1 FROM site_instructions i
+        WHERE i.tenant_id=$1 AND i.site_id=$5 AND i.id=$2 AND i.version=$4 AND i.status='approved' AND i.requires_acknowledgement
+          AND NOT EXISTS(SELECT 1 FROM site_instructions newer
+            WHERE newer.tenant_id=i.tenant_id AND newer.site_id=i.site_id AND newer.title=i.title AND newer.status='approved' AND newer.version>i.version)
+      )
+      ON CONFLICT DO NOTHING RETURNING *`,[tenantId,instructionId,body.employee_id,instruction.version,siteId])).rows[0];
+    if(!row){
+      const existing=(await query('SELECT 1 FROM instruction_acknowledgements WHERE tenant_id=$1 AND instruction_id=$2 AND employee_id=$3 AND acknowledged_version=$4',[tenantId,instructionId,body.employee_id,instruction.version])).rows[0];
+      if(existing)return res.status(200).json({acknowledged:true,version:instruction.version});
+      return res.status(409).json({error:'Instruction version is no longer current'});
+    }
+    await recordAudit(tenantId,req.user!.id,'site.instruction.acknowledged','instruction_acknowledgements',instructionId,{site_id:siteId,employee_id:body.employee_id,version:instruction.version});
+    res.status(201).json(row);
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid acknowledgement'});next(error);}
 });
 

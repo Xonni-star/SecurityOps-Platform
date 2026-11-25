@@ -109,14 +109,14 @@ describe('Objektübersicht',()=>{
   it('edits risk assessment fields and status through the site-scoped API',async()=>{
     const context={
       site:sites[0],customers:[],contracts:[],locations:[],
-      hazards:[{id:'hazard-1',title:'Loading bay fire risk',category:'fire',description:'Original risk',likelihood:2,impact:3,risk_score:6,protective_measures:'Extinguishers',required_actions:'Inspect monthly',responsible_employee_id:null,due_on:'2026-12-01',review_on:'2026-12-15',status:'open',location_id:null,location_name:null,responsible_employee_name:null}],
+      hazards:[{id:'hazard-1',title:'Loading bay fire risk',category:'fire',description:'Original risk',likelihood:2,impact:3,risk_score:6,protective_measures:'Extinguishers',responsible_employee_id:null,due_on:'2026-12-01',review_on:'2026-12-15',status:'open',location_id:null,location_name:null,responsible_employee_name:null,measures:[]}],
       instructions:[],journal:null,staffing:[{id:'assignment-1',employee_id:'assigned',employee_name:'Site Guard'}],shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
     };
     apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'assigned',name:'Site Guard'},{id:'off-site',name:'Other employee'}]:options?.method==='PATCH'?{}:context);
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Bearbeiten'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gefährdung bearbeiten'}));
     const owner=screen.getByLabelText('Gefährdungsverantwortliche Person');
     expect(within(owner).getByRole('option',{name:'Site Guard'})).toBeTruthy();
     expect(within(owner).queryByRole('option',{name:'Other employee'})).toBeNull();
@@ -147,6 +147,65 @@ describe('Objektübersicht',()=>{
     fireEvent.change(screen.getByLabelText('Mitarbeiter für Kenntnisnahme'),{target:{value:'employee-2'}});
     fireEvent.click(screen.getByRole('button',{name:'Kenntnisnahme erfassen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/instructions/instruction-1/acknowledgements',expect.objectContaining({method:'POST',body:'{"employee_id":"employee-2"}'})));
+  });
+
+  it('creates and updates dated hazard measures through the site API',async()=>{
+    const hazard={id:'hazard-1',title:'Loading bay fire risk',category:'fire',description:'Original risk',likelihood:2,impact:3,risk_score:6,protective_measures:null,responsible_employee_id:null,due_on:null,review_on:null,status:'open',location_id:null,location_name:null,responsible_employee_name:null};
+    let measures:Array<{id:string;hazard_id:string;title:string;description:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;due_on:string|null;status:'open'|'in_progress'|'completed'|'cancelled';completed_at:string|null}>=[];
+    const context=()=>({
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[{...hazard,measures}],instructions:[],journal:null,
+      staffing:[{id:'assignment-1',employee_id:'employee-1',employee_name:'Mia Guard'}],shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,
+      alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    });
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers')return [];
+      if(path==='/employees')return [{id:'employee-1',name:'Mia Guard'}];
+      if(path==='/sites/0/object-context')return context();
+      if(path.endsWith('/measures')&&options?.method==='POST'){
+        const body=JSON.parse(options.body as string);
+        measures=[{id:'measure-1',hazard_id:'hazard-1',...body,responsible_employee_name:'Mia Guard',completed_at:null}];
+        return measures[0];
+      }
+      if(path.endsWith('/measures/measure-1')&&options?.method==='PATCH'){
+        const body=JSON.parse(options.body as string);
+        measures=[{...measures[0],...body,completed_at:body.status==='completed'?'2026-12-01T10:00:00Z':null}];
+        return measures[0];
+      }
+      return {};
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen'}));
+    fireEvent.click(screen.getByRole('button',{name:'Maßnahme hinzufügen'}));
+    fireEvent.change(screen.getByLabelText('Maßnahmentitel'),{target:{value:'Inspect extinguisher'}});
+    fireEvent.change(screen.getByLabelText('Maßnahme fällig am'),{target:{value:'2026-12-01'}});
+    fireEvent.change(screen.getByLabelText('Maßnahmenstatus'),{target:{value:'in_progress'}});
+    fireEvent.click(screen.getByRole('button',{name:'Maßnahme erfassen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/hazards/hazard-1/measures',expect.objectContaining({method:'POST'})));
+    const create=apiMock.mock.calls.find(([path,options])=>path==='/sites/0/hazards/hazard-1/measures'&&options?.method==='POST')!;
+    expect(JSON.parse(create[1].body)).toEqual(expect.objectContaining({title:'Inspect extinguisher',due_on:'2026-12-01',status:'in_progress'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Maßnahme bearbeiten'}));
+    fireEvent.change(screen.getByLabelText('Maßnahmenstatus'),{target:{value:'completed'}});
+    fireEvent.click(screen.getByRole('button',{name:'Maßnahme speichern'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/hazards/hazard-1/measures/measure-1',expect.objectContaining({method:'PATCH'})));
+    const update=apiMock.mock.calls.find(([path,options])=>path==='/sites/0/hazards/hazard-1/measures/measure-1'&&options?.method==='PATCH')!;
+    expect(JSON.parse(update[1].body)).toEqual(expect.objectContaining({status:'completed',due_on:'2026-12-01'}));
+  });
+
+  it('shows approval controls only for an approver other than the instruction author',async()=>{
+    const context={
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],
+      instructions:[{id:'instruction-1',title:'Evacuation',content:'Use the marked exit.',version:1,status:'pending_approval',requires_acknowledgement:true,acknowledgement_count:0,acknowledgements:[],can_approve:true}],
+      journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path==='/sites/0/object-context'?context:options?.method==='POST'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Dienstanweisungen'}));
+    expect(screen.queryByRole('option',{name:'Freigegeben'})).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:'Freigabe erteilen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/instructions/instruction-1/approve',expect.objectContaining({method:'POST'})));
   });
 
   it('shows real object staffing assignments and upcoming duty shifts',async()=>{

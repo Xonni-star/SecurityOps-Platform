@@ -16,12 +16,14 @@ const tenant='00000000-0000-4000-8000-00000000000a';
 const site='00000000-0000-4000-8000-0000000000aa';
 const customer='00000000-0000-4000-8000-0000000000bb';
 const sessionUser={id:'00000000-0000-4000-8000-000000000001',tenantId:tenant,email:'admin@example.invalid',role:'admin',permissions:['sites:read','sites:write','customers:read','customers:write','contracts:read'],permission_grants:[],site_ids:[site],is_system_admin:false,session_id:'00000000-0000-4000-8000-0000000000ac',csrf_token:'csrf-value',expires_at:'2099-01-01',device_id:'00000000-0000-4000-8000-0000000000ad'};
+let activeUser=sessionUser;
 const result=(rows:unknown[],rowCount=rows.length)=>({rows,rowCount}) as unknown as QueryResult;
 
 beforeEach(()=>{
   queryMock.mockReset();
+  activeUser=sessionUser;
   queryMock.mockImplementation(async(sql:string)=>{
-    if(sql.includes('FROM sessions'))return result([sessionUser]);
+    if(sql.includes('FROM sessions'))return result([activeUser]);
     if(sql.includes('FROM sites s'))return result([{id:site,status:'planning'}]);
     if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
     if(sql.includes('FROM customers WHERE'))return result([{id:customer}]);
@@ -76,7 +78,7 @@ describe('object management',()=>{
     expect(visible.body.site).toEqual(expect.objectContaining({object_manager_employee_id:'employee-1',object_manager_name:'Mia Guard'}));
     expect(visible.body.locations[0]).toEqual(expect.objectContaining({responsible_employee_id:'employee-1',responsible_employee_name:'Mia Guard'}));
     expect(visible.body.hazards[0]).toEqual(expect.objectContaining({responsible_employee_id:'employee-1',responsible_employee_name:'Mia Guard'}));
-    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM site_instructions i'))?.[1]).toEqual([tenant,site,true]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM site_instructions i'))?.[1]).toEqual([tenant,site,true,false,sessionUser.id]);
 
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([withoutEmployeeRead]);
@@ -92,7 +94,7 @@ describe('object management',()=>{
     expect(hidden.body.instructions[0]).toEqual(expect.objectContaining({acknowledgement_count:1,acknowledgements:[]}));
     expect(hidden.body.locations[0]).toEqual(expect.objectContaining({responsible_employee_id:null,responsible_employee_name:null}));
     expect(hidden.body.hazards[0]).toEqual(expect.objectContaining({responsible_employee_id:null,responsible_employee_name:null}));
-    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('FROM site_instructions i')).at(-1)?.[1]).toEqual([tenant,site,false]);
+    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('FROM site_instructions i')).at(-1)?.[1]).toEqual([tenant,site,false,false,sessionUser.id]);
   });
 
   it('returns site-scoped employee assignments and upcoming shifts only with their read scopes',async()=>{
@@ -619,34 +621,109 @@ describe('object management',()=>{
     expect(audit?.[1]?.[5]).toEqual(expect.objectContaining({risk_score:12}));
   });
 
-  it('creates sequential instruction versions and records acknowledgement by assigned employee',async()=>{
-    const instruction='00000000-0000-4000-8000-0000000000df';
-    const nextInstruction='00000000-0000-4000-8000-0000000000e0';
+  it('tracks hazard measures with site validation, due dates, status changes and audit events',async()=>{
+    const hazard='00000000-0000-4000-8000-0000000000e0';
+    const measure='00000000-0000-4000-8000-0000000000e1';
     const employee='00000000-0000-4000-8000-0000000000dd';
-    let titleLookupCount=0;
+    const scoped={...sessionUser,permission_grants:[{code:'sites:write',scope:'site'}],site_ids:[site]};
     queryMock.mockImplementation(async(sql:string)=>{
-      if(sql.includes('FROM sessions'))return result([{...sessionUser,permissions:[...sessionUser.permissions,'employees:read'],permission_grants:[{code:'employees:read',scope:'site'}]}]);
-      if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
-      if(sql.includes('SELECT id,version,status FROM site_instructions'))return result([{id:nextInstruction,version:2,status:'approved'}]);
-      if(sql.includes('SELECT id,version,title FROM site_instructions'))return result([{id:instruction,version:1,title:'Evacuation'}]);
-      if(sql.includes('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3'))return result(titleLookupCount++===0?[]:[{id:instruction}]);
-      if(sql.includes('FROM employees e'))return result([{id:employee}]);
-      if(sql.includes('INSERT INTO instruction_acknowledgements'))return result([{instruction_id:nextInstruction,employee_id:employee,acknowledged_version:2}]);
-      if(sql.includes('INSERT INTO site_instructions'))return result([sql.includes('RETURNING *')&&queryMock.mock.calls.at(-1)?.[1]?.[5]===2?{id:nextInstruction,version:2,status:'approved'}:{id:instruction,version:1,status:'approved'}]);
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:hazard}]);
+      if(sql.includes('FROM employee_object_assignments oa'))return result([{id:'assignment-1'}]);
+      if(sql.includes('SELECT id,status FROM object_hazard_measures'))return result([{id:measure,status:'in_progress'}]);
+      if(sql.includes('INSERT INTO object_hazard_measures'))return result([{id:measure,status:'open',due_on:'2026-12-01'}]);
+      if(sql.includes('UPDATE object_hazard_measures SET'))return result([{id:measure,status:'completed',due_on:'2026-12-01',completed_at:'2026-11-25T10:00:00Z'}]);
       return result([]);
     });
     const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
-    const create=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
-      .send({title:'Evacuation',content:'Use the marked exit.',version:1,status:'approved',requires_acknowledgement:true});
+    const create=await request(app).post(`/api/v1/sites/${site}/hazards/${hazard}/measures`)
+      .set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Inspect extinguisher',description:'Check seal and pressure',responsible_employee_id:employee,due_on:'2026-12-01'});
     expect(create.status).toBe(201);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO object_hazard_measures'))?.[1]).toEqual([tenant,site,hazard,'Inspect extinguisher','Check seal and pressure',employee,'2026-12-01','open',scoped.id]);
+    const update=await request(app).patch(`/api/v1/sites/${site}/hazards/${hazard}/measures/${measure}`)
+      .set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({status:'completed',due_on:'2026-12-01'});
+    expect(update.status).toBe(200);
+    expect(update.body.completed_at).toBe('2026-11-25T10:00:00Z');
+    const updateCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('UPDATE object_hazard_measures SET'));
+    expect(updateCall?.[0]).toContain("completed_at=CASE WHEN $4='completed'");
+    expect(updateCall?.[1]).toEqual([tenant,site,hazard,'completed',measure,'2026-12-01','completed']);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.hazard_measure.created')).toBe(true);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.hazard_measure.updated')).toBe(true);
+  });
+
+  it('creates, separately approves and acknowledges the exact instruction version',async()=>{
+    const instruction='00000000-0000-4000-8000-0000000000df';
+    const nextInstruction='00000000-0000-4000-8000-0000000000e0';
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    const approverId='00000000-0000-4000-8000-000000000002';
+    const approver={...sessionUser,id:approverId,permissions:['sites:read','sites:write','employees:read'],permission_grants:[
+      {code:'site_instructions:approve',scope:'site'},{code:'sites:write',scope:'site'},{code:'employees:read',scope:'site'},
+    ],site_ids:[site]};
+    let titleLookupCount=0;
+    let approvalCount=0;
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('FROM sites WHERE'))return result([{id:site}]);
+      if(sql.includes('SELECT id,status,created_by,version,title FROM site_instructions'))return result([{id:approvalCount++===0?instruction:nextInstruction,status:'pending_approval',created_by:sessionUser.id,version:approvalCount,title:'Evacuation'}]);
+      if(sql.includes('SELECT id,version,status,title,requires_acknowledgement FROM site_instructions'))return result([{id:nextInstruction,version:2,status:'approved',title:'Evacuation',requires_acknowledgement:true}]);
+      if(sql.includes('SELECT id,version,title FROM site_instructions'))return result([{id:instruction,version:1,title:'Evacuation'}]);
+      if(sql.includes('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3'))return result(titleLookupCount++===0?[]:titleLookupCount<4?[{id:instruction}]:[{id:nextInstruction}]);
+      if(sql.includes('FROM employees e'))return result([{id:employee}]);
+      if(sql.includes('INSERT INTO instruction_acknowledgements'))return result([{instruction_id:nextInstruction,employee_id:employee,acknowledged_version:2}]);
+      if(sql.includes("UPDATE site_instructions SET status='approved'"))return result([{id:sql.includes('WHERE tenant_id=$1')&&queryMock.mock.calls.at(-1)?.[1]?.[2]===instruction?instruction:nextInstruction,status:'approved',approved_by:approverId}]);
+      if(sql.includes('INSERT INTO site_instructions'))return result([{id:queryMock.mock.calls.at(-1)?.[1]?.[5]===2?nextInstruction:instruction,version:queryMock.mock.calls.at(-1)?.[1]?.[5],status:queryMock.mock.calls.at(-1)?.[1]?.[6],created_by:queryMock.mock.calls.at(-1)?.[1]?.[10]}]);
+      return result([]);
+    });
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    const directApproval=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Evacuation',content:'Use the marked exit.',version:1,status:'approved',requires_acknowledgement:true});
+    expect(directApproval.status).toBe(400);
+    const create=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({title:'Evacuation',content:'Use the marked exit.',version:1,status:'pending_approval',requires_acknowledgement:true});
+    expect(create.status).toBe(201);
+    activeUser=approver;
+    const approveFirst=await request(app).post(`/api/v1/sites/${site}/instructions/${instruction}/approve`).set('Cookie',cookie).set('x-csrf-token','csrf-value');
+    expect(approveFirst.status).toBe(200);
+    activeUser=sessionUser;
     const nextVersion=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
-      .send({title:'Evacuation',content:'Use the marked east exit.',version:2,status:'approved',requires_acknowledgement:true,supersedes_id:instruction});
+      .send({title:'Evacuation',content:'Use the marked east exit.',version:2,status:'pending_approval',requires_acknowledgement:true,supersedes_id:instruction});
     expect(nextVersion.status).toBe(201);
+    activeUser=approver;
+    const approveSecond=await request(app).post(`/api/v1/sites/${site}/instructions/${nextInstruction}/approve`).set('Cookie',cookie).set('x-csrf-token','csrf-value');
+    expect(approveSecond.status).toBe(200);
     const acknowledged=await request(app).post(`/api/v1/sites/${site}/instructions/${nextInstruction}/acknowledgements`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({employee_id:employee});
     expect(acknowledged.status).toBe(201);
     expect(acknowledged.body.acknowledged_version).toBe(2);
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO instruction_acknowledgements')&&values?.[0]===tenant&&values?.[3]===2)).toBe(true);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.instruction.approved'&&values?.[1]===approverId)).toBe(true);
+  });
+
+  it('requires a separate authorized approver to return pending instructions for revision',async()=>{
+    const instruction='00000000-0000-4000-8000-0000000000df';
+    const approver={...sessionUser,id:'00000000-0000-4000-8000-000000000002',permission_grants:[{code:'site_instructions:approve',scope:'site'}],site_ids:[site]};
+    const selfApprover={...sessionUser,permission_grants:[{code:'site_instructions:approve',scope:'site'}],site_ids:[site]};
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT id,status,created_by,version,title FROM site_instructions'))return result([{id:instruction,status:'pending_approval',created_by:activeUser===selfApprover?selfApprover.id:sessionUser.id,version:1,title:'Evacuation'}]);
+      if(sql.includes('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3'))return result([{id:instruction}]);
+      if(sql.includes("UPDATE site_instructions SET status='draft'"))return result([{id:instruction,status:'draft'}]);
+      return result([]);
+    });
+    const unauthorized=await request(app).post(`/api/v1/sites/${site}/instructions/${instruction}/approve`).set('Cookie',cookie).set('x-csrf-token','csrf-value');
+    expect(unauthorized.status).toBe(403);
+    activeUser=selfApprover;
+    const selfApproval=await request(app).post(`/api/v1/sites/${site}/instructions/${instruction}/approve`).set('Cookie',cookie).set('x-csrf-token','csrf-value');
+    expect(selfApproval.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes("UPDATE site_instructions SET status='approved'"))).toBe(false);
+    activeUser=approver;
+    const returned=await request(app).post(`/api/v1/sites/${site}/instructions/${instruction}/return-for-revision`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({reason:'Add the evacuation assembly point'});
+    expect(returned.status).toBe(200);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.instruction.returned_for_revision')).toBe(true);
   });
 
   it('rejects unchained instruction versions and acknowledgements from non-object employees',async()=>{
