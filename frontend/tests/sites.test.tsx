@@ -117,6 +117,26 @@ describe('Objektübersicht',()=>{
     expect(screen.getByText(/night_guard/)).toBeTruthy();
   });
 
+  it('creates a site staffing assignment through the existing employee API with an audit reason',async()=>{
+    const employee={id:'employee-1',name:'Mia Guard'};
+    const context={
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,
+      staffing:[],shifts:[],patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[employee]:options?.method==='POST'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Personal & Dienste'}));
+    fireEvent.change(screen.getByLabelText('Mitarbeiter'),{target:{value:'employee-1'}});
+    fireEvent.change(screen.getByLabelText('Beginn'),{target:{value:'2026-11-25'}});
+    fireEvent.change(screen.getByLabelText('Rolle'),{target:{value:'Objektschutz'}});
+    fireEvent.change(screen.getByLabelText('Begründung für Audit'),{target:{value:'Coverage requirement'}});
+    fireEvent.click(screen.getByRole('button',{name:'Personalzuordnung anlegen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/employees/employee-1/object-assignments',expect.objectContaining({method:'POST'})));
+    const create=apiMock.mock.calls.find(([path,options])=>path==='/employees/employee-1/object-assignments'&&options?.method==='POST')!;
+    expect(JSON.parse(create[1].body)).toEqual(expect.objectContaining({site_id:'0',starts_on:'2026-11-25',role:'Objektschutz',reason:'Coverage requirement'}));
+  });
+
   it('shows actual patrol plans and recent checkpoint activity, while explaining restricted access',async()=>{
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/sites')return sites.slice(0,1);

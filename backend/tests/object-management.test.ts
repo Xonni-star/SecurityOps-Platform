@@ -314,6 +314,52 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM contract_sites'))).toBe(false);
   });
 
+  it('creates employee-to-site assignments for an authorized site-scoped employee manager',async()=>{
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'employees:write',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM employees WHERE tenant_id=$1 AND id=$2'))return result([{id:employee}]);
+      if(sql.includes('FROM sites WHERE tenant_id=$1 AND id=$2'))return result([{id:site}]);
+      if(sql.includes('INSERT INTO employee_object_assignments'))return result([{id:'assignment-1',employee_id:employee,site_id:site}]);
+      return result([]);
+    });
+    const response=await request(app).post(`/api/v1/employees/${employee}/object-assignments`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({site_id:site,assignment_type:'operational',starts_on:'2026-11-25',primary_assignment:false,reason:'Coverage requirement'});
+    expect(response.status).toBe(201);
+    expect(response.body.site_id).toBe(site);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO employee_object_assignments'))?.[1]).toEqual([tenant,employee,site,'operational',null,'2026-11-25',null,false,null]);
+  });
+
+  it('rejects employee assignment writes when the requested site is outside the site grant',async()=>{
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'employees:write',scope:'site'}],site_ids:[]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    const response=await request(app).post(`/api/v1/employees/${employee}/object-assignments`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({site_id:site,starts_on:'2026-11-25',reason:'Coverage requirement'});
+    expect(response.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM employees WHERE tenant_id=$1 AND id=$2'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO employee_object_assignments'))).toBe(false);
+  });
+
+  it('prevents a site-scoped assignment from changing primary status across other sites',async()=>{
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'employees:write',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    const response=await request(app).post(`/api/v1/employees/${employee}/object-assignments`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({site_id:site,starts_on:'2026-11-25',primary_assignment:true,reason:'Coverage requirement'});
+    expect(response.status).toBe(403);
+    expect(response.body.error).toContain('tenant-wide');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE employee_object_assignments'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO employee_object_assignments'))).toBe(false);
+  });
+
   it('returns journal entries only with watchbook permission for the site',async()=>{
     const scoped={...sessionUser,permission_grants:[{code:'watchbook:read',scope:'site'}],site_ids:[site]};
     queryMock.mockImplementation(async(sql:string)=>{

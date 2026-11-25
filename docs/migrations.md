@@ -182,8 +182,14 @@ The object-context endpoint exposes these records alongside existing customer,
 contract and watchbook links, as well as existing site-linked employee
 assignments, active/upcoming duty shifts, patrol route plans and the 20 most
 recent site-linked checkpoint scans. These personnel, scheduling and patrol
-projections remain read-only and permission-scoped; the source records are not
-duplicated. Patrol access requires `patrols:read` for the requested site.
+projections remain permission-scoped; the source records are not duplicated.
+Site staffing assignments can be created through the existing employee
+assignment API with an audit reason and site-scope authorization. Existing
+assignments remain read-only for correction/removal because no safe update or
+rollback API exists. Site-scoped writers cannot alter the employee's
+tenant-wide primary-assignment state. Scheduling and patrol projections remain
+read-only.
+Patrol access requires `patrols:read` for the requested site.
 Employee names in patrol assignments and scans additionally require
 `employees:read`; missing patrol access returns `null`, distinct from an
 authorized empty result.

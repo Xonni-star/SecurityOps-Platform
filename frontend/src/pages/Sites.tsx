@@ -96,6 +96,7 @@ export function Sites(){
   const [taskTitle,setTaskTitle]=useState('');
   const [taskDue,setTaskDue]=useState('');
   const [taskAssignee,setTaskAssignee]=useState('');
+  const [assignmentForm,setAssignmentForm]=useState({employee_id:'',assignment_type:'operational',role:'',starts_on:'',ends_on:'',notes:'',reason:''});
   const [details,setDetails]=useState({alias:'',site_type:'',description:'',object_manager_employee_id:'',operations_manager_employee_id:''});
   const writable=hasPermission('sites:write');
 
@@ -239,6 +240,15 @@ export function Sites(){
     try{await api(`/customers/${task.customer_id}/tasks/${task.id}`,{method:'PATCH',body:JSON.stringify({status:'completed'})});await refreshContext();setError('');}
     catch(e){setError((e as Error).message);}
   }
+  async function createStaffingAssignment(event:FormEvent){
+    event.preventDefault();if(!selected||!assignmentForm.employee_id)return;
+    try{
+      const {employee_id,...assignment}=assignmentForm;
+      await api(`/employees/${employee_id}/object-assignments`,{method:'POST',body:JSON.stringify({...assignment,site_id:selected.site.id,role:assignment.role.trim()||null,ends_on:assignment.ends_on||null,notes:assignment.notes.trim()||null})});
+      setAssignmentForm({employee_id:'',assignment_type:'operational',role:'',starts_on:'',ends_on:'',notes:'',reason:''});
+      await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
   const filtered=sites.filter(site=>(statusFilter==='all'||site.status===statusFilter)&&`${site.name} ${site.site_number??''} ${site.address??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const sorted=[...filtered].sort((a,b)=>String(a[sortKey]??'').localeCompare(String(b[sortKey]??''),'de')*(descending?-1:1));
   const pages=Math.max(1,Math.ceil(sorted.length/10));
@@ -246,6 +256,7 @@ export function Sites(){
   const changeSort=(key:typeof sortKey)=>{if(key===sortKey)setDescending(!descending);else{setSortKey(key);setDescending(false);}setPage(1);};
   const selectedCustomers=selected?.customers??[];
   const selectedContracts=selected?.contracts??[];
+  const assignableEmployees=employees.filter(employee=>!selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
 
   return <section className="employee-management">
     {error&&<p role="alert" className="error">{error}</p>}
@@ -325,6 +336,18 @@ export function Sites(){
       {active==='personal'&&<div className="employee-detail-content">
       <h3>Personalzuordnungen</h3>
       {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
+      {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length>0&&<form onSubmit={createStaffingAssignment}>
+        <h4>Personal dem Objekt zuordnen</h4>
+        <label>Mitarbeiter<select required value={assignmentForm.employee_id} onChange={event=>setAssignmentForm({...assignmentForm,employee_id:event.target.value})}><option value="">Mitarbeiter auswählen</option>{assignableEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
+        <label>Zuordnungstyp<select value={assignmentForm.assignment_type} onChange={event=>setAssignmentForm({...assignmentForm,assignment_type:event.target.value})}><option value="operational">Operativ</option><option value="management">Leitung</option><option value="support">Unterstützung</option><option value="temporary">Befristet</option><option value="reserve">Reserve</option></select></label>
+        <label>Rolle<input value={assignmentForm.role} onChange={event=>setAssignmentForm({...assignmentForm,role:event.target.value})}/></label>
+        <label>Beginn<input type="date" required value={assignmentForm.starts_on} onChange={event=>setAssignmentForm({...assignmentForm,starts_on:event.target.value})}/></label>
+        <label>Ende<input type="date" value={assignmentForm.ends_on} onChange={event=>setAssignmentForm({...assignmentForm,ends_on:event.target.value})}/></label>
+        <label>Notizen<textarea value={assignmentForm.notes} onChange={event=>setAssignmentForm({...assignmentForm,notes:event.target.value})}/></label>
+        <label>Begründung für Audit<input required value={assignmentForm.reason} onChange={event=>setAssignmentForm({...assignmentForm,reason:event.target.value})}/></label>
+        <button>Personalzuordnung anlegen</button>
+      </form>}
+      {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
       <h3>Dienstplanung und Schichten</h3>
       {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}</li>)}</ul>}
       </div>}

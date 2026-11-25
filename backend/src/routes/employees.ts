@@ -3,6 +3,7 @@ import {z} from 'zod';
 import {query,withTransaction} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
+import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
@@ -345,11 +346,18 @@ employeesRouter.post('/employees/:id/availability',requireCsrf,requirePermission
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid availability'});next(error);}
 });
 
-employeesRouter.post('/employees/:id/object-assignments',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
+employeesRouter.post('/employees/:id/object-assignments',requireCsrf,requirePermission('employees:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const employeeId=uuid.parse(String(req.params.id));
     const body=objectAssignmentSchema.parse(req.body);
     if(body.ends_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Assignment end date must be on or after start date'});
+    const user=req.user!;
+    const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+    const scope=effectivePermissionScope(grants,'employees:write',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+    if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:body.site_id})){
+      return res.status(403).json({error:'Permission scope does not include this site'});
+    }
+    if(scope==='site'&&body.primary_assignment)return res.status(403).json({error:'Primary assignment requires tenant-wide employee write scope'});
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,employeeId])).rows[0];
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.site_id])).rows[0];
     if(!employee)return res.status(404).json({error:'Employee not found'});
