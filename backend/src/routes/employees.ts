@@ -379,6 +379,38 @@ employeesRouter.post('/employees/:id/object-assignments',requireCsrf,requirePerm
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid object assignment'});next(error);}
 });
 
+employeesRouter.patch('/employees/:id/object-assignments/:assignmentId',requireCsrf,requirePermission('employees:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const employeeId=uuid.parse(String(req.params.id));
+    const assignmentId=uuid.parse(String(req.params.assignmentId));
+    const body=z.object({ends_on:z.string().date(),reason:nonempty.max(500)}).strict().parse(req.body);
+    const user=req.user!;
+    const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+    const scope=effectivePermissionScope(grants,'employees:write',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+    if(!scope)return res.status(403).json({error:'Insufficient permissions'});
+    const assignment=(await query<{site_id:string;employee_id:string;starts_on:string}>(
+      'SELECT site_id,employee_id,starts_on FROM employee_object_assignments WHERE tenant_id=$1 AND id=$2 AND employee_id=$3',
+      [user.tenantId,assignmentId,employeeId],
+    )).rows[0];
+    if(!assignment)return res.status(404).json({error:'Object assignment not found'});
+    if(body.ends_on<assignment.starts_on)return res.status(400).json({error:'Assignment end date must be on or after start date'});
+    if(!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:assignment.site_id})){
+      return res.status(403).json({error:'Permission scope does not include this site'});
+    }
+    const row=(await query(
+      `UPDATE employee_object_assignments SET ends_on=$4,primary_assignment=false,updated_at=now()
+       WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND (ends_on IS NULL OR ends_on>=CURRENT_DATE)
+       RETURNING *`,
+      [user.tenantId,assignmentId,employeeId,body.ends_on],
+    )).rows[0];
+    if(!row)return res.status(404).json({error:'Object assignment not found or already ended'});
+    await query('INSERT INTO employee_history(tenant_id,employee_id,event_type,actor_user_id,details) VALUES($1,$2,$3,$4,$5)',
+      [user.tenantId,employeeId,'object_assignment.ended',user.id,{reason:body.reason,assignment_id:assignmentId,site_id:assignment.site_id,ends_on:body.ends_on}]);
+    await recordAudit(user.tenantId,user.id,'employee.object_assignment.ended','employee_object_assignment',assignmentId,{reason:body.reason,employee_id:employeeId,site_id:assignment.site_id,ends_on:body.ends_on});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid object assignment'});next(error);}
+});
+
 employeesRouter.get('/employees/:id/absences',requirePermission('employees:read'),async(req,res,next)=>{
   try{
     const employeeId=uuid.parse(String(req.params.id));

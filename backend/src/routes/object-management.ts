@@ -490,6 +490,7 @@ objectManagementRouter.get(
       const canReadCustomerDocuments=canReadTenantData('customer_documents:read');
       const documents=canReadDocuments?(await query(
         `SELECT d.id,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
+          d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,d.approval_status,d.location_id,
           COALESCE(json_agg(json_build_object(
             'id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,
             'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until
@@ -586,7 +587,14 @@ objectManagementRouter.get(
          ORDER BY h.created_at DESC LIMIT 20`,
         [user.tenantId,id],
       )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance,qualifications,handovers});
+      const devices=canReadSiteData('devices:read')?(await query(
+        `SELECT id,name,status,site_id,last_seen_at,metadata,created_at,updated_at
+         FROM devices
+         WHERE tenant_id=$1 AND site_id=$2 AND device_kind='operational'
+         ORDER BY name,last_seen_at DESC NULLS LAST`,
+        [user.tenantId,id],
+      )).rows:null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance,qualifications,handovers,devices});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );

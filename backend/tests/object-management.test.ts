@@ -444,6 +444,24 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO employee_object_assignments'))?.[1]).toEqual([tenant,employee,site,'operational',null,'2026-11-25',null,false,null]);
   });
 
+  it('ends an object assignment through the existing employee assignment record',async()=>{
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    const assignment='00000000-0000-4000-8000-0000000000ee';
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'employees:write',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('SELECT site_id,employee_id,starts_on'))return result([{site_id:site,employee_id:employee,starts_on:'2026-01-01'}]);
+      if(sql.includes('UPDATE employee_object_assignments SET ends_on'))return result([{id:assignment,employee_id:employee,site_id:site,ends_on:'2026-11-25'}]);
+      return result([]);
+    });
+    const response=await request(app).patch(`/api/v1/employees/${employee}/object-assignments/${assignment}`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({ends_on:'2026-11-25',reason:'No longer assigned'});
+    expect(response.status).toBe(200);
+    expect(response.body.ends_on).toBe('2026-11-25');
+  });
+
   it('rejects employee assignment writes when the requested site is outside the site grant',async()=>{
     const employee='00000000-0000-4000-8000-0000000000dd';
     const scoped={...sessionUser,permissions:[],permission_grants:[{code:'employees:write',scope:'site'}],site_ids:[]};
