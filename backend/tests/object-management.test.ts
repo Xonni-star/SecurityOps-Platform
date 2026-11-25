@@ -71,6 +71,7 @@ describe('object management',()=>{
         {code:'dms:read',scope:'site'},
         {code:'watchbook:read',scope:'site'},
         {code:'scheduling:read',scope:'site'},
+        {code:'devices:read',scope:'site'},
       ],
     };
     queryMock.mockImplementation(async(sql:string)=>{
@@ -100,6 +101,9 @@ describe('object management',()=>{
       sites_with_critical_hazards:0,sites_with_open_tasks:0,sites_with_understaffing:0,
       open_hazards:2,overdue_measures:3,open_tasks:0,overdue_tasks:0,open_shifts:0,undercovered_shifts:0,
       expiring_contracts:1,sites_without_available_documents:1,
+      valid_documents:0,expired_documents:0,documents_expiring_7d:0,documents_expiring_30d:0,
+      documents_review_due:0,unapproved_documents:0,missing_required_documents:0,
+      open_maintenance:0,overdue_maintenance:0,
     });
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('SELECT s.id FROM sites s'))?.[1]).toEqual([tenant, [site]]);
   });
@@ -123,7 +127,7 @@ describe('object management',()=>{
     expect(response.status).toBe(200);
     expect(response.body.metrics).toEqual(expect.objectContaining({expiring_contracts:null,sites_without_available_documents:null}));
     const aggregate=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH customer_summary AS'));
-    expect(aggregate?.[1]).toEqual([tenant,[site],[],[],[],[site],[],[],[],[]]);
+    expect(aggregate?.[1]).toEqual([tenant,[site],[],[],[],[site],[],[],[],[],[]]);
     expect(response.body.sites[0]).toEqual(expect.objectContaining({
       customer_names:null,assigned_employee_count:null,active_contract_count:null,available_document_count:null,
     }));
@@ -253,7 +257,7 @@ describe('object management',()=>{
     const key={id:'key-1',key_code:'K-01',label:'Main entrance',key_type:'physical',status:'available'};
     const movement={id:'movement-1',key_id:'key-1',key_label:'Main entrance',movement_type:'returned',to_status:'available'};
     const bundle={id:'bundle-1',name:'Night shift',status:'available',item_count:2,issued_count:0};
-    const document={id:'document-1',title:'Site instructions',document_status:'active',versions:[{id:'version-1',version_no:1,lifecycle_state:'available'}]};
+    const document={id:'document-1',title:'Site instructions',document_status:'active',approval_status:'approved',valid_until:null,versions:[{id:'version-1',version_no:1,lifecycle_state:'available'}]};
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([scoped]);
       if(sql.includes('FROM sites s'))return result([{id:site}]);
@@ -268,7 +272,9 @@ describe('object management',()=>{
     expect(response.status).toBe(200);
     expect(response.body.keys).toEqual({items:[key],recentMovements:[movement]});
     expect(response.body.keyBundles).toEqual([bundle]);
-    expect(response.body.documents).toEqual([document]);
+    expect(response.body.documents).toEqual([expect.objectContaining({
+      ...document,computed_status:'gueltig',status_label:'Gültig',expiry_bucket:'no_expiry',is_currently_valid:true,
+    })]);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM keys WHERE'))?.[1]).toEqual([tenant,site]);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM key_bundles b'))?.[1]).toEqual([tenant,site]);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM dms_documents d'))?.[1]).toEqual([tenant,site,false]);
@@ -850,5 +856,33 @@ describe('object management',()=>{
       .send({title:'Fire loading bay',category:'fire',description:'Combustible storage',likelihood:6,impact:3});
     expect(response.status).toBe(400);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_hazards'))).toBe(false);
+  });
+
+  it('reports mandatory document requirements with a single server-side status',async()=>{
+    const scoped={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'dms:read',scope:'site'}]};
+    const documents=[
+      {id:'doc-valid',document_type:'Security plan',document_status:'active',approval_status:'approved',valid_until:'2099-01-01',versions:[{lifecycle_state:'available'}]},
+      {id:'doc-draft',document_type:'Shift plan',document_status:'active',approval_status:'draft',valid_until:null,versions:[{lifecycle_state:'available'}]},
+    ];
+    const requirements=[
+      {id:'req-1',document_type:'Security plan',required:true,responsible_employee_id:null,responsible_employee_name:null,created_at:null,updated_at:null},
+      {id:'req-2',document_type:'Shift plan',required:true,responsible_employee_id:null,responsible_employee_name:null,created_at:null,updated_at:null},
+      {id:'req-3',document_type:'Fire safety plan',required:true,responsible_employee_id:null,responsible_employee_name:null,created_at:null,updated_at:null},
+    ];
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM dms_documents d'))return result(documents);
+      if(sql.includes('FROM dms_document_requirements r'))return result(requirements);
+      return result([]);
+    });
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.documentRequirements).toEqual([
+      expect.objectContaining({id:'req-1',missing:false,requirement_status:'gueltig',matching_document_id:'doc-valid'}),
+      expect.objectContaining({id:'req-2',missing:false,requirement_status:'nicht_freigegeben',matching_document_id:'doc-draft'}),
+      expect.objectContaining({id:'req-3',missing:true,requirement_status:'fehlend',matching_document_id:null}),
+    ]);
+    expect(String(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM dms_document_requirements r'))?.[0])).not.toContain('CASE WHEN r.required');
   });
 });

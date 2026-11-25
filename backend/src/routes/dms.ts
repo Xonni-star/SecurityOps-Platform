@@ -9,6 +9,7 @@ import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} fr
 import {runIdempotentMutation} from '../services/offline-sync.js';
 import {env} from '../config/env.js';
 import {canDownloadDmsVersion,nextDmsVersion,retentionDue,scanLifecycle,validateDmsUpload} from '../services/dms-domain.js';
+import {classifyDocument} from '../services/dms-document-status.js';
 
 const uuid=z.string().uuid();
 const allowedTypes=new Set(env.DMS_ALLOWED_CONTENT_TYPES.split(',').map(value=>value.trim()).filter(Boolean));
@@ -48,10 +49,11 @@ dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['ten
     const customerFilter=customerDocumentPermission(req,'customer_documents:read')?'':' AND d.customer_id IS NULL';
     const values=siteFilter?[req.user!.tenantId,req.user!.siteIds??[]]:[req.user!.tenantId];
     const rows=(await query(`SELECT d.id,d.site_id,d.employee_id,d.employee_document_category,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
+      d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,d.approval_status,d.location_id,
       COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,'sha256',v.sha256,'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') versions
       FROM dms_documents d LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
       WHERE d.tenant_id=$1${siteFilter}${customerFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
-    res.json(rows);
+    res.json(rows.map(row=>({...row,...classifyDocument(row)})));
   }catch(error){next(error);}
 });
 
@@ -72,7 +74,6 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       valid_from:z.string().date().nullable().optional(),
       valid_until:z.string().date().nullable().optional(),
       review_on:z.string().date().nullable().optional(),
-      approval_status:z.enum(['draft','pending_approval','approved','rejected','archived']).optional(),
       content_base64:z.string(),
       content_type:z.string().trim().min(1).max(160),
       retention_until:z.string().datetime({offset:true}).nullable().optional(),
@@ -109,7 +110,7 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     try{
       const result=await withTransaction(client=>runIdempotentMutation<{document:Record<string,unknown>;version:Record<string,unknown>}>(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'dms.document',payload:req.body},async tx=>{
         const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,customer_id,customer_document_category,title,description,document_number,document_type,responsible_employee_id,location_id,valid_from,valid_until,review_on,approval_status,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
-          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,body.document_number??null,body.document_type??null,body.responsible_employee_id??null,body.location_id??null,body.valid_from??null,body.valid_until??null,body.review_on??null,body.approval_status??'draft',req.user!.id,session(req)])).rows[0];
+          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,body.document_number??null,body.document_type??null,body.responsible_employee_id??null,body.location_id??null,body.valid_from??null,body.valid_until??null,body.review_on??null,'draft',req.user!.id,session(req)])).rows[0];
         const version=(await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
           VALUES($1,$2,$3,1,$4,$5,$6,$7,'quarantined',$8,$9,(SELECT device_id FROM sessions WHERE id=$9),$10) RETURNING *`,
           [versionId,req.user!.tenantId,documentId,objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
@@ -148,7 +149,6 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
       valid_from:z.string().date().nullable().optional(),
       valid_until:z.string().date().nullable().optional(),
       review_on:z.string().date().nullable().optional(),
-      approval_status:z.enum(['draft','pending_approval','approved','rejected','archived']).optional(),
     }).strict().refine(value=>Object.keys(value).length>0).refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from).parse(req.body);
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
     if(!document)return res.status(404).json({error:'Document not found'});
@@ -162,7 +162,7 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,document.site_id,body.location_id])).rows[0];
       if(!location)return res.status(400).json({error:'Object location not found'});
     }
-    const columns:Record<string,string>={title:'title',description:'description',document_number:'document_number',document_type:'document_type',responsible_employee_id:'responsible_employee_id',location_id:'location_id',valid_from:'valid_from',valid_until:'valid_until',review_on:'review_on',approval_status:'approval_status'};
+    const columns:Record<string,string>={title:'title',description:'description',document_number:'document_number',document_type:'document_type',responsible_employee_id:'responsible_employee_id',location_id:'location_id',valid_from:'valid_from',valid_until:'valid_until',review_on:'review_on'};
     const entries=Object.entries(body);
     const assignments=entries.map(([key],index)=>`${columns[key]}=$${index+3}`).join(',');
     const row=(await query(
@@ -173,6 +173,58 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
     await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.updated','dms_document',documentId,{changed_fields:Object.keys(body)});
     res.json(row);
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document metadata'});next(error);}
+});
+
+dmsRouter.post('/dms/documents/:documentId/request-review',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const documentId=uuid.parse(String(req.params.documentId));
+    const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
+    if(!document)return res.status(404).json({error:'Document not found'});
+    siteAccess(req,document.site_id??null,'dms:write');
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
+    if(document.document_status!=='active'||!['draft','rejected'].includes(document.approval_status))return res.status(409).json({error:'Document cannot be submitted for review'});
+    const row=(await query(`UPDATE dms_documents SET approval_status='pending_approval',reviewed_at=NULL,approval_feedback=NULL,updated_at=now()
+      WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,documentId])).rows[0];
+    await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.review_requested','dms_document',documentId,{previous_status:document.approval_status});
+    res.json({...row,...classifyDocument(row)});
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document id'});next(error);}
+});
+
+dmsRouter.post('/dms/documents/:documentId/approve',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const documentId=uuid.parse(String(req.params.documentId));
+    const body=z.object({feedback:z.string().trim().max(2000).nullable().optional()}).strict().parse(req.body??{});
+    const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
+    if(!document)return res.status(404).json({error:'Document not found'});
+    siteAccess(req,document.site_id??null,'dms:write');
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
+    if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Uploaders cannot approve their own document'});
+    if(document.document_status!=='active'||!['draft','pending_approval','rejected'].includes(document.approval_status))return res.status(409).json({error:'Document is not in an approvable state'});
+    const latest=(await query(`SELECT * FROM dms_versions WHERE tenant_id=$1 AND document_id=$2 ORDER BY version_no DESC LIMIT 1`,[req.user!.tenantId,documentId])).rows[0];
+    if(latest?.lifecycle_state!=='available')return res.status(409).json({error:'No released document version is available for approval'});
+    const row=(await query(`UPDATE dms_documents SET approval_status='approved',approved_by=$3,approved_at=now(),reviewed_at=now(),rejection_reason=NULL,updated_at=now()
+      WHERE tenant_id=$1 AND id=$2 AND approval_status<>'approved' RETURNING *`,[req.user!.tenantId,documentId,req.user!.id])).rows[0];
+    if(!row)return res.status(409).json({error:'Document is not in an approvable state'});
+    await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.approved','dms_document',documentId,{previous_status:document.approval_status,feedback:body.feedback??null});
+    const classifiable={...row,versions:[latest]};
+    res.json({...classifiable,...classifyDocument(classifiable)});
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid approval request'});next(error);}
+});
+
+dmsRouter.post('/dms/documents/:documentId/return-for-revision',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const documentId=uuid.parse(String(req.params.documentId));
+    const body=z.object({reason:z.string().trim().min(1).max(2000)}).strict().parse(req.body);
+    const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
+    if(!document)return res.status(404).json({error:'Document not found'});
+    siteAccess(req,document.site_id??null,'dms:write');
+    if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Uploaders cannot decide on their own document'});
+    if(document.document_status!=='active'||!['pending_approval','approved'].includes(document.approval_status))return res.status(409).json({error:'Document cannot be returned for revision'});
+    const row=(await query(`UPDATE dms_documents SET approval_status='rejected',approval_feedback=$3,rejection_reason=$3,reviewed_at=now(),approved_by=NULL,approved_at=NULL,updated_at=now()
+      WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,documentId,body.reason])).rows[0];
+    await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.returned_for_revision','dms_document',documentId,{previous_status:document.approval_status,reason:body.reason});
+    res.json({...row,...classifyDocument(row)});
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid revision request'});next(error);}
 });
 
 dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
