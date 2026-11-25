@@ -3,7 +3,11 @@ import {useNavigate,useParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {uuid} from '../lib/uuid';
 
-type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null};
+type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;updated_at?:string};
+type SiteOverview=Site&{customer_names:string[]|null;object_manager_name:string|null;operations_manager_name:string|null;assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;open_hazard_count:number;overdue_measure_count:number;available_document_count:number|null;last_activity:string|null};
+type OverviewMetrics={total_sites:number;active_sites:number;preparation_sites:number;restricted_sites:number;critical_sites:number;open_hazards:number|null;overdue_measures:number|null;expiring_contracts:number|null;sites_without_available_documents:number|null};
+type SiteOverviewResponse={sites:SiteOverview[];metrics:OverviewMetrics};
+type SiteColumn='site_number'|'name'|'site_type'|'customer_names'|'address'|'object_manager_name'|'operations_manager_name'|'security_classification'|'status'|'assigned_employee_count'|'active_contract_count'|'open_hazard_count'|'last_activity';
 type Customer={id:string;name:string;customer_number?:string|null};
 type Employee={id:string;name:string};
 type StaffingAssignment={id:string;employee_id:string;employee_name:string;assignment_type:string;role:string|null;starts_on:string;ends_on:string|null;primary_assignment:boolean;notes:string|null};
@@ -34,7 +38,7 @@ type Context={
   contracts:{id:string;contract_number:string;customer_name:string;status:string}[]|null;
   locations:ObjectLocation[];
   hazards:ObjectHazard[];
-  instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;acknowledgements:InstructionAcknowledgement[];location_name?:string|null;can_approve?:boolean}[];
+  instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;acknowledgements:InstructionAcknowledgement[];location_name?:string|null;valid_from?:string|null;valid_until?:string|null;can_approve?:boolean}[];
   journal:{id:string;created_at:string;revision_no:number;content:string;status:string;category_name:string;priority_name:string}[]|null;
   staffing:StaffingAssignment[]|null;
   shifts:ScheduledShift[]|null;
@@ -57,7 +61,16 @@ const emptyLocation={name:'',location_type:'building',code:'',parent_id:'',respo
 const emptyHazard={title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:''};
 const emptyMeasure={title:'',description:'',responsible_employee_id:'',due_on:'',status:'open' as const};
 type SiteForm=typeof emptySite;
-const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['qualifikationen','Qualifikationen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['einsaetze','Einsätze & Alarme'],['berichte','Berichte'],['aufgaben','Aufgaben & Wartung'],['uebergaben','Übergaben'],['journal','Journal']] as const;
+const tabs=[['uebersicht','Übersicht'],['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['personal','Mitarbeiter & Verantwortlichkeiten'],['dienstplanung','Dienstplanung'],['gefaehrdungen','Gefährdungen & Sicherheit'],['anweisungen','Dienstanweisungen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['technik','Ausstattung & Technik'],['dokumente','Dokumente'],['vorfaelle','Vorfälle & Berichte'],['aufgaben','Aufgaben & Maßnahmen'],['journal','Journal']] as const;
+const sectionAliases:Record<string,string>={qualifikationen:'personal',einsaetze:'vorfaelle',berichte:'vorfaelle',uebergaben:'uebersicht'};
+const siteColumns:{key:SiteColumn;label:string}[]=[
+  {key:'site_number',label:'Objektnummer'},{key:'name',label:'Objekt'},{key:'site_type',label:'Objektart'},
+  {key:'customer_names',label:'Kunde'},{key:'address',label:'Standort / Adresse'},
+  {key:'object_manager_name',label:'Objektleitung'},{key:'operations_manager_name',label:'Einsatzleitung'},
+  {key:'security_classification',label:'Sicherheitsstufe'},{key:'status',label:'Status'},
+  {key:'assigned_employee_count',label:'Mitarbeiter'},{key:'active_contract_count',label:'Aktive Verträge'},
+  {key:'open_hazard_count',label:'Offene Gefährdungen'},{key:'last_activity',label:'Letzte Aktivität'},
+];
 
 function toBase64(file:File){
   return file.arrayBuffer().then(bytes=>{
@@ -70,17 +83,26 @@ function toBase64(file:File){
 export function Sites(){
   const navigate=useNavigate();
   const {siteId,section}=useParams<{siteId?:string;section?:string}>();
-  const active=tabs.some(([key])=>key===section)?section:'stammdaten';
-  const [sites,setSites]=useState<Site[]>([]);
+  const resolvedSection=sectionAliases[section??'']??section;
+  const active=tabs.some(([key])=>key===resolvedSection)?resolvedSection:'uebersicht';
+  const [sites,setSites]=useState<SiteOverview[]>([]);
+  const [metrics,setMetrics]=useState<OverviewMetrics|null>(null);
   const [customers,setCustomers]=useState<Customer[]>([]);
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [selected,setSelected]=useState<Context|null>(null);
   const [error,setError]=useState('');
   const [search,setSearch]=useState('');
   const [statusFilter,setStatusFilter]=useState('all');
-  const [sortKey,setSortKey]=useState<'name'|'site_number'|'address'|'status'|'security_classification'>('name');
+  const [securityFilter,setSecurityFilter]=useState('all');
+  const [customerFilter,setCustomerFilter]=useState('all');
+  const [managerFilter,setManagerFilter]=useState('all');
+  const [siteTypeFilter,setSiteTypeFilter]=useState('all');
+  const [visibleColumns,setVisibleColumns]=useState<SiteColumn[]>(siteColumns.map(column=>column.key));
+  const [sortKey,setSortKey]=useState<SiteColumn>('name');
   const [descending,setDescending]=useState(false);
   const [page,setPage]=useState(1);
+  const [listLoading,setListLoading]=useState(true);
+  const [detailLoading,setDetailLoading]=useState(false);
   const [editing,setEditing]=useState<Site|null>(null);
   const [form,setForm]=useState<SiteForm>(emptySite);
   const [formOpen,setFormOpen]=useState(false);
@@ -120,13 +142,16 @@ export function Sites(){
   const writable=hasPermission('sites:write');
 
   async function load(){
+    setListLoading(true);
     try{
-      const rows=await api<Site[]>('/sites');
-      setSites(rows??[]);setError('');
+      const response=await api<SiteOverviewResponse>('/sites/overview-dashboard');
+      setSites(response?.sites??[]);setMetrics(response?.metrics??null);setError('');
     }catch(e){setError((e as Error).message);}
+    finally{setListLoading(false);}
   }
   useEffect(()=>{if(!siteId){setSelected(null);void load();return;}void open(siteId);},[siteId]);
   async function open(id:string){
+    setDetailLoading(true);
     try{
       setSelected(null);
       const [context,customerRows,employeeRows]=await Promise.all([
@@ -142,6 +167,7 @@ export function Sites(){
       }
       setCustomers(customerRows??[]);setEmployees(employeeRows??[]);setError('');
     }catch(e){setError((e as Error).message);}
+    finally{setDetailLoading(false);}
   }
   async function refreshContext(){
     if(!selected)return;
@@ -322,11 +348,60 @@ export function Sites(){
       setKeyAction(null);setKeyHolderEmployeeId('');setKeyActionReason('');await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
-  const filtered=sites.filter(site=>(statusFilter==='all'||site.status===statusFilter)&&`${site.name} ${site.site_number??''} ${site.address??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  const sorted=[...filtered].sort((a,b)=>String(a[sortKey]??'').localeCompare(String(b[sortKey]??''),'de')*(descending?-1:1));
+  const columnValue=(site:SiteOverview,key:SiteColumn):string|number|null=>{
+    switch(key){
+      case 'customer_names':return site.customer_names?.join(', ')??null;
+      case 'security_classification':return classifications[site.security_classification]??site.security_classification;
+      case 'status':return statuses[site.status]??site.status;
+      case 'last_activity':return site.last_activity;
+      case 'site_number':return site.site_number??null;
+      case 'name':return site.name;
+      case 'site_type':return site.site_type??null;
+      case 'address':return site.address??null;
+      case 'object_manager_name':return site.object_manager_name;
+      case 'operations_manager_name':return site.operations_manager_name;
+      case 'assigned_employee_count':return site.assigned_employee_count;
+      case 'active_contract_count':return site.active_contract_count;
+      case 'open_hazard_count':return site.open_hazard_count;
+    }
+  };
+  const displayValue=(site:SiteOverview,key:SiteColumn)=>{
+    const value=columnValue(site,key);
+    return key==='last_activity'&&typeof value==='string'?new Date(value).toLocaleString('de-DE'):value??'–';
+  };
+  const filtered=sites.filter(site=>{
+    const searchable=[site.name,site.site_number,site.site_type,site.address,site.customer_names?.join(' '),site.object_manager_name,site.operations_manager_name,statuses[site.status],classifications[site.security_classification]].filter(Boolean).join(' ').toLocaleLowerCase();
+    return (statusFilter==='all'||site.status===statusFilter)
+      &&(securityFilter==='all'||site.security_classification===securityFilter)
+      &&(siteTypeFilter==='all'||site.site_type===siteTypeFilter)
+      &&(customerFilter==='all'||site.customer_names?.includes(customerFilter))
+      &&(managerFilter==='all'||site.object_manager_employee_id===managerFilter||site.operations_manager_employee_id===managerFilter)
+      &&searchable.includes(search.toLocaleLowerCase());
+  });
+  const sorted=[...filtered].sort((a,b)=>{
+    const left=columnValue(a,sortKey),right=columnValue(b,sortKey);
+    const comparison=typeof left==='number'&&typeof right==='number'?left-right:String(left??'').localeCompare(String(right??''),'de',{numeric:true});
+    return comparison*(descending?-1:1);
+  });
   const pages=Math.max(1,Math.ceil(sorted.length/10));
   const currentPage=Math.min(page,pages);
-  const changeSort=(key:typeof sortKey)=>{if(key===sortKey)setDescending(!descending);else{setSortKey(key);setDescending(false);}setPage(1);};
+  const changeSort=(key:SiteColumn)=>{if(key===sortKey)setDescending(!descending);else{setSortKey(key);setDescending(false);}setPage(1);};
+  const toggleColumn=(key:SiteColumn,checked:boolean)=>setVisibleColumns(current=>checked?[...current,key]:current.length>1?current.filter(column=>column!==key):current);
+  const customerOptions=Array.from(new Set(sites.flatMap(site=>site.customer_names??[]))).sort((a,b)=>a.localeCompare(b,'de'));
+  const managerOptions=Array.from(new Map<string,string>(sites.flatMap(site=>{
+    const managers:[string,string][]=[];
+    if(site.object_manager_employee_id&&site.object_manager_name)managers.push([site.object_manager_employee_id,site.object_manager_name]);
+    if(site.operations_manager_employee_id&&site.operations_manager_name)managers.push([site.operations_manager_employee_id,site.operations_manager_name]);
+    return managers;
+  })).entries());
+  const siteTypeOptions=Array.from(new Set(sites.map(site=>site.site_type).filter((value):value is string=>!!value))).sort((a,b)=>a.localeCompare(b,'de'));
+  function exportCsv(){
+    const escape=(value:string|number|null)=>`"${String(value??'').replace(/"/g,'""')}"`;
+    const rows=[siteColumns.map(column=>escape(column.label)),...sorted.map(site=>siteColumns.map(column=>escape(columnValue(site,column.key))))];
+    const blob=new Blob([`\uFEFF${rows.map(row=>row.join(';')).join('\r\n')}`],{type:'text/csv;charset=utf-8'});
+    const url=URL.createObjectURL(blob),link=window.document.createElement('a');
+    link.href=url;link.download='objektuebersicht.csv';link.click();URL.revokeObjectURL(url);
+  }
   const selectedCustomers=selected?.customers??[];
   const selectedContracts=selected?.contracts??[];
   const locationPath=(location:ObjectLocation,visited=new Set<string>()):string=>{
@@ -346,7 +421,7 @@ export function Sites(){
     setMaintenanceClientEntryId(uuid());
   },[selectedSiteId]);
   useEffect(()=>{
-    if(active!=='aufgaben'||!selectedSiteId||!maintenanceReadable||!hasPermission('watchbook:read')||!hasPermission('watchbook:write'))return;
+    if(active!=='technik'||!selectedSiteId||!maintenanceReadable||!hasPermission('watchbook:read')||!hasPermission('watchbook:write'))return;
     let current=true;
     setMaintenanceOptionsLoaded(false);
     Promise.all([api<WatchbookCategory[]>('/watchbook/categories'),api<WatchbookPriority[]>('/watchbook/priorities')]).then(([categories,priorities])=>{
@@ -364,16 +439,55 @@ export function Sites(){
     return ()=>{current=false;};
   },[active,selectedSiteId,maintenanceReadable]);
 
-  return <section className="employee-management">
+  const activityItems=[
+    ...(selected?.journal??[]).map(entry=>({id:`journal-${entry.id}`,created_at:entry.created_at,title:entry.category_name,detail:`${entry.priority_name} · ${entry.status}`})),
+    ...(selected?.incidents??[]).map(incident=>({id:`incident-${incident.id}`,created_at:incident.created_at,title:'Einsatz',detail:`${incident.status} · ${incident.description}`})),
+    ...(selected?.alarms??[]).map(alarm=>({id:`alarm-${alarm.id}`,created_at:alarm.triggered_at,title:'Alarm',detail:`${alarm.priority_name??alarm.severity} · ${alarm.description}`})),
+    ...(selected?.handovers??[]).map(handover=>({id:`handover-${handover.id}`,created_at:handover.created_at,title:'Übergabe',detail:`${handover.title} · ${handover.confirmation_count}/${handover.participant_count} Bestätigungen`})),
+  ].sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,8);
+  const now=new Date();
+  const today=now.toISOString().slice(0,10);
+  const isInstructionActive=(instruction:Context['instructions'][number])=>instruction.status==='approved'&&(!instruction.valid_from||instruction.valid_from<=today)&&(!instruction.valid_until||instruction.valid_until>=today);
+  const currentStaff=selected?.staffing?.filter(assignment=>!assignment.ends_on||assignment.ends_on>=now.toISOString().slice(0,10))??[];
+  const currentShifts=selected?.shifts?.filter(shift=>shift.starts_at<=now.toISOString()&&shift.ends_at>=now.toISOString())??[];
+  const criticalHazards=selected?.hazards.filter(hazard=>hazard.status==='open'&&hazard.risk_score>=15)??[];
+  const expiredInstructions=selected?.instructions.filter(instruction=>instruction.status==='approved'&&instruction.valid_until&&instruction.valid_until<today)??[];
+  const overdueMeasures=selected?.hazards.flatMap(hazard=>hazard.measures).filter(measure=>['open','in_progress'].includes(measure.status)&&measure.due_on&&measure.due_on<today)??[];
+  return <section className="object-management">
     {error&&<p role="alert" className="error">{error}</p>}
-    {siteId?(selected?<article className="employee-detail-page">
-      <button type="button" className="employee-back" onClick={()=>navigate('/sites')}>Zur Objektübersicht</button>
-      <h2>{selected.site.name}</h2>
-      <p>{selected.site.address||'Keine Adresse'} · Sicherheitsklassifizierung: {classifications[selected.site.security_classification]}</p>
-      <p>Objektleitung: {selected.site.object_manager_name||'–'} · Einsatzleitung: {selected.site.operations_manager_name||'–'}</p>
-      <nav className="employee-tabs" aria-label="Objektbereiche">{tabs.map(([key,label])=><button type="button" key={key} className={active===key?'active':''} aria-current={active===key?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/${key}`)}>{label}</button>)}</nav>
-      {active==='stammdaten'&&<div className="employee-detail-content">
-        {writable?<form className="employee-detail-form" onSubmit={saveDetails}><div className="form-grid">
+    {siteId?(selected?<article className="object-detail-page">
+      <button type="button" className="object-back" onClick={()=>navigate('/sites')}>Zur Objektübersicht</button>
+      <header className="object-detail-header">
+        <div><p className="object-eyebrow">Digitale Objektakte · {selected.site.site_number||'Ohne Objektnummer'}</p><h2>{selected.site.name}</h2>
+          <p>{selected.site.address||'Keine Adresse'} · {selected.site.alias?`${selected.site.alias} · `:''}{selected.site.site_type||'Objektart nicht festgelegt'}</p>
+          <p>Objektleitung: {selected.site.object_manager_name||'–'} · Einsatzleitung: {selected.site.operations_manager_name||'–'}</p>
+          <div className="object-header-meta"><span className={`object-status ${selected.site.status}`}>{statuses[selected.site.status]??selected.site.status}</span><span>{classifications[selected.site.security_classification]??selected.site.security_classification}</span><span>Aktualisiert {selected.site.updated_at?new Date(selected.site.updated_at).toLocaleString('de-DE'):'nicht verfügbar'}</span></div>
+        </div>
+        <div className="object-actions"><button type="button" onClick={()=>navigate(`/sites/${siteId}/stammdaten`)}>Objekt bearbeiten</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/personal`)}>Mitarbeiter zuweisen</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/aufgaben`)}>Aufgabe erstellen</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/dokumente`)}>Dokument hinzufügen</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/vorfaelle`)}>Vorfall erfassen</button></div>
+      </header>
+      <nav className="object-tabs" aria-label="Objektbereiche">{tabs.map(([key,label])=><button type="button" key={key} className={active===key?'active':''} aria-current={active===key?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/${key}`)}>{label}</button>)}</nav>
+      {active==='uebersicht'&&<div className="object-detail-content">
+        <div className="object-alerts" aria-label="Operative Hinweise">
+          {criticalHazards.length>0&&<p role="status">Kritische Gefährdungen: {criticalHazards.length}</p>}
+          {overdueMeasures.length>0&&<p role="status">Überfällige Maßnahmen: {overdueMeasures.length}</p>}
+          {expiredInstructions.length>0&&<p role="status">Abgelaufene Dienstanweisungen: {expiredInstructions.length}</p>}
+          {selected.instructions.some(instruction=>isInstructionActive(instruction)&&instruction.requires_acknowledgement&&instruction.acknowledgement_count<currentStaff.length)&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen vorhanden.</p>}
+        </div>
+        <div className="object-summary-grid">
+          <article><h3>Objektstatus</h3><strong>{statuses[selected.site.status]??selected.site.status}</strong><p>{classifications[selected.site.security_classification]??selected.site.security_classification}</p></article>
+          <article><h3>Verantwortliche</h3><p>Objektleitung: {selected.site.object_manager_name||'–'}</p><p>Einsatzleitung: {selected.site.operations_manager_name||'–'}</p></article>
+          <article><h3>Kunde & Verträge</h3>{selected.customers==null?<p>Keine Berechtigung für Kundenbeziehungen.</p>:<p>{selectedCustomers.map(customer=>customer.customer_name).join(', ')||'Keine aktive Kundenbeziehung'}</p>}{selected.contracts==null?<p>Verträge nicht freigegeben.</p>:<p>{selectedContracts.length} aktive Vertragsverknüpfungen</p>}</article>
+          <article><h3>Besetzung</h3><p>{selected.staffing==null?'Keine Berechtigung':`${currentStaff.length} zugeordnete Mitarbeitende`}</p><p>{selected.shifts==null?'Dienstplanung nicht freigegeben':`${currentShifts.length} aktuell besetzte Schichten`}</p></article>
+          <article><h3>Sicherheitslage</h3><p>{selected.hazards.filter(hazard=>hazard.status==='open').length} offene Gefährdungen</p><p>{overdueMeasures.length} überfällige Maßnahmen</p></article>
+          <article><h3>Dienstanweisungen</h3><p>{selected.instructions.filter(isInstructionActive).length} aktuell gültig</p><p>{expiredInstructions.length} abgelaufen</p><p>{selected.instructions.filter(instruction=>instruction.requires_acknowledgement).reduce((total,instruction)=>total+instruction.acknowledgement_count,0)} Kenntnisnahmen erfasst</p></article>
+          <article><h3>Dokumente</h3>{selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:<p>{selected.documents.length} aktive DMS-Dokumente</p>}<p>Fachliche Ablaufdaten sind im DMS nicht hinterlegt.</p></article>
+          <article><h3>Vorfälle & Alarme</h3><p>{selected.incidents==null?'Einsätze nicht freigegeben':`${selected.incidents.length} Einsätze`}</p><p>{selected.alarms==null?'Alarme nicht freigegeben':`${selected.alarms.length} Alarme`}</p></article>
+          <article><h3>Anstehende Schichten</h3>{selected.shifts==null?<p>Keine Berechtigung für die Dienstplanung.</p>:<p>{selected.shifts.filter(shift=>shift.starts_at>now.toISOString()).slice(0,2).map(shift=>`${shift.role_code} · ${new Date(shift.starts_at).toLocaleString('de-DE')}`).join(' / ')||'Keine zukünftigen Schichten'}</p>}</article>
+        </div>
+        <section className="object-activity"><h3>Aktivitätschronik</h3>{activityItems.length? <ol>{activityItems.map(item=><li key={item.id}><time>{new Date(item.created_at).toLocaleString('de-DE')}</time><strong>{item.title}</strong><span>{item.detail}</span></li>)}</ol>:<p>Keine freigegebenen Journal-, Einsatz-, Alarm- oder Übergabeereignisse vorhanden.</p>}{hasPermission('handover:read')&&<button type="button" onClick={()=>navigate('/handovers')}>Übergaben öffnen</button>}</section>
+      </div>}
+      {active==='stammdaten'&&<div className="object-detail-content">
+        {writable?<form className="object-detail-form" onSubmit={saveDetails}><div className="form-grid">
           <label>Objektname<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>
           <label>Objektnummer<input value={form.site_number} onChange={e=>setForm({...form,site_number:e.target.value})}/></label>
           <label>Adresse<input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></label>
@@ -385,14 +499,14 @@ export function Sites(){
           <label>Beschreibung<textarea value={details.description} onChange={e=>setDetails({...details,description:e.target.value})}/></label>
         </div><button>Stammdaten speichern</button></form>:<p>Keine Schreibberechtigung für Stammdaten.</p>}
       </div>}
-      {active==='kunden'&&<div className="employee-detail-content">
+      {active==='kunden'&&<div className="object-detail-content">
       <h3>Kundenbeziehungen</h3>
       {selected.customers===null?<p>Keine Berechtigung für Kundenbeziehungen.</p>:<ul>{selectedCustomers.map(customer=><li key={customer.customer_id}>{customer.customer_name} ({customer.relationship_type}, {customer.relationship_status}) {writable&&hasPermission('customers:write')&&customer.relationship_status!=='archived'&&<button type="button" onClick={()=>void archiveLink(customer.customer_id)}>Verknüpfung archivieren</button>}</li>)}</ul>}
       {selected.customers!==null&&writable&&hasPermission('customers:write')&&<form onSubmit={linkCustomer}><select aria-label="Kunde verknüpfen" value={customerId} onChange={e=>setCustomerId(e.target.value)} required><option value="">Kunde verknüpfen …</option>{customers.filter(customer=>!selectedCustomers.some(link=>link.customer_id===customer.id&&link.relationship_status!=='archived')).map(customer=><option key={customer.id} value={customer.id}>{customer.name}{customer.customer_number?` · ${customer.customer_number}`:''}</option>)}</select><button>Verknüpfen</button></form>}
       <h3>Verträge</h3>{selected.contracts===null?<p>Keine Berechtigung für Verträge.</p>:<ul>{selectedContracts.map(contract=><li key={contract.id}>{contract.contract_number} · {contract.customer_name} · {contract.status}</li>)}</ul>}
       {selected.customers!==null&&hasPermission('contracts:write')&&hasPermission('customer_contacts:read')&&<form onSubmit={linkContract}><label>Kunde<select value={contractCustomer} onChange={e=>void chooseContractCustomer(e.target.value)} required><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Vertrag<select value={contractId} onChange={e=>setContractId(e.target.value)} required><option value="">Vertrag auswählen</option>{availableContracts.filter(contract=>!contract.sites.some(site=>site.id===siteId)).map(contract=><option key={contract.id} value={contract.id}>{contract.contract_number}</option>)}</select></label><button>Vertrag verknüpfen</button></form>}
       </div>}
-      {active==='struktur'&&<div className="employee-detail-content">
+      {active==='struktur'&&<div className="object-detail-content">
       <h3>Gebäude, Bereiche und Zonen</h3>
       {writable&&<form onSubmit={createLocation}>
         <label>Bezeichnung<input value={locationForm.name} onChange={e=>setLocationForm({...locationForm,name:e.target.value})} required/></label>
@@ -410,7 +524,7 @@ export function Sites(){
       </form>}
       <ul>{selected.locations.map(location=><li key={location.id}>{location.code||'–'} · {locationPath(location)} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editLocation(location)}>Bearbeiten</button>}</li>)}</ul>
       </div>}
-      {active==='gefaehrdungen'&&<div className="employee-detail-content">
+      {active==='gefaehrdungen'&&<div className="object-detail-content">
       <h3>Gefährdungen</h3>
       {writable&&<form onSubmit={createHazard}>
         {editingHazard&&<h4>Gefährdung bearbeiten</h4>}
@@ -428,7 +542,7 @@ export function Sites(){
         <button>{editingHazard?'Gefährdung speichern':'Gefährdung erfassen'}</button>
         {editingHazard&&<button type="button" onClick={()=>{setEditingHazard(null);setHazardForm(emptyHazard);}}>Abbrechen</button>}
       </form>}
-      <table aria-label="Risikomatrix"><caption>Erfasste Gefährdungen nach Eintritt und Auswirkung</caption><thead><tr><th scope="col">Eintritt / Auswirkung</th>{[1,2,3,4,5].map(impact=><th scope="col" key={impact}>{impact}</th>)}</tr></thead><tbody>{[5,4,3,2,1].map(likelihood=><tr key={likelihood}><th scope="row">{likelihood}</th>{[1,2,3,4,5].map(impact=>{const count=selected.hazards.filter(hazard=>hazard.risk_score===likelihood*impact).length;return <td key={impact} aria-label={`${likelihood} mal ${impact}: ${count} Gefährdungen`}>{count}</td>;})}</tr>)}</tbody></table>
+      <table className="object-risk-matrix" aria-label="Risikomatrix"><caption>Erfasste Gefährdungen nach Eintritt und Auswirkung</caption><thead><tr><th scope="col">Eintritt / Auswirkung</th>{[1,2,3,4,5].map(impact=><th scope="col" key={impact}>{impact}</th>)}</tr></thead><tbody>{[5,4,3,2,1].map(likelihood=><tr key={likelihood}><th scope="row">{likelihood}</th>{[1,2,3,4,5].map(impact=>{const riskScore=likelihood*impact,count=selected.hazards.filter(hazard=>hazard.risk_score===riskScore).length;return <td className={riskScore>=15?'critical-risk':riskScore>=8?'high-risk':riskScore>=4?'medium-risk':'low-risk'} key={impact} aria-label={`${likelihood} mal ${impact}: ${count} Gefährdungen`}>{count}</td>;})}</tr>)}</tbody></table>
       <ul>{selected.hazards.map(hazard=><li key={hazard.id}>
         <strong>{hazard.title}</strong> · Risiko {hazard.risk_score} · {hazard.status}{hazard.location_name?` · ${hazard.location_name}`:''} · Verantwortlich: {hazard.responsible_employee_name||'–'}
         {hazard.protective_measures&&<p>Bestehende Schutzmaßnahmen: {hazard.protective_measures}</p>}
@@ -454,7 +568,7 @@ export function Sites(){
         </form>}
       </li>)}</ul>
       </div>}
-      {active==='anweisungen'&&<div className="employee-detail-content">
+      {active==='anweisungen'&&<div className="object-detail-content">
       <h3>Dienstanweisungen</h3>
       {writable&&<form onSubmit={createInstruction}><label>Titel<input placeholder="Titel" value={instructionForm.title} onChange={e=>setInstructionForm({...instructionForm,title:e.target.value})} required/></label><label>Inhalt<textarea placeholder="Inhalt" value={instructionForm.content} onChange={e=>setInstructionForm({...instructionForm,content:e.target.value})} required/></label><label>Geltungsbereich<select aria-label="Anweisungsbereich" value={instructionForm.location_id} onChange={e=>setInstructionForm({...instructionForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Version<input type="number" min="1" value={instructionForm.version} onChange={e=>setInstructionForm({...instructionForm,version:Number(e.target.value)})}/></label><label>Gültig ab<input type="date" value={instructionForm.valid_from} onChange={e=>setInstructionForm({...instructionForm,valid_from:e.target.value})}/></label><label>Gültig bis<input type="date" value={instructionForm.valid_until} onChange={e=>setInstructionForm({...instructionForm,valid_until:e.target.value})}/></label><select aria-label="Anweisungsstatus" value={instructionForm.status} onChange={e=>setInstructionForm({...instructionForm,status:e.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option></select><label><input type="checkbox" checked={instructionForm.requires_acknowledgement} onChange={e=>setInstructionForm({...instructionForm,requires_acknowledgement:e.target.checked})}/> Kenntnisnahme erforderlich</label><button>Anweisung speichern</button></form>}
       {writable&&hasPermission('employees:read')&&selected.staffing!==null&&<label>Mitarbeiter für Kenntnisnahme<select aria-label="Mitarbeiter für Kenntnisnahme" value={ackEmployee} onChange={e=>setAckEmployee(e.target.value)}><option value="">Mitarbeiter auswählen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
@@ -463,10 +577,10 @@ export function Sites(){
         {instruction.requires_acknowledgement&&hasPermission('employees:read')&&selected.staffing!==null&&<ul aria-label={`Kenntnisnahmestatus ${instruction.title} v${instruction.version}`}>
         {instruction.acknowledgements.map(acknowledgement=><li key={acknowledgement.employee_id}>{acknowledgement.employee_name}: Bestätigt am {new Date(acknowledgement.acknowledged_at).toLocaleString('de-DE')}</li>)}
         {siteAssignedEmployees.filter(employee=>!instruction.acknowledgements.some(acknowledgement=>acknowledgement.employee_id===employee.id)).map(employee=><li key={employee.id}>{employee.name}: Ausstehend</li>)}
-      </ul>}{writable&&<button type="button" onClick={()=>{setSupersedesId(instruction.id);setInstructionForm({title:instruction.title,content:instruction.content,status:'draft',version:instruction.version+1,requires_acknowledgement:instruction.requires_acknowledgement,location_id:'',valid_from:'',valid_until:''});}}>Neue Version vorbereiten</button>}{writable&&hasPermission('employees:read')&&selected.staffing!==null&&instruction.status==='approved'&&<button type="button" disabled={!ackEmployee} onClick={()=>void acknowledge(instruction.id)}>Kenntnisnahme erfassen</button>}</li>)}</ul>
+      </ul>}{writable&&<button type="button" onClick={()=>{setSupersedesId(instruction.id);setInstructionForm({title:instruction.title,content:instruction.content,status:'draft',version:instruction.version+1,requires_acknowledgement:instruction.requires_acknowledgement,location_id:'',valid_from:'',valid_until:''});}}>Neue Version vorbereiten</button>}{writable&&hasPermission('employees:read')&&selected.staffing!==null&&isInstructionActive(instruction)&&<button type="button" disabled={!ackEmployee} onClick={()=>void acknowledge(instruction.id)}>Kenntnisnahme erfassen</button>}</li>)}</ul>
       {supersedesId&&<p>Neue Version: {instructionForm.version}</p>}
       </div>}
-      {active==='personal'&&<div className="employee-detail-content">
+      {active==='personal'&&<div className="object-detail-content">
       <h3>Personalzuordnungen</h3>
       {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length>0&&<form onSubmit={createStaffingAssignment}>
@@ -481,7 +595,8 @@ export function Sites(){
         <button>Personalzuordnung anlegen</button>
       </form>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
-      <h3>Dienstplanung und Schichten</h3>
+      </div>}
+      {active==='dienstplanung'&&<div className="object-detail-content"><h3>Dienstplanung und Schichten</h3>
       {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}
         {selected.staffing!==null&&hasPermission('scheduling:write')&&hasPermission('employees:read')&&availableShiftEmployees(shift).length>0&&<form onSubmit={event=>void assignShiftEmployee(event,shift)}>
           <label>Mitarbeiter für {shift.role_code}<select aria-label={`Mitarbeiter für ${shift.role_code}`} required value={shiftAssignmentRequests[shift.id]?.employee_id??''} onChange={event=>setShiftAssignmentRequests(current=>({...current,[shift.id]:{employee_id:event.target.value,client_mutation_id:current[shift.id]?.employee_id===event.target.value?current[shift.id].client_mutation_id:uuid()}}))}><option value="">Mitarbeiter auswählen</option>{availableShiftEmployees(shift).map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
@@ -489,12 +604,12 @@ export function Sites(){
         </form>}
       </li>)}</ul>}
       </div>}
-      {active==='qualifikationen'&&<div className="employee-detail-content">
+      {active==='personal'&&<div className="object-detail-content">
       <h3>Qualifikationen der zugeordneten Mitarbeitenden</h3>
-      {selected.qualifications===null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für aktuell zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualification.computed_status==='valid'?'Gültig':qualification.computed_status==='expiring'?'Läuft bald ab':qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig'}{qualification.valid_from?` · ab ${new Date(`${qualification.valid_from}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}</li>)}</ul>}
+      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für aktuell zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualification.computed_status==='valid'?'Gültig':qualification.computed_status==='expiring'?'Läuft bald ab':qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig'}{qualification.valid_from?` · ab ${new Date(`${qualification.valid_from}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}</li>)}</ul>}
       {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}
       </div>}
-      {active==='kontrollgaenge'&&<div className="employee-detail-content">
+      {active==='kontrollgaenge'&&<div className="object-detail-content">
       <h3>Kontrollgangpläne und Abdeckung</h3>
       {selected.patrols===null?<p>Keine Berechtigung für Kontrollgänge.</p>:selected.patrols.routes.length===0?<p>Keine Kontrollgangpläne für dieses Objekt vorhanden.</p>:<ul>{selected.patrols.routes.map(route=><li key={route.id}>
         <strong>{route.name}</strong>{route.expected_start||route.expected_end?` · Geplant ${route.expected_start??'–'}–${route.expected_end??'–'}`:''}
@@ -506,7 +621,7 @@ export function Sites(){
         <strong>{scan.route_name}</strong> · {scan.control_point_name} · {new Date(scan.scanned_at).toLocaleString('de-DE')}{scan.employee_name?` · ${scan.employee_name}`:''} · {scan.deviation==='none'?'Ohne Abweichung':`Abweichung: ${scan.deviation}`}
       </li>)}</ul>}
       </div>}
-      {active==='schluessel'&&<div className="employee-detail-content">
+      {active==='schluessel'&&<div className="object-detail-content">
       <h3>Schlüsselbestand</h3>
       {selected.keys===null?<p>Keine Berechtigung für Schlüssel.</p>:selected.keys.items.length===0?<p>Keine Schlüssel für dieses Objekt erfasst.</p>:<ul>{selected.keys.items.map(key=><li key={key.id}><strong>{key.label}</strong> · {key.key_code} · {key.key_type} · {key.status==='available'?'Verfügbar':key.status==='issued'?'Ausgegeben':key.status==='lost'?'Verloren':'Deaktiviert'}{key.status==='issued'?(key.holder_employee_id?' · an Mitarbeitende ausgegeben':' · an Benutzer ausgegeben'):''}
         {key.status==='available'&&hasPermission('keys:issue')&&hasPermission('employees:read')&&siteAssignedEmployees.length>0&&<button type="button" onClick={()=>{setKeyAction({keyId:key.id,action:'issue'});setKeyHolderEmployeeId('');setKeyActionReason('');}}>Ausgabe vorbereiten</button>}
@@ -523,27 +638,27 @@ export function Sites(){
       <h3>Letzte Schlüsselbewegungen</h3>
       {selected.keys===null?<p>Keine Berechtigung für die Schlüsselhistorie.</p>:selected.keys.recentMovements.length===0?<p>Keine Schlüsselbewegungen erfasst.</p>:<ul>{selected.keys.recentMovements.map(movement=><li key={movement.id}><strong>{movement.key_label}</strong> · {movement.movement_type} · {movement.from_status??'–'} → {movement.to_status} · {new Date(movement.created_at).toLocaleString('de-DE')}{movement.employee_name?` · ${movement.employee_name}`:''}</li>)}</ul>}
       </div>}
-      {active==='dokumente'&&<div className="employee-detail-content">
+      {active==='dokumente'&&<div className="object-detail-content">
       <h3>Objektdokumente</h3>
       {selected.documents===null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=><li key={document.id}><strong>{document.title}</strong> · {document.document_status}{document.description&&<p>{document.description}</p>}<ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>)}</ul>}
       {selected.documents!==null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}><label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label><label>Datei<input ref={documentInput} required type="file" onChange={(event:ChangeEvent<HTMLInputElement>)=>setDocumentFile(event.target.files?.[0]??null)}/></label><button>Dokument hochladen und prüfen</button></form>}
       </div>}
-      {active==='einsaetze'&&<div className="employee-detail-content">
+      {active==='vorfaelle'&&<div className="object-detail-content">
       <h3>Alarme am Objekt</h3>
       {selected.alarms===null?<p>Keine Berechtigung für Alarme.</p>:selected.alarms.length===0?<p>Keine site- oder gerätebezogenen Alarme für dieses Objekt vorhanden.</p>:<ul>{selected.alarms.map(alarm=><li key={alarm.id}><strong>{alarm.priority_name??alarm.severity}</strong> · {alarm.type} · {alarm.status} · {new Date(alarm.triggered_at).toLocaleString('de-DE')}<p>{alarm.description}</p></li>)}</ul>}
       {hasPermission('alarms:read')&&<button type="button" onClick={()=>navigate('/alarms')}>Alarmverwaltung öffnen</button>}
       <h3>Einsätze</h3>
       {selected.incidents===null?<p>Keine Berechtigung für Einsätze.</p>:selected.incidents.length===0?<p>Keine Einsätze für dieses Objekt vorhanden.</p>:<ul>{selected.incidents.map(incident=><li key={incident.id}><strong>{incident.priority_name??'Einsatz'}</strong> · {incident.status} · {new Date(incident.created_at).toLocaleString('de-DE')} · {incident.assignees.length?incident.assignees.map(assignee=>assignee.name).join(', '):incident.assigned_count?`${incident.assigned_count} zugewiesen`:'Keine Zuweisung'}<p>{incident.description}</p></li>)}</ul>}
       {hasPermission('incidents:read')&&<button type="button" onClick={()=>navigate('/incidents')}>Einsatzverwaltung öffnen</button>}
-      </div>}
-      {active==='berichte'&&<div className="employee-detail-content">
       <h3>Objektbezogene Berichte und Nachweise</h3>
       {(hasPermission('customer_reports:export')||hasPermission('customer_portal:read'))?<><p>Die bestehende Berichtsfunktion kann Kontrollgänge, Wachbuch, Alarme oder Einsätze für dieses Objekt auswerten.</p><a href={`/customer-reports?site_id=${encodeURIComponent(selected.site.id)}`}>Berichte für dieses Objekt öffnen</a></>:<p>Keine Berechtigung für objektbezogene Berichte.</p>}
       </div>}
-      {active==='aufgaben'&&<div className="employee-detail-content">
+      {active==='aufgaben'&&<div className="object-detail-content">
       <h3>Kundenaufgaben und Wiedervorlagen</h3>
       {selected.customerTasks===null?<p>Keine Berechtigung für Kundenaufgaben.</p>:selected.customerTasks.length===0?<p>Keine Kundenaufgaben für aktive Objektbeziehungen vorhanden.</p>:<ul>{selected.customerTasks.map(task=><li key={task.id}><strong>{task.title}</strong> · {task.customer_name} · {task.status} · {task.due_at?new Date(task.due_at).toLocaleString('de-DE'):'Ohne Frist'}{task.assigned_employee_name?` · ${task.assigned_employee_name}`:''}{task.description&&<p>{task.description}</p>}{task.status==='open'&&hasPermission('customers:write')&&<button type="button" onClick={()=>void completeCustomerTask(task)}>Als erledigt markieren</button>}</li>)}</ul>}
       {selected.customers!==null&&hasPermission('customers:write')&&<form onSubmit={createCustomerTask}><label>Kunde<select required value={taskCustomerId} onChange={event=>setTaskCustomerId(event.target.value)}><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Aufgabe / Wiedervorlage<input required value={taskTitle} onChange={event=>setTaskTitle(event.target.value)}/></label><label>Fällig am<input type="datetime-local" value={taskDue} onChange={event=>setTaskDue(event.target.value)}/></label>{hasPermission('employees:read')&&<label>Verantwortlich<select value={taskAssignee} onChange={event=>setTaskAssignee(event.target.value)}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}<button>Aufgabe anlegen</button></form>}
+      </div>}
+      {active==='technik'&&<div className="object-detail-content">
       <h3>Technik und Instandhaltung</h3>
       {selected.maintenance===null?<p>Keine Berechtigung für Wartungseinträge im Wachbuch.</p>:selected.maintenance.length===0?<p>Keine Technik- oder Instandhaltungseinträge vorhanden.</p>:<ul>{selected.maintenance.map(entry=><li key={entry.id}><strong>{entry.priority_name}</strong> · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       {maintenanceReadable&&hasPermission('watchbook:read')&&hasPermission('watchbook:write')&&<form onSubmit={createMaintenanceEntry}>
@@ -553,24 +668,23 @@ export function Sites(){
         <button disabled={!maintenanceOptionsLoaded||!maintenanceCategoryId||!maintenancePriorityCode}>Im Wachbuch erfassen</button>
       </form>}
       </div>}
-      {active==='uebergaben'&&<div className="employee-detail-content">
-      <h3>Übergabeprotokolle</h3>
-      {selected.handovers===null?<p>Keine Berechtigung für Übergaben.</p>:selected.handovers.length===0?<p>Keine Übergabeprotokolle für dieses Objekt vorhanden.</p>:<ul>{selected.handovers.map(handover=><li key={handover.id}><strong>{handover.title}</strong> · {handover.status} · {new Date(handover.created_at).toLocaleString('de-DE')} · {handover.confirmation_count}/{handover.participant_count} Bestätigungen</li>)}</ul>}
-      {hasPermission('handover:read')&&<button type="button" onClick={()=>navigate('/handovers')}>Übergaben öffnen</button>}
-      </div>}
-      {active==='journal'&&<div className="employee-detail-content">
+      {active==='journal'&&<div className="object-detail-content">
       <h3>Objektjournal</h3>{selected.journal===null?<p>Keine Berechtigung für das Wachbuch.</p>:<ul>{selected.journal.map(entry=><li key={entry.id}><strong>{entry.category_name}</strong> · {entry.priority_name} · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       </div>}
-    </article>:!error&&<p>Objektakte wird geladen …</p>):<>
-      <div className="employee-page-title"><div className="employee-page-title-spacer"/><div className="employee-page-actions">{writable&&<button type="button" onClick={()=>startEdit()}>+ Objekt anlegen</button>}</div></div>
-      <div className="stats-grid employee-metrics">
-        <article><strong>{sites.length}</strong><span>Objekte gesamt</span></article>
-        <article><strong>{sites.filter(site=>site.status==='active').length}</strong><span>Aktiv</span></article>
-        <article><strong>{sites.filter(site=>site.status==='planning'||site.status==='setup').length}</strong><span>In Vorbereitung</span></article>
-        <article><strong>{sites.filter(site=>site.status==='restricted'||site.status==='temporarily_closed').length}</strong><span>Eingeschränkt</span></article>
-        <article><strong>{sites.filter(site=>site.status==='archived').length}</strong><span>Archiviert</span></article>
-      </div>
-      {formOpen&&writable&&<form onSubmit={save} className="employee-create open">
+    </article>:detailLoading?<p role="status">Objektakte wird geladen …</p>:null):<>
+      <div className="object-page-actions">{writable&&<button type="button" onClick={()=>startEdit()}>+ Objekt anlegen</button>}</div>
+      {listLoading?<p role="status">Objekte werden geladen …</p>:<div className="object-metrics" aria-label="Objektkennzahlen">
+        <article><strong>{metrics?.total_sites??'–'}</strong><span>Objekte gesamt</span></article>
+        <article><strong>{metrics?.active_sites??'–'}</strong><span>Aktiv</span></article>
+        <article><strong>{metrics?.preparation_sites??'–'}</strong><span>In Vorbereitung</span></article>
+        <article><strong>{metrics?.restricted_sites??'–'}</strong><span>Eingeschränkt</span></article>
+        <article><strong>{metrics?.critical_sites??'–'}</strong><span>Kritisch</span></article>
+        <article><strong>{metrics?.open_hazards??'–'}</strong><span>Offene Gefährdungen</span></article>
+        <article><strong>{metrics?.overdue_measures??'–'}</strong><span>Überfällige Maßnahmen</span></article>
+        <article><strong>{metrics?.expiring_contracts??'–'}</strong><span>Auslaufende Verträge · 30 Tage</span></article>
+        <article><strong>{metrics?.sites_without_available_documents??'–'}</strong><span>Ohne verfügbare DMS-Version</span></article>
+      </div>}
+      {formOpen&&writable&&<form onSubmit={save} className="object-create-form">
         <label>Objektname<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>
         <label>Objektnummer<input value={form.site_number} onChange={e=>setForm({...form,site_number:e.target.value})}/></label>
         <label>Adresse<input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></label>
@@ -578,12 +692,21 @@ export function Sites(){
         <label>Sicherheitsklassifizierung<select value={form.security_classification} onChange={e=>setForm({...form,security_classification:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         <button>Speichern</button><button type="button" onClick={()=>setFormOpen(false)}>Abbrechen</button>
       </form>}
-      <div className="employee-overview">
-        <div className="employee-filterbar"><input className="employee-search" aria-label="Objekte suchen" placeholder="Name, Objektnummer oder Adresse suchen" value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}}/><select aria-label="Status" value={statusFilter} onChange={e=>{setStatusFilter(e.target.value);setPage(1);}}><option value="all">Status: Alle</option>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></div>
-        <div className="employee-table employee-overview-table"><table><thead><tr>{([['name','Objekt'],['site_number','Objektnummer'],['address','Adresse'],['status','Status'],['security_classification','Sicherheitsklassifizierung']] as const).map(([key,label])=><th key={key}><button type="button" onClick={()=>changeSort(key)}>{label}</button></th>)}<th>Aktion</th></tr></thead><tbody>
-          {sorted.slice((currentPage-1)*10,currentPage*10).map(site=><tr key={site.id}><td><button className="employee-name-link" type="button" onClick={()=>navigate(`/sites/${site.id}`)}>{site.name}</button></td><td>{site.site_number||'–'}</td><td>{site.address||'–'}</td><td>{statuses[site.status]??site.status}</td><td>{classifications[site.security_classification]??site.security_classification}</td><td>{writable&&<><button type="button" onClick={()=>startEdit(site)}>Bearbeiten</button>{['planning','setup','decommissioned'].includes(site.status)&&<button type="button" onClick={()=>void archive(site)}>Archivieren</button>}</>}</td></tr>)}
-        </tbody></table>{filtered.length===0&&<p className="employee-empty">Keine Objekte entsprechen den aktiven Filtern.</p>}
-        {filtered.length>0&&<div className="employee-pagination"><span>{filtered.length} Objekte · Seite {currentPage} von {pages}</span><button type="button" disabled={currentPage===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={currentPage===pages} onClick={()=>setPage(value=>Math.min(pages,value+1))}>Weiter</button></div>}</div>
+      <div className="object-overview">
+        <div className="object-filterbar">
+          <input aria-label="Objekte suchen" placeholder="Name, Nummer, Kunde, Adresse oder Leitung suchen" value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}}/>
+          <select aria-label="Status" value={statusFilter} onChange={e=>{setStatusFilter(e.target.value);setPage(1);}}><option value="all">Status: Alle</option>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
+          <select aria-label="Sicherheitsstufe filtern" value={securityFilter} onChange={e=>{setSecurityFilter(e.target.value);setPage(1);}}><option value="all">Sicherheitsstufe: Alle</option>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
+          <select aria-label="Kunde filtern" value={customerFilter} onChange={e=>{setCustomerFilter(e.target.value);setPage(1);}}><option value="all">Kunde: Alle</option>{customerOptions.map(customer=><option key={customer} value={customer}>{customer}</option>)}</select>
+          <select aria-label="Objektleitung filtern" value={managerFilter} onChange={e=>{setManagerFilter(e.target.value);setPage(1);}}><option value="all">Objektleitung: Alle</option>{managerOptions.map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
+          <select aria-label="Objektart filtern" value={siteTypeFilter} onChange={e=>{setSiteTypeFilter(e.target.value);setPage(1);}}><option value="all">Objektart: Alle</option>{siteTypeOptions.map(siteType=><option key={siteType} value={siteType}>{siteType}</option>)}</select>
+          <details className="object-column-picker"><summary>Spalten</summary><fieldset><legend>Sichtbare Tabellenspalten</legend>{siteColumns.map(column=><label key={column.key}><input type="checkbox" checked={visibleColumns.includes(column.key)} onChange={event=>toggleColumn(column.key,event.target.checked)}/>{column.label}</label>)}</fieldset></details>
+          <button type="button" onClick={exportCsv} disabled={listLoading||sites.length===0}>CSV exportieren</button>
+        </div>
+        {listLoading?<p role="status">Objekte werden geladen …</p>:sites.length===0?<p className="object-empty" role="status">Für Ihren Berechtigungsumfang sind keine Objekte verfügbar.</p>:<div className="object-table"><table aria-label="Objektübersicht"><thead><tr>{siteColumns.filter(column=>visibleColumns.includes(column.key)).map(column=><th key={column.key} aria-sort={sortKey===column.key?(descending?'descending':'ascending'):'none'}><button type="button" onClick={()=>changeSort(column.key)}>{column.label}</button></th>)}<th>Aktion</th></tr></thead><tbody>
+          {sorted.slice((currentPage-1)*10,currentPage*10).map(site=><tr key={site.id}>{siteColumns.filter(column=>visibleColumns.includes(column.key)).map(column=><td key={column.key}>{column.key==='name'?<button className="object-name-link" type="button" onClick={()=>navigate(`/sites/${site.id}`)}>{site.name}</button>:displayValue(site,column.key)}</td>)}<td>{writable&&<><button type="button" onClick={()=>startEdit(site)}>Bearbeiten</button>{['planning','setup','decommissioned'].includes(site.status)&&<button type="button" onClick={()=>void archive(site)}>Archivieren</button>}</>}</td></tr>)}
+        </tbody></table>{filtered.length===0&&<p className="object-empty">Keine Objekte entsprechen den aktiven Filtern.</p>}
+        {filtered.length>0&&<div className="object-pagination"><span>{filtered.length} Objekte · Seite {currentPage} von {pages}</span><button type="button" disabled={currentPage===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={currentPage===pages} onClick={()=>setPage(value=>Math.min(pages,value+1))}>Weiter</button></div>}</div>}
       </div>
     </>}
   </section>;

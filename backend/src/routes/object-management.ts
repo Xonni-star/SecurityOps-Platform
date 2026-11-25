@@ -80,6 +80,130 @@ function patchAssignments<T extends object>(body:T,columns:Record<keyof T,string
 
 export const objectManagementRouter=Router();
 
+objectManagementRouter.get(
+  '/sites/overview-dashboard',
+  requireAuth,
+  requirePermission('sites:read',{allowedScopes:['tenant','site','own','system']}),
+  async(req,res,next)=>{
+    try{
+      const user=req.user!;
+      const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+      const authorization={userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants};
+      const siteScope=effectivePermissionScope(grants,'sites:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!;
+      const scopeFilter=siteScope==='site'
+        ?' AND s.id=ANY($2::uuid[])'
+        :siteScope==='own'
+          ?` AND EXISTS (SELECT 1 FROM resource_owners ro WHERE ro.tenant_id=s.tenant_id AND ro.resource='sites' AND ro.resource_id=s.id AND ro.user_id=$2)`
+          :'';
+      const scopeValues=siteScope==='site'?[user.siteIds??[]]:siteScope==='own'?[user.id]:[];
+      const visibleSites=(await query<{id:string}>(
+        `SELECT s.id FROM sites s WHERE s.tenant_id=$1${scopeFilter}`,
+        [user.tenantId,...scopeValues],
+      )).rows;
+      const visibleSiteIds=visibleSites.map(site=>site.id);
+      const canReadSiteData=(permission:string,siteId:string)=>{
+        const scope=effectivePermissionScope(grants,permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+        return scope!==null&&canAccessResource(authorization,scope,{tenantId:user.tenantId,siteId});
+      };
+      const customerSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('customers:read',siteId));
+      const contractSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('contracts:read',siteId));
+      const employeeSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('employees:read',siteId));
+      const documentSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('dms:read',siteId));
+      const watchbookSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('watchbook:read',siteId));
+      const hasContractRead=effectivePermissionScope(grants,'contracts:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
+      const hasDocumentRead=effectivePermissionScope(grants,'dms:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
+      type OverviewSite={
+        id:string;name:string;site_number:string|null;address:string|null;alias:string|null;site_type:string|null;
+        status:string;security_classification:string;object_manager_employee_id:string|null;object_manager_name:string|null;
+        operations_manager_employee_id:string|null;operations_manager_name:string|null;customer_names:string[]|null;
+        assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;
+        open_hazard_count:number;overdue_measure_count:number;available_document_count:number|null;last_activity:string|null;
+      };
+      const sites=(await query<OverviewSite>(
+        `WITH customer_summary AS (
+           SELECT cs.site_id,array_agg(DISTINCT c.name ORDER BY c.name) AS customer_names
+           FROM customer_sites cs JOIN customers c ON c.tenant_id=cs.tenant_id AND c.id=cs.customer_id
+           WHERE cs.tenant_id=$1 AND cs.site_id=ANY($3::uuid[]) AND cs.relationship_status='active'
+           GROUP BY cs.site_id
+         ), contract_summary AS (
+           SELECT cts.site_id,
+             count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.starts_on<=CURRENT_DATE AND (con.ends_on IS NULL OR con.ends_on>=CURRENT_DATE))::int AS active_contract_count,
+             count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.ends_on BETWEEN CURRENT_DATE AND CURRENT_DATE+30)::int AS expiring_contract_count
+           FROM contract_sites cts JOIN contracts con ON con.tenant_id=cts.tenant_id AND con.id=cts.contract_id
+           WHERE cts.tenant_id=$1 AND cts.site_id=ANY($4::uuid[])
+           GROUP BY cts.site_id
+         ), staffing_summary AS (
+           SELECT oa.site_id,count(*)::int AS assigned_employee_count
+           FROM employee_object_assignments oa
+           WHERE oa.tenant_id=$1 AND oa.site_id=ANY($5::uuid[]) AND oa.starts_on<=CURRENT_DATE AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+           GROUP BY oa.site_id
+         ), hazard_summary AS (
+           SELECT h.site_id,count(*) FILTER (WHERE h.status='open')::int AS open_hazard_count,
+             (SELECT count(*)::int FROM object_hazard_measures m
+              WHERE m.tenant_id=h.tenant_id AND m.site_id=h.site_id AND m.status IN ('open','in_progress') AND m.due_on<CURRENT_DATE) AS overdue_measure_count
+           FROM object_hazards h
+           WHERE h.tenant_id=$1 AND h.site_id=ANY($6::uuid[])
+           GROUP BY h.tenant_id,h.site_id
+         ), latest_document_versions AS (
+           SELECT DISTINCT ON (v.document_id) v.document_id,v.lifecycle_state
+           FROM dms_versions v JOIN dms_documents d ON d.tenant_id=v.tenant_id AND d.id=v.document_id
+           WHERE v.tenant_id=$1 AND d.site_id=ANY($7::uuid[]) AND d.document_status='active'
+           ORDER BY v.document_id,v.version_no DESC
+         ), document_summary AS (
+           SELECT d.site_id,count(*) FILTER (WHERE latest.lifecycle_state='available')::int AS available_document_count
+           FROM dms_documents d LEFT JOIN latest_document_versions latest ON latest.document_id=d.id
+           WHERE d.tenant_id=$1 AND d.site_id=ANY($7::uuid[]) AND d.document_status='active'
+           GROUP BY d.site_id
+         ), activity_summary AS (
+           SELECT e.site_id,max(e.created_at) AS last_activity
+           FROM watchbook_entries e
+           WHERE e.tenant_id=$1 AND e.site_id=ANY($8::uuid[])
+           GROUP BY e.site_id
+         )
+         SELECT s.id,s.name,s.site_number,s.address,s.alias,s.site_type,s.status,s.security_classification,
+           CASE WHEN s.id=ANY($5::uuid[]) THEN s.object_manager_employee_id ELSE NULL END AS object_manager_employee_id,
+           CASE WHEN s.id=ANY($5::uuid[]) THEN om.name ELSE NULL END AS object_manager_name,
+           CASE WHEN s.id=ANY($5::uuid[]) THEN s.operations_manager_employee_id ELSE NULL END AS operations_manager_employee_id,
+           CASE WHEN s.id=ANY($5::uuid[]) THEN op.name ELSE NULL END AS operations_manager_name,
+           CASE WHEN s.id=ANY($3::uuid[]) THEN customers.customer_names ELSE NULL END AS customer_names,
+           CASE WHEN s.id=ANY($5::uuid[]) THEN COALESCE(staff.assigned_employee_count,0) ELSE NULL END AS assigned_employee_count,
+           CASE WHEN s.id=ANY($4::uuid[]) THEN COALESCE(contracts.active_contract_count,0) ELSE NULL END AS active_contract_count,
+           CASE WHEN s.id=ANY($4::uuid[]) THEN COALESCE(contracts.expiring_contract_count,0) ELSE NULL END AS expiring_contract_count,
+           COALESCE(hazards.open_hazard_count,0) AS open_hazard_count,
+           COALESCE(hazards.overdue_measure_count,0) AS overdue_measure_count,
+           CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.available_document_count,0) ELSE NULL END AS available_document_count,
+           GREATEST(s.updated_at,activity.last_activity) AS last_activity
+         FROM sites s
+         LEFT JOIN employees om ON om.tenant_id=s.tenant_id AND om.id=s.object_manager_employee_id
+         LEFT JOIN employees op ON op.tenant_id=s.tenant_id AND op.id=s.operations_manager_employee_id
+         LEFT JOIN customer_summary customers ON customers.site_id=s.id
+         LEFT JOIN contract_summary contracts ON contracts.site_id=s.id
+         LEFT JOIN staffing_summary staff ON staff.site_id=s.id
+         LEFT JOIN hazard_summary hazards ON hazards.site_id=s.id
+         LEFT JOIN document_summary documents ON documents.site_id=s.id
+         LEFT JOIN activity_summary activity ON activity.site_id=s.id
+         WHERE s.tenant_id=$1 AND s.id=ANY($2::uuid[])
+         ORDER BY s.name,s.id`,
+        [user.tenantId,visibleSiteIds,customerSiteIds,contractSiteIds,employeeSiteIds,visibleSiteIds,documentSiteIds,watchbookSiteIds],
+      )).rows;
+      const sum=(field:'active_contract_count'|'expiring_contract_count'|'assigned_employee_count'|'open_hazard_count'|'overdue_measure_count',authorized:boolean)=>
+        authorized?sites.reduce((total,site)=>total+(site[field]??0),0):null;
+      const metrics={
+        total_sites:visibleSites.length,
+        active_sites:sites.filter(site=>site.status==='active').length,
+        preparation_sites:sites.filter(site=>site.status==='planning'||site.status==='setup').length,
+        restricted_sites:sites.filter(site=>site.status==='restricted'||site.status==='temporarily_closed').length,
+        critical_sites:sites.filter(site=>site.security_classification==='critical').length,
+        open_hazards:sum('open_hazard_count',true),
+        overdue_measures:sum('overdue_measure_count',true),
+        expiring_contracts:sum('expiring_contract_count',hasContractRead),
+        sites_without_available_documents:hasDocumentRead?sites.filter(site=>site.available_document_count===0).length:null,
+      };
+      res.json({sites,metrics});
+    }catch(error){next(error);}
+  },
+);
+
 function requireSiteScope(permission:string):RequestHandler{
   return async(req,res,next)=>{
     try{

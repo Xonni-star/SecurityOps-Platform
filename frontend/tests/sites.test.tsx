@@ -5,13 +5,25 @@ import userEvent from '@testing-library/user-event';
 import {MemoryRouter,Route,Routes} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
-vi.mock('../src/lib/api',()=>({api:apiMock,hasPermission:()=>true}));
+const requestedPaths=vi.hoisted(()=>vi.fn());
+vi.mock('../src/lib/api',()=>({api:(path:string,options?:RequestInit)=>{
+  requestedPaths(path);
+  const mockedPath=path==='/sites/overview-dashboard'?'/sites':path;
+  const response=apiMock(mockedPath,options);
+  if(path!=='/sites/overview-dashboard')return response;
+  return Promise.resolve(response).then(value=>{
+    if(!Array.isArray(value))return value;
+    const rows=value as Array<{id:string;status:string;security_classification:string}>;
+    const overviewSites=rows.map(site=>({...site,customer_names:null,object_manager_name:null,operations_manager_name:null,assigned_employee_count:null,active_contract_count:null,expiring_contract_count:null,open_hazard_count:0,overdue_measure_count:0,available_document_count:null,last_activity:null}));
+    return {sites:overviewSites,metrics:{total_sites:rows.length,active_sites:rows.filter(site=>site.status==='active').length,preparation_sites:rows.filter(site=>site.status==='planning'||site.status==='setup').length,restricted_sites:rows.filter(site=>site.status==='restricted'||site.status==='temporarily_closed').length,critical_sites:rows.filter(site=>site.security_classification==='critical').length,open_hazards:0,overdue_measures:0,expiring_contracts:null,sites_without_available_documents:null}};
+  });
+},hasPermission:()=>true}));
 import {Sites} from '../src/pages/Sites';
 
 const sites=Array.from({length:12},(_,index)=>({
   id:String(index),name:`Objekt ${String(index+1).padStart(2,'0')}`,site_number:`S${index+1}`,address:'Berlin',status:index===0?'active':'planning',security_classification:'unknown',
 }));
-beforeEach(()=>{cleanup();apiMock.mockReset();});
+beforeEach(()=>{cleanup();apiMock.mockReset();requestedPaths.mockReset();});
 const renderSites=()=>render(<MemoryRouter initialEntries={['/sites']}><Routes><Route path="/sites" element={<Sites/>}/><Route path="/sites/:siteId" element={<Sites/>}/><Route path="/sites/:siteId/:section" element={<Sites/>}/></Routes></MemoryRouter>);
 
 describe('Objektübersicht',()=>{
@@ -19,16 +31,42 @@ describe('Objektübersicht',()=>{
     apiMock.mockResolvedValue(sites);
     renderSites();
     expect(await screen.findByText('12 Objekte · Seite 1 von 2')).toBeTruthy();
+    expect(requestedPaths).toHaveBeenCalledWith('/sites/overview-dashboard');
     expect(screen.queryByRole('button',{name:'Objekt 12'})).toBeNull();
     fireEvent.click(screen.getByRole('button',{name:'Weiter'}));
     expect(screen.getByRole('button',{name:'Objekt 12'})).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Objekt'}));
     expect(screen.getByRole('button',{name:'Objekt 12'})).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Status'),{target:{value:'active'}});
+    fireEvent.change(screen.getByRole('combobox',{name:'Status'}),{target:{value:'active'}});
     expect(screen.getByText('1 Objekte · Seite 1 von 1')).toBeTruthy();
     expect(screen.getByRole('button',{name:'Objekt 01'})).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Objekte suchen'),{target:{value:'nicht vorhanden'}});
     expect(screen.getByText('Keine Objekte entsprechen den aktiven Filtern.')).toBeTruthy();
+  });
+
+  it('shows backend KPIs and filters the expanded site table with configurable columns',async()=>{
+    const enriched=[{
+      ...sites[0],site_type:'Leitstelle',customer_names:['North Client'],object_manager_employee_id:'manager-1',
+      object_manager_name:'Mia Guard',operations_manager_employee_id:null,operations_manager_name:null,
+      assigned_employee_count:4,active_contract_count:2,expiring_contract_count:1,open_hazard_count:3,
+      overdue_measure_count:1,available_document_count:0,last_activity:'2026-11-25T10:00:00Z',
+    }];
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?{sites:enriched,metrics:{
+      total_sites:1,active_sites:1,preparation_sites:0,restricted_sites:0,critical_sites:0,
+      open_hazards:3,overdue_measures:1,expiring_contracts:1,sites_without_available_documents:1,
+    }}:[]);
+    renderSites();
+    expect(await screen.findByText('1 Objekte · Seite 1 von 1')).toBeTruthy();
+    expect(screen.getByRole('row',{name:/North Client/})).toBeTruthy();
+    expect(screen.getByRole('row',{name:/Mia Guard/})).toBeTruthy();
+    expect(screen.getByText('3',{selector:'strong'})).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Kunde filtern'),{target:{value:'North Client'}});
+    fireEvent.change(screen.getByLabelText('Objektart filtern'),{target:{value:'Leitstelle'}});
+    expect(screen.getByRole('button',{name:'Objekt 01'})).toBeTruthy();
+    const columnPicker=screen.getByText('Spalten').closest('details')!;
+    fireEvent.click(within(columnPicker).getByLabelText('Objektart'));
+    expect(screen.queryByRole('columnheader',{name:'Objektart'})).toBeNull();
+    expect(screen.getByRole('columnheader',{name:'Kunde'})).toBeTruthy();
   });
 
   it('saves cleared optional site fields as null',async()=>{
@@ -36,8 +74,8 @@ describe('Objektübersicht',()=>{
     renderSites();
     const row=(await screen.findByRole('button',{name:'Objekt 01'})).closest('tr')!;
     fireEvent.click(within(row).getByRole('button',{name:'Bearbeiten'}));
-    fireEvent.change(screen.getByLabelText('Objektnummer'),{target:{value:''}});
-    fireEvent.change(screen.getByLabelText('Adresse'),{target:{value:''}});
+    fireEvent.change(screen.getByRole('textbox',{name:'Objektnummer'}),{target:{value:''}});
+    fireEvent.change(screen.getByRole('textbox',{name:'Adresse'}),{target:{value:''}});
     fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0',expect.objectContaining({method:'PATCH',body:expect.stringContaining('"site_number":null')})));
     expect(JSON.parse(apiMock.mock.calls.find(([,options])=>options?.method==='PATCH')![1].body).address).toBeNull();
@@ -53,7 +91,7 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
     expect(await screen.findByText('Keine Berechtigung für das Wachbuch.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button',{name:'Gefährdungen'}));
+    fireEvent.click(screen.getByRole('button',{name:'Gefährdungen & Sicherheit'}));
     expect(screen.getByRole('heading',{name:'Gefährdungen'})).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Dienstanweisungen'}));
     expect(screen.getByRole('heading',{name:'Dienstanweisungen'})).toBeTruthy();
@@ -115,7 +153,7 @@ describe('Objektübersicht',()=>{
     apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'assigned',name:'Site Guard'},{id:'off-site',name:'Other employee'}]:options?.method==='PATCH'?{}:context);
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen & Sicherheit'}));
     fireEvent.click(await screen.findByRole('button',{name:'Gefährdung bearbeiten'}));
     const owner=screen.getByLabelText('Gefährdungsverantwortliche Person');
     expect(within(owner).getByRole('option',{name:'Site Guard'})).toBeTruthy();
@@ -176,7 +214,7 @@ describe('Objektübersicht',()=>{
     });
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen & Sicherheit'}));
     fireEvent.click(screen.getByRole('button',{name:'Maßnahme hinzufügen'}));
     fireEvent.change(screen.getByLabelText('Maßnahmentitel'),{target:{value:'Inspect extinguisher'}});
     fireEvent.change(screen.getByLabelText('Maßnahme fällig am'),{target:{value:'2026-12-01'}});
@@ -222,8 +260,9 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Kunden & Verträge'}));
     expect(await screen.findByText('Keine Berechtigung für Kundenbeziehungen.')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button',{name:'Personal & Dienste'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Mitarbeiter & Verantwortlichkeiten'}));
     expect(await screen.findByText('Mia Guard')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
     expect(screen.getByText(/Novemberplan/)).toBeTruthy();
     expect(screen.getByText(/night_guard/)).toBeTruthy();
   });
@@ -237,7 +276,7 @@ describe('Objektübersicht',()=>{
     apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[employee]:options?.method==='POST'?{}:context);
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Personal & Dienste'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Mitarbeiter & Verantwortlichkeiten'}));
     fireEvent.change(screen.getByLabelText('Mitarbeiter'),{target:{value:'employee-1'}});
     fireEvent.change(screen.getByLabelText('Beginn'),{target:{value:'2026-11-25'}});
     fireEvent.change(screen.getByLabelText('Rolle'),{target:{value:'Objektschutz'}});
@@ -400,11 +439,12 @@ describe('Objektübersicht',()=>{
     });
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Einsätze & Alarme'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Vorfälle & Berichte'}));
     expect(await screen.findByText('Assistance requested')).toBeTruthy();
     expect(screen.getByText('Respond to alarm')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button',{name:'Aufgaben & Wartung'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Aufgaben & Maßnahmen'}));
     expect(await screen.findByText('Review site access')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Ausstattung & Technik'}));
     expect(screen.getByText('Inspect gate')).toBeTruthy();
     expect(await screen.findByRole('heading',{name:'Technik-/Instandhaltungseintrag erfassen'})).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Eintrag'),{target:{value:'Inspect backup generator'}});
@@ -413,6 +453,7 @@ describe('Objektübersicht',()=>{
     const maintenanceWrite=apiMock.mock.calls.find(([path,options])=>path==='/watchbook/entries'&&options?.method==='POST')!;
     expect(JSON.parse(maintenanceWrite[1].body)).toEqual(expect.objectContaining({site_id:'0',category_id:'maintenance-category',priority_code:'medium',content:'Inspect backup generator'}));
     expect(JSON.parse(maintenanceWrite[1].body).client_entry_id).toMatch(/^[0-9a-f-]{36}$/i);
+    fireEvent.click(await screen.findByRole('button',{name:'Aufgaben & Maßnahmen'}));
     fireEvent.change(screen.getByLabelText('Kunde'),{target:{value:'customer-1'}});
     fireEvent.change(screen.getByLabelText('Aufgabe / Wiedervorlage'),{target:{value:'Test emergency lights'}});
     fireEvent.click(screen.getByRole('button',{name:'Aufgabe anlegen'}));
@@ -432,12 +473,12 @@ describe('Objektübersicht',()=>{
     });
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Qualifikationen'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Mitarbeiter & Verantwortlichkeiten'}));
     expect(await screen.findByText('Mia Guard')).toBeTruthy();
     expect(screen.getByText(/Erste Hilfe/)).toBeTruthy();
     expect(screen.getByText(/Läuft bald ab/)).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button',{name:'Übergaben'}));
-    expect(await screen.findByText('Night shift transfer')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Übersicht'}));
+    expect(await screen.findByText(/Night shift transfer/)).toBeTruthy();
     expect(screen.getByText(/1\/2 Bestätigungen/)).toBeTruthy();
   });
 
@@ -451,7 +492,7 @@ describe('Objektübersicht',()=>{
     apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'employee-1',name:'Mia Guard'}]:path==='/scheduling/shifts/shift-1/assignments'?{}:context);
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Personal & Dienste'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
     fireEvent.change(await screen.findByLabelText('Mitarbeiter für guard'),{target:{value:'employee-1'}});
     fireEvent.click(screen.getByRole('button',{name:'Schicht besetzen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/scheduling/shifts/shift-1/assignments',expect.objectContaining({method:'POST'})));
@@ -466,7 +507,7 @@ describe('Objektübersicht',()=>{
     });
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Berichte'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Vorfälle & Berichte'}));
     const reportLink=await screen.findByRole('link',{name:'Berichte für dieses Objekt öffnen'});
     expect(reportLink.getAttribute('href')).toBe('/customer-reports?site_id=0');
   });

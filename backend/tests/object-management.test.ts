@@ -59,6 +59,71 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM schedule_periods p'))).toBe(false);
   });
 
+  it('returns site-scoped dashboard data and real object-management metrics',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'sites:read',scope:'site'},
+        {code:'employees:read',scope:'site'},
+        {code:'customers:read',scope:'tenant'},
+        {code:'contracts:read',scope:'tenant'},
+        {code:'dms:read',scope:'site'},
+        {code:'watchbook:read',scope:'site'},
+      ],
+    };
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('SELECT s.id FROM sites s'))return result([{id:site}]);
+      if(sql.includes('WITH customer_summary AS'))return result([{
+        id:site,name:'Headquarters',site_number:'S-1',address:'Berlin',alias:null,site_type:'Leitstelle',
+        status:'active',security_classification:'critical',object_manager_employee_id:'employee-1',object_manager_name:'Mia Guard',
+        operations_manager_employee_id:null,operations_manager_name:null,customer_names:['North Client'],
+        assigned_employee_count:2,active_contract_count:1,expiring_contract_count:1,open_hazard_count:2,
+        overdue_measure_count:3,available_document_count:0,last_activity:'2026-11-25T10:00:00Z',
+      }]);
+      return result([]);
+    });
+
+    const response=await request(app).get('/api/v1/sites/overview-dashboard').set('Cookie','securityops_session=opaque');
+
+    expect(response.status).toBe(200);
+    expect(response.body.sites).toEqual([expect.objectContaining({
+      id:site,customer_names:['North Client'],object_manager_name:'Mia Guard',assigned_employee_count:2,
+      active_contract_count:1,open_hazard_count:2,overdue_measure_count:3,
+    })]);
+    expect(response.body.metrics).toEqual({
+      total_sites:1,active_sites:1,preparation_sites:0,restricted_sites:0,critical_sites:1,
+      open_hazards:2,overdue_measures:3,expiring_contracts:1,sites_without_available_documents:1,
+    });
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('SELECT s.id FROM sites s'))?.[1]).toEqual([tenant, [site]]);
+  });
+
+  it('does not request customer, contract, employee or DMS aggregates without their read scopes',async()=>{
+    const sitesOnly={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'sites:read',scope:'tenant'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([sitesOnly]);
+      if(sql.includes('SELECT s.id FROM sites s'))return result([{id:site}]);
+      if(sql.includes('WITH customer_summary AS'))return result([{
+        id:site,name:'Headquarters',site_number:null,address:null,alias:null,site_type:null,status:'active',security_classification:'unknown',
+        object_manager_employee_id:null,object_manager_name:null,operations_manager_employee_id:null,operations_manager_name:null,
+        customer_names:null,assigned_employee_count:null,active_contract_count:null,expiring_contract_count:null,
+        open_hazard_count:0,overdue_measure_count:0,available_document_count:null,last_activity:null,
+      }]);
+      return result([]);
+    });
+
+    const response=await request(app).get('/api/v1/sites/overview-dashboard').set('Cookie','securityops_session=opaque');
+
+    expect(response.status).toBe(200);
+    expect(response.body.metrics).toEqual(expect.objectContaining({expiring_contracts:null,sites_without_available_documents:null}));
+    const aggregate=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH customer_summary AS'));
+    expect(aggregate?.[1]).toEqual([tenant,[site],[],[],[],[site],[],[]]);
+    expect(response.body.sites[0]).toEqual(expect.objectContaining({
+      customer_names:null,assigned_employee_count:null,active_contract_count:null,available_document_count:null,
+    }));
+  });
+
   it('returns instruction acknowledgement identities only with site-scoped employee read access',async()=>{
     const acknowledgement={employee_id:'employee-1',employee_name:'Mia Guard',acknowledged_at:'2026-11-25T10:00:00Z'};
     const instruction={id:'instruction-1',title:'Evacuation',version:2,status:'approved',requires_acknowledgement:true,acknowledgement_count:1};
