@@ -390,13 +390,22 @@ objectManagementRouter.get(
         [user.tenantId,id],
       )).rows:null;
       const staffing=canReadStaffing?(await query(
-        `SELECT oa.id,oa.employee_id,e.name AS employee_name,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
+        `SELECT oa.id,oa.employee_id,e.name AS employee_name,e.employee_number,e.employment_status,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
           oa.primary_assignment,oa.notes
          FROM employee_object_assignments oa
          JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
          WHERE oa.tenant_id=$1 AND oa.site_id=$2
            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
          ORDER BY oa.starts_on<=CURRENT_DATE DESC,oa.primary_assignment DESC,oa.starts_on, e.name`,
+        [user.tenantId,id],
+      )).rows:null;
+      const assignmentHistory=canReadStaffing?(await query(
+        `SELECT oa.id,oa.employee_id,e.name AS employee_name,e.employee_number,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
+          oa.primary_assignment,oa.notes
+         FROM employee_object_assignments oa
+         JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
+         WHERE oa.tenant_id=$1 AND oa.site_id=$2
+         ORDER BY oa.ends_on DESC NULLS FIRST,oa.starts_on DESC,e.name LIMIT 100`,
         [user.tenantId,id],
       )).rows:null;
       const canReadSchedule=canReadSiteData('scheduling:read');
@@ -588,13 +597,15 @@ objectManagementRouter.get(
         [user.tenantId,id],
       )).rows:null;
       const devices=canReadSiteData('devices:read')?(await query(
-        `SELECT id,name,status,site_id,last_seen_at,metadata,created_at,updated_at
+        `SELECT id,name,status,site_id,last_seen_at,metadata,asset_number,category,manufacturer,model,serial_number,
+          location_id,responsible_employee_id,operational_status,installed_on,commissioned_on,last_inspection_on,
+          next_inspection_on,maintenance_interval_days,next_maintenance_on,last_maintenance_on,created_at,updated_at
          FROM devices
          WHERE tenant_id=$1 AND site_id=$2 AND device_kind='operational'
          ORDER BY name,last_seen_at DESC NULLS LAST`,
         [user.tenantId,id],
       )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance,qualifications,handovers,devices});
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance,qualifications,handovers,devices});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );

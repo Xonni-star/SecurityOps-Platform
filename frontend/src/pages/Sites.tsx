@@ -3,14 +3,14 @@ import {useNavigate,useParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {uuid} from '../lib/uuid';
 
-type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;required_staff_count?:number;updated_at?:string};
+type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;street?:string|null;house_number?:string|null;postal_code?:string|null;city?:string|null;contact_person?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;required_staff_count?:number;updated_at?:string};
 type SiteOverview=Site&{customer_names:string[]|null;object_manager_name:string|null;operations_manager_name:string|null;assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;contract_statuses:string[]|null;open_hazard_count:number;critical_hazard_count:number;overdue_measure_count:number;open_task_count:number|null;overdue_task_count:number|null;open_shift_count:number|null;undercovered_shift_count:number|null;understaffed:boolean;available_document_count:number|null;last_activity:string|null};
 type OverviewMetrics={total_sites:number;active_sites:number;preparation_sites:number;restricted_sites:number;critical_sites:number;sites_with_critical_hazards:number;sites_with_open_tasks:number;sites_with_understaffing:number;open_hazards:number|null;overdue_measures:number|null;open_tasks:number|null;overdue_tasks:number|null;open_shifts:number|null;undercovered_shifts:number|null;expiring_contracts:number|null;sites_without_available_documents:number|null};
 type SiteOverviewResponse={sites:SiteOverview[];metrics:OverviewMetrics};
 type SiteColumn='site_number'|'name'|'site_type'|'customer_names'|'address'|'object_manager_name'|'operations_manager_name'|'security_classification'|'status'|'assigned_employee_count'|'active_contract_count'|'open_hazard_count'|'open_task_count'|'contract_statuses'|'understaffed'|'last_activity';
 type Customer={id:string;name:string;customer_number?:string|null};
 type Employee={id:string;name:string};
-type StaffingAssignment={id:string;employee_id:string;employee_name:string;assignment_type:string;role:string|null;starts_on:string;ends_on:string|null;primary_assignment:boolean;notes:string|null};
+type StaffingAssignment={id:string;employee_id:string;employee_name:string;employee_number?:string|null;employment_status?:string|null;assignment_type:string;role:string|null;starts_on:string;ends_on:string|null;primary_assignment:boolean;notes:string|null};
 type ScheduledShift={id:string;period_id:string;period_name:string;period_status:string;period_starts_at:string;period_ends_at:string;role_code:string;starts_at:string;ends_at:string;assigned_count:number;assignments:{id:string;employee_id:string;employee_name:string}[]};
 type PatrolRoute={id:string;name:string;expected_start:string|null;expected_end:string|null;points:{control_point_id:string;name:string;sequence:number;expected_offset_seconds:number|null}[];assignments:{id:string;starts_at:string;ends_at:string|null;employee_name:string|null}[]};
 type PatrolScan={id:string;scanned_at:string;deviation:string;route_id:string;route_name:string;control_point_id:string;control_point_name:string;employee_name:string|null};
@@ -28,7 +28,7 @@ type WatchbookPriority={code:string;name:string};
 type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowledged_at:string};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
-type ObjectDevice={id:string;name:string;status:string;site_id:string|null;last_seen_at:string|null;metadata:Record<string,unknown>;created_at:string;updated_at:string};
+type ObjectDevice={id:string;name:string;status:string;site_id:string|null;last_seen_at:string|null;metadata:Record<string,unknown>;asset_number:string|null;category:string|null;manufacturer:string|null;model:string|null;serial_number:string|null;location_id:string|null;responsible_employee_id:string|null;operational_status:string;installed_on:string|null;commissioned_on:string|null;last_inspection_on:string|null;next_inspection_on:string|null;maintenance_interval_days:number|null;next_maintenance_on:string|null;last_maintenance_on:string|null;created_at:string;updated_at:string};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
 type HazardMeasure={id:string;hazard_id:string;title:string;description:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;due_on:string|null;status:'open'|'in_progress'|'completed'|'cancelled';completed_at:string|null};
 type ObjectHazard={id:string;title:string;category:string;description:string;likelihood:number;impact:number;risk_score:number;protective_measures:string|null;responsible_employee_id:string|null;due_on:string|null;review_on:string|null;status:string;location_id:string|null;location_name:string|null;responsible_employee_name:string|null;measures:HazardMeasure[]};
@@ -42,6 +42,7 @@ type Context={
   instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;acknowledgements:InstructionAcknowledgement[];location_name?:string|null;valid_from?:string|null;valid_until?:string|null;can_approve?:boolean}[];
   journal:{id:string;created_at:string;revision_no:number;content:string;status:string;category_name:string;priority_name:string}[]|null;
   staffing:StaffingAssignment[]|null;
+  assignmentHistory:StaffingAssignment[]|null;
   shifts:ScheduledShift[]|null;
   patrols:{routes:PatrolRoute[];recentScans:PatrolScan[]}|null;
   keys:{items:KeyRecord[];recentMovements:KeyMovement[]}|null;
@@ -134,6 +135,7 @@ export function Sites(){
   const [documentTitle,setDocumentTitle]=useState('');
   const [documentFile,setDocumentFile]=useState<File|null>(null);
   const [documentMetadata,setDocumentMetadata]=useState({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});
+  const [editingDocumentId,setEditingDocumentId]=useState<string|null>(null);
   const documentInput=useRef<HTMLInputElement>(null);
   const [taskCustomerId,setTaskCustomerId]=useState('');
   const [taskTitle,setTaskTitle]=useState('');
@@ -150,7 +152,10 @@ export function Sites(){
   const [keyAction,setKeyAction]=useState<KeyAction|null>(null);
   const [keyHolderEmployeeId,setKeyHolderEmployeeId]=useState('');
   const [keyActionReason,setKeyActionReason]=useState('');
-  const [details,setDetails]=useState({alias:'',site_type:'',description:'',object_manager_employee_id:'',operations_manager_employee_id:''});
+  const [editingDeviceId,setEditingDeviceId]=useState<string|null>(null);
+  const [deviceFormOpen,setDeviceFormOpen]=useState(false);
+  const [deviceForm,setDeviceForm]=useState({name:'',asset_number:'',category:'',manufacturer:'',model:'',serial_number:'',location_id:'',responsible_employee_id:'',operational_status:'active',installed_on:'',commissioned_on:'',last_inspection_on:'',next_inspection_on:'',maintenance_interval_days:0,next_maintenance_on:'',last_maintenance_on:''});
+  const [details,setDetails]=useState({alias:'',site_type:'',description:'',street:'',house_number:'',postal_code:'',city:'',contact_person:'',object_manager_employee_id:'',operations_manager_employee_id:''});
   const writable=hasPermission('sites:write');
 
   async function load(){
@@ -175,7 +180,7 @@ export function Sites(){
         setSelected(context);
         const site=context.site;
         setForm({name:site.name,site_number:site.site_number??'',address:site.address??'',status:site.status,security_classification:site.security_classification,required_staff_count:site.required_staff_count??0});
-        setDetails({alias:site.alias??'',site_type:site.site_type??'',description:site.description??'',object_manager_employee_id:site.object_manager_employee_id??'',operations_manager_employee_id:site.operations_manager_employee_id??''});
+        setDetails({alias:site.alias??'',site_type:site.site_type??'',description:site.description??'',street:site.street??'',house_number:site.house_number??'',postal_code:site.postal_code??'',city:site.city??'',contact_person:site.contact_person??'',object_manager_employee_id:site.object_manager_employee_id??'',operations_manager_employee_id:site.operations_manager_employee_id??''});
       }
       setCustomers(customerRows??[]);setEmployees(employeeRows??[]);setError('');
     }catch(e){setError((e as Error).message);}
@@ -189,7 +194,7 @@ export function Sites(){
   async function saveDetails(event:FormEvent){
     event.preventDefault();if(!selected)return;
     try{
-      await api(`/sites/${selected.site.id}`,{method:'PATCH',body:JSON.stringify({name:form.name,site_number:form.site_number.trim()||null,address:form.address.trim()||null,status:form.status,security_classification:form.security_classification,required_staff_count:form.required_staff_count,description:details.description,alias:details.alias.trim()||null,site_type:details.site_type.trim()||null,object_manager_employee_id:details.object_manager_employee_id||null,operations_manager_employee_id:details.operations_manager_employee_id||null})});
+      await api(`/sites/${selected.site.id}`,{method:'PATCH',body:JSON.stringify({name:form.name,site_number:form.site_number.trim()||null,address:form.address.trim()||null,status:form.status,security_classification:form.security_classification,required_staff_count:form.required_staff_count,description:details.description,alias:details.alias.trim()||null,site_type:details.site_type.trim()||null,street:details.street.trim()||null,house_number:details.house_number.trim()||null,postal_code:details.postal_code.trim()||null,city:details.city.trim()||null,contact_person:details.contact_person.trim()||null,object_manager_employee_id:details.object_manager_employee_id||null,operations_manager_employee_id:details.operations_manager_employee_id||null})});
       await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
@@ -302,6 +307,18 @@ export function Sites(){
       setDocumentTitle('');setDocumentFile(null);setDocumentMetadata({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});if(documentInput.current)documentInput.current.value='';await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
+  function startDocumentEdit(document:SiteDocument){
+    setEditingDocumentId(document.id);
+    setDocumentTitle(document.title);
+    setDocumentMetadata({document_number:document.document_number??'',document_type:document.document_type??'',responsible_employee_id:document.responsible_employee_id??'',location_id:document.location_id??'',valid_from:document.valid_from??'',valid_until:document.valid_until??'',review_on:document.review_on??'',approval_status:document.approval_status??'draft'});
+  }
+  async function saveDocumentMetadata(event:FormEvent){
+    event.preventDefault();if(!editingDocumentId)return;
+    try{
+      await api(`/dms/documents/${editingDocumentId}`,{method:'PATCH',body:JSON.stringify({title:documentTitle,document_number:documentMetadata.document_number.trim()||null,document_type:documentMetadata.document_type.trim()||null,responsible_employee_id:documentMetadata.responsible_employee_id||null,location_id:documentMetadata.location_id||null,valid_from:documentMetadata.valid_from||null,valid_until:documentMetadata.valid_until||null,review_on:documentMetadata.review_on||null,approval_status:documentMetadata.approval_status})});
+      setEditingDocumentId(null);setDocumentTitle('');setDocumentMetadata({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
   async function downloadDocument(document:SiteDocument,version:DmsVersion){
     try{
       const response=await fetch(`/api/v1/dms/documents/${document.id}/versions/${version.id}/download`,{credentials:'include',headers:{'x-csrf-token':csrf()}});
@@ -345,6 +362,19 @@ export function Sites(){
     try{
       await api(`/employees/${assignment.employee_id}/object-assignments/${assignment.id}`,{method:'PATCH',body:JSON.stringify({ends_on:new Date().toISOString().slice(0,10),reason:reason.trim()})});
       await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
+  function startDeviceEdit(device?:ObjectDevice){
+    setEditingDeviceId(device?.id??null);
+    setDeviceFormOpen(true);
+    setDeviceForm(device?{name:device.name,asset_number:device.asset_number??'',category:device.category??'',manufacturer:device.manufacturer??'',model:device.model??'',serial_number:device.serial_number??'',location_id:device.location_id??'',responsible_employee_id:device.responsible_employee_id??'',operational_status:device.operational_status,installed_on:device.installed_on??'',commissioned_on:device.commissioned_on??'',last_inspection_on:device.last_inspection_on??'',next_inspection_on:device.next_inspection_on??'',maintenance_interval_days:device.maintenance_interval_days??0,next_maintenance_on:device.next_maintenance_on??'',last_maintenance_on:device.last_maintenance_on??''}: {name:'',asset_number:'',category:'',manufacturer:'',model:'',serial_number:'',location_id:'',responsible_employee_id:'',operational_status:'active',installed_on:'',commissioned_on:'',last_inspection_on:'',next_inspection_on:'',maintenance_interval_days:0,next_maintenance_on:'',last_maintenance_on:''});
+  }
+  async function saveDevice(event:FormEvent){
+    event.preventDefault();if(!selected)return;
+    try{
+      const body={name:deviceForm.name,status:'online',site_id:selected.site.id,asset_number:deviceForm.asset_number||null,category:deviceForm.category||null,manufacturer:deviceForm.manufacturer||null,model:deviceForm.model||null,serial_number:deviceForm.serial_number||null,location_id:deviceForm.location_id||null,responsible_employee_id:deviceForm.responsible_employee_id||null,operational_status:deviceForm.operational_status,installed_on:deviceForm.installed_on||null,commissioned_on:deviceForm.commissioned_on||null,last_inspection_on:deviceForm.last_inspection_on||null,next_inspection_on:deviceForm.next_inspection_on||null,maintenance_interval_days:deviceForm.maintenance_interval_days||null,next_maintenance_on:deviceForm.next_maintenance_on||null,last_maintenance_on:deviceForm.last_maintenance_on||null};
+      await api(editingDeviceId?`/devices/${editingDeviceId}`:'/devices',{method:editingDeviceId?'PATCH':'POST',body:JSON.stringify(body)});
+      setEditingDeviceId(null);setDeviceFormOpen(false);setDeviceForm({name:'',asset_number:'',category:'',manufacturer:'',model:'',serial_number:'',location_id:'',responsible_employee_id:'',operational_status:'active',installed_on:'',commissioned_on:'',last_inspection_on:'',next_inspection_on:'',maintenance_interval_days:0,next_maintenance_on:'',last_maintenance_on:''});await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
   async function assignShiftEmployee(event:FormEvent,shift:ScheduledShift){
@@ -481,6 +511,12 @@ export function Sites(){
   const overdueMeasures=selected?.hazards.flatMap(hazard=>hazard.measures).filter(measure=>['open','in_progress'].includes(measure.status)&&measure.due_on&&measure.due_on<today)??[];
   const expiredDocuments=selected?.documents?.filter(document=>document.valid_until&&document.valid_until<today)??[];
   const expiringDocuments=selected?.documents?.filter(document=>document.valid_until&&document.valid_until>=today&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10))??[];
+  const documentWarnings={
+    critical:expiredDocuments,
+    high:selected?.documents?.filter(document=>document.valid_until&&document.valid_until>=today&&document.valid_until<=new Date(now.getTime()+7*86400000).toISOString().slice(0,10))??[],
+    medium:selected?.documents?.filter(document=>document.valid_until&&document.valid_until>new Date(now.getTime()+7*86400000).toISOString().slice(0,10)&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10))??[],
+    information:selected?.documents?.filter(document=>document.valid_until&&document.valid_until>new Date(now.getTime()+30*86400000).toISOString().slice(0,10)&&document.valid_until<=new Date(now.getTime()+60*86400000).toISOString().slice(0,10))??[],
+  };
   return <section className="object-management">
     {error&&<p role="alert" className="error">{error}</p>}
     {siteId?(selected?<article className="object-detail-page">
@@ -504,6 +540,9 @@ export function Sites(){
           {expiredInstructions.length>0&&<p role="status">Abgelaufene Dienstanweisungen: {expiredInstructions.length}</p>}
           {expiredDocuments.length>0&&<p role="status">Abgelaufene Dokumente: {expiredDocuments.length}</p>}
           {expiringDocuments.length>0&&<p role="status">Dokumente laufen binnen 30 Tagen ab: {expiringDocuments.length}</p>}
+          {documentWarnings.high.length>0&&<p role="status">Dokumentablauf kritisch innerhalb 7 Tage: {documentWarnings.high.length}</p>}
+          {documentWarnings.medium.length>0&&<p role="status">Dokumentablauf hoch binnen 30 Tage: {documentWarnings.medium.length}</p>}
+          {documentWarnings.information.length>0&&<p role="status">Dokumentablauf binnen 60 Tage: {documentWarnings.information.length}</p>}
           {selected.instructions.some(instruction=>isInstructionActive(instruction)&&instruction.requires_acknowledgement&&instruction.acknowledgement_count<currentStaff.length)&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen vorhanden.</p>}
         </div>
         <div className="object-summary-grid">
@@ -527,6 +566,11 @@ export function Sites(){
           <label>Adresse<input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></label>
           <label>Alias<input value={details.alias} onChange={e=>setDetails({...details,alias:e.target.value})}/></label>
           <label>Objektart<input value={details.site_type} onChange={e=>setDetails({...details,site_type:e.target.value})}/></label>
+          <label>Straße<input value={details.street} onChange={e=>setDetails({...details,street:e.target.value})}/></label>
+          <label>Hausnummer<input value={details.house_number} onChange={e=>setDetails({...details,house_number:e.target.value})}/></label>
+          <label>Postleitzahl<input value={details.postal_code} onChange={e=>setDetails({...details,postal_code:e.target.value})}/></label>
+          <label>Ort<input value={details.city} onChange={e=>setDetails({...details,city:e.target.value})}/></label>
+          <label>Ansprechpartner<input value={details.contact_person} onChange={e=>setDetails({...details,contact_person:e.target.value})}/></label>
           <label>Status<select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
           <label>Sicherheitsklassifizierung<select value={form.security_classification} onChange={e=>setForm({...form,security_classification:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
           <label>Sollbesetzung<input type="number" min="0" max="100000" value={form.required_staff_count} onChange={e=>setForm({...form,required_staff_count:Number(e.target.value)})}/></label>
@@ -617,7 +661,11 @@ export function Sites(){
       </div>}
       {active==='personal'&&<div className="object-detail-content">
       <h3>Personalzuordnungen</h3>
-      {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}{writable&&hasPermission('employees:write')&&!assignment.ends_on&&<button type="button" onClick={()=>void removeStaffingAssignment(assignment)}>Zuordnung beenden</button>}</li>)}</ul>}
+      {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=>{
+        const employeeQualifications=selected.qualifications?.filter(qualification=>qualification.employee_id===assignment.employee_id)??[];
+        const fitness=assignment.employment_status==='terminated'||assignment.employment_status==='archived'||employeeQualifications.some(qualification=>qualification.computed_status==='expired'||qualification.computed_status==='revoked')?'Nicht einsatzfähig':employeeQualifications.some(qualification=>qualification.computed_status==='expiring')?'Eingeschränkt einsatzfähig':'Einsatzfähig';
+        return <li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.employment_status??'Status unbekannt'}{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'} · <strong>{fitness}</strong>{writable&&hasPermission('employees:write')&&!assignment.ends_on&&<button type="button" onClick={()=>void removeStaffingAssignment(assignment)}>Zuordnung beenden</button>}</li>;
+      })}</ul>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length>0&&<form onSubmit={createStaffingAssignment}>
         <h4>Personal dem Objekt zuordnen</h4>
         <label>Mitarbeiter<select required value={assignmentForm.employee_id} onChange={event=>setAssignmentForm({...assignmentForm,employee_id:event.target.value})}><option value="">Mitarbeiter auswählen</option>{assignableEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
@@ -632,6 +680,8 @@ export function Sites(){
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
       <h3>Qualifikationen</h3>
       {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id} className={qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualification.computed_status==='valid'?'Gültig':qualification.computed_status==='expiring'?'Läuft bald ab':qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig'}{qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}</li>)}</ul>}
+      <h3>Zuordnungshistorie</h3>
+      {selected.assignmentHistory==null?<p>Keine Berechtigung für die Zuordnungshistorie.</p>:selected.assignmentHistory.length===0?<p>Keine Zuordnungshistorie vorhanden.</p>:<ul>{selected.assignmentHistory.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
       {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}
       </div>}
       {active==='dienstplanung'&&<div className="object-detail-content"><h3>Dienstplanung und Schichten</h3>
@@ -676,8 +726,19 @@ export function Sites(){
       {selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=>{
         const expired=document.valid_until&&document.valid_until<now.toISOString().slice(0,10);
         const expiring=document.valid_until&&!expired&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10);
-        return <li key={document.id} className={expired||expiring?'object-warning':''}><strong>{document.title}</strong> · {document.document_status}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{expired?' · Abgelaufen':expiring?' · Läuft innerhalb 30 Tage ab':''}{document.description&&<p>{document.description}</p>}<ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>;
+        return <li key={document.id} className={expired||expiring?'object-warning':''}><strong>{document.title}</strong> · {document.document_status}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{expired?' · Abgelaufen':expiring?' · Läuft innerhalb 30 Tage ab':''}{document.description&&<p>{document.description}</p>}<button type="button" onClick={()=>startDocumentEdit(document)}>Metadaten bearbeiten</button><ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>;
       })}</ul>}
+      {editingDocumentId&&<form onSubmit={saveDocumentMetadata}>
+        <h4>Dokumentenmetadaten bearbeiten</h4>
+        <label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label>
+        <label>Dokumentnummer<input value={documentMetadata.document_number} onChange={event=>setDocumentMetadata({...documentMetadata,document_number:event.target.value})}/></label>
+        <label>Dokumenttyp<input value={documentMetadata.document_type} onChange={event=>setDocumentMetadata({...documentMetadata,document_type:event.target.value})}/></label>
+        <label>Gültig ab<input type="date" value={documentMetadata.valid_from} onChange={event=>setDocumentMetadata({...documentMetadata,valid_from:event.target.value})}/></label>
+        <label>Gültig bis<input type="date" value={documentMetadata.valid_until} onChange={event=>setDocumentMetadata({...documentMetadata,valid_until:event.target.value})}/></label>
+        <label>Wiedervorlage<input type="date" value={documentMetadata.review_on} onChange={event=>setDocumentMetadata({...documentMetadata,review_on:event.target.value})}/></label>
+        <label>Prüf- und Freigabestatus<select value={documentMetadata.approval_status} onChange={event=>setDocumentMetadata({...documentMetadata,approval_status:event.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option><option value="approved">Freigegeben</option><option value="rejected">Abgelehnt</option></select></label>
+        <button>Metadaten speichern</button><button type="button" onClick={()=>setEditingDocumentId(null)}>Abbrechen</button>
+      </form>}
       {selected.documents!=null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}>
         <label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label>
         <label>Dokumentnummer<input value={documentMetadata.document_number} onChange={event=>setDocumentMetadata({...documentMetadata,document_number:event.target.value})}/></label>
@@ -709,8 +770,28 @@ export function Sites(){
       </div>}
       {active==='technik'&&<div className="object-detail-content">
       <h3>Technische Anlagen und Geräte</h3>
-      {selected.devices==null?<p>Keine Berechtigung für den technischen Gerätebestand.</p>:selected.devices.length===0?<p>Keine technischen Anlagen für dieses Objekt erfasst.</p>:<ul>{selected.devices.map(device=><li key={device.id}><strong>{device.name}</strong> · {device.status==='online'?'Aktiv':device.status==='maintenance'?'Wartung':'Offline'}{device.last_seen_at?` · zuletzt gesehen ${new Date(device.last_seen_at).toLocaleString('de-DE')}`:''}</li>)}</ul>}
-      {hasPermission('devices:write')&&<button type="button" onClick={()=>navigate('/devices')}>Anlagenbestand verwalten</button>}
+      {selected.devices==null?<p>Keine Berechtigung für den technischen Gerätebestand.</p>:selected.devices.length===0?<p>Keine technischen Anlagen für dieses Objekt erfasst.</p>:<ul>{selected.devices.map(device=><li key={device.id}><strong>{device.name}</strong>{device.asset_number?` · Anlagen-Nr. ${device.asset_number}`:''}{device.category?` · ${device.category}`:''} · {device.operational_status==='active'?'Aktiv':device.operational_status==='maintenance'?'Wartung':device.operational_status==='fault'?'Störung':device.operational_status==='offline'?'Offline':'Stillgelegt'}{device.serial_number?` · SN ${device.serial_number}`:''}{device.next_maintenance_on?` · nächste Wartung ${new Date(`${device.next_maintenance_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{hasPermission('devices:write')&&<button type="button" onClick={()=>startDeviceEdit(device)}>Anlage bearbeiten</button>}</li>)}</ul>}
+      {hasPermission('devices:write')&&<button type="button" onClick={()=>startDeviceEdit()}>Anlage erfassen</button>}
+      {deviceFormOpen&&<form onSubmit={saveDevice}>
+        <h4>{editingDeviceId?'Anlage bearbeiten':'Neue Anlage erfassen'}</h4>
+        <label>Anlagenbezeichnung<input required value={deviceForm.name} onChange={event=>setDeviceForm({...deviceForm,name:event.target.value})}/></label>
+        <label>Anlagennummer<input value={deviceForm.asset_number} onChange={event=>setDeviceForm({...deviceForm,asset_number:event.target.value})}/></label>
+        <label>Kategorie<select value={deviceForm.category} onChange={event=>setDeviceForm({...deviceForm,category:event.target.value})}><option value="">Kategorie auswählen</option>{['Videoüberwachung','Zutrittskontrolle','Einbruchmeldeanlage','Brandmeldeanlage','Alarmierungssysteme','Funktechnik','Schranken und Tore','Sicherheitstechnik','Sonstige technische Anlagen'].map(category=><option key={category} value={category}>{category}</option>)}</select></label>
+        <label>Hersteller<input value={deviceForm.manufacturer} onChange={event=>setDeviceForm({...deviceForm,manufacturer:event.target.value})}/></label>
+        <label>Modell<input value={deviceForm.model} onChange={event=>setDeviceForm({...deviceForm,model:event.target.value})}/></label>
+        <label>Seriennummer<input value={deviceForm.serial_number} onChange={event=>setDeviceForm({...deviceForm,serial_number:event.target.value})}/></label>
+        <label>Standort<select value={deviceForm.location_id} onChange={event=>setDeviceForm({...deviceForm,location_id:event.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{locationPath(location)}</option>)}</select></label>
+        {hasPermission('employees:read')&&<label>Verantwortlich<select value={deviceForm.responsible_employee_id} onChange={event=>setDeviceForm({...deviceForm,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+        <label>Betriebsstatus<select value={deviceForm.operational_status} onChange={event=>setDeviceForm({...deviceForm,operational_status:event.target.value})}><option value="active">Aktiv</option><option value="maintenance">Wartung</option><option value="fault">Störung</option><option value="offline">Offline</option><option value="decommissioned">Stillgelegt</option></select></label>
+        <label>Installiert am<input type="date" value={deviceForm.installed_on} onChange={event=>setDeviceForm({...deviceForm,installed_on:event.target.value})}/></label>
+        <label>Inbetriebnahme<input type="date" value={deviceForm.commissioned_on} onChange={event=>setDeviceForm({...deviceForm,commissioned_on:event.target.value})}/></label>
+        <label>Letzte Prüfung<input type="date" value={deviceForm.last_inspection_on} onChange={event=>setDeviceForm({...deviceForm,last_inspection_on:event.target.value})}/></label>
+        <label>Nächste Prüfung<input type="date" value={deviceForm.next_inspection_on} onChange={event=>setDeviceForm({...deviceForm,next_inspection_on:event.target.value})}/></label>
+        <label>Wartungsintervall (Tage)<input type="number" min="1" value={deviceForm.maintenance_interval_days} onChange={event=>setDeviceForm({...deviceForm,maintenance_interval_days:Number(event.target.value)})}/></label>
+        <label>Nächste Wartung<input type="date" value={deviceForm.next_maintenance_on} onChange={event=>setDeviceForm({...deviceForm,next_maintenance_on:event.target.value})}/></label>
+        <label>Letzte Wartung<input type="date" value={deviceForm.last_maintenance_on} onChange={event=>setDeviceForm({...deviceForm,last_maintenance_on:event.target.value})}/></label>
+        <button>{editingDeviceId?'Anlage speichern':'Anlage anlegen'}</button><button type="button" onClick={()=>{setEditingDeviceId(null);setDeviceFormOpen(false);setDeviceForm({name:'',asset_number:'',category:'',manufacturer:'',model:'',serial_number:'',location_id:'',responsible_employee_id:'',operational_status:'active',installed_on:'',commissioned_on:'',last_inspection_on:'',next_inspection_on:'',maintenance_interval_days:0,next_maintenance_on:'',last_maintenance_on:''});}}>Abbrechen</button>
+      </form>}
       <h3>Technik und Instandhaltung</h3>
       {selected.maintenance===null?<p>Keine Berechtigung für Wartungseinträge im Wachbuch.</p>:selected.maintenance.length===0?<p>Keine Technik- oder Instandhaltungseinträge vorhanden.</p>:<ul>{selected.maintenance.map(entry=><li key={entry.id}><strong>{entry.priority_name}</strong> · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       {maintenanceReadable&&hasPermission('watchbook:read')&&hasPermission('watchbook:write')&&<form onSubmit={createMaintenanceEntry}>

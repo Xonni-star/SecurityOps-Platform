@@ -135,6 +135,46 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
   }catch(error){next(error);}
 });
 
+dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const documentId=uuid.parse(String(req.params.documentId));
+    const body=z.object({
+      title:z.string().trim().min(1).max(240).optional(),
+      description:z.string().max(4000).nullable().optional(),
+      document_number:z.string().trim().max(100).nullable().optional(),
+      document_type:z.string().trim().max(160).nullable().optional(),
+      responsible_employee_id:uuid.nullable().optional(),
+      location_id:uuid.nullable().optional(),
+      valid_from:z.string().date().nullable().optional(),
+      valid_until:z.string().date().nullable().optional(),
+      review_on:z.string().date().nullable().optional(),
+      approval_status:z.enum(['draft','pending_approval','approved','rejected','archived']).optional(),
+    }).strict().refine(value=>Object.keys(value).length>0).refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from).parse(req.body);
+    const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
+    if(!document)return res.status(404).json({error:'Document not found'});
+    siteAccess(req,document.site_id,'dms:write');
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
+    if(body.responsible_employee_id){
+      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rows[0];
+      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+    }
+    if(body.location_id){
+      const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,document.site_id,body.location_id])).rows[0];
+      if(!location)return res.status(400).json({error:'Object location not found'});
+    }
+    const columns:Record<string,string>={title:'title',description:'description',document_number:'document_number',document_type:'document_type',responsible_employee_id:'responsible_employee_id',location_id:'location_id',valid_from:'valid_from',valid_until:'valid_until',review_on:'review_on',approval_status:'approval_status'};
+    const entries=Object.entries(body);
+    const assignments=entries.map(([key],index)=>`${columns[key]}=$${index+3}`).join(',');
+    const row=(await query(
+      `UPDATE dms_documents SET ${assignments},updated_at=now()
+       WHERE tenant_id=$1 AND id=$2 RETURNING *`,
+      [req.user!.tenantId,documentId,...entries.map(([,value])=>value)],
+    )).rows[0];
+    await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.updated','dms_document',documentId,{changed_fields:Object.keys(body)});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document metadata'});next(error);}
+});
+
 dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.documentId])).rows[0];
