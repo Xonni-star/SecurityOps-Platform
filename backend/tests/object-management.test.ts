@@ -371,6 +371,71 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.location.created')).toBe(true);
   });
 
+  it('updates hierarchy fields only for a location in the authorized site and audits the edit',async()=>{
+    const location='00000000-0000-4000-8000-0000000000de';
+    const employee='00000000-0000-4000-8000-0000000000dd';
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([sessionUser]);
+      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location}]);
+      if(sql.includes('FROM employees WHERE'))return result([{id:employee}]);
+      if(sql.includes('UPDATE object_locations SET'))return result([{id:location,name:'North Lobby',security_level:'high',responsible_employee_id:employee}]);
+      return result([]);
+    });
+    const response=await request(app).patch(`/api/v1/sites/${site}/locations/${location}`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({name:'North Lobby',parent_id:null,security_level:'high',responsible_employee_id:employee});
+    expect(response.status).toBe(200);
+    expect(response.body.name).toBe('North Lobby');
+    const update=queryMock.mock.calls.find(([sql])=>String(sql).includes('UPDATE object_locations SET'));
+    expect(update?.[1]).toEqual([tenant,site,location,null,'North Lobby','high',employee]);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.location.updated')).toBe(true);
+  });
+
+  it('rejects hierarchy cycles and hazard dates that violate the risk review window',async()=>{
+    const location='00000000-0000-4000-8000-0000000000de';
+    const child='00000000-0000-4000-8000-0000000000df';
+    const hazard='00000000-0000-4000-8000-0000000000e0';
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([sessionUser]);
+      if(sql.includes('FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:location}]);
+      if(sql.includes('WITH RECURSIVE descendants'))return result([{id:child}]);
+      if(sql.includes('FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:hazard,due_on:'2026-04-01',review_on:'2026-05-01',likelihood:2,impact:3}]);
+      return result([]);
+    });
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    const cycle=await request(app).patch(`/api/v1/sites/${site}/locations/${location}`)
+      .set('Cookie',cookie).set('x-csrf-token','csrf-value').send({parent_id:child});
+    expect(cycle.status).toBe(400);
+    expect(cycle.body.error).toContain('hierarchy cycle');
+    const invalidDates=await request(app).patch(`/api/v1/sites/${site}/hazards/${hazard}`)
+      .set('Cookie',cookie).set('x-csrf-token','csrf-value').send({review_on:'2026-03-31'});
+    expect(invalidDates.status).toBe(400);
+    expect(invalidDates.body.error).toContain('review_on');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE object_locations SET'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE object_hazards SET'))).toBe(false);
+  });
+
+  it('updates risk records with a recalculated score and audit event',async()=>{
+    const hazard='00000000-0000-4000-8000-0000000000e0';
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([sessionUser]);
+      if(sql.includes('FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3'))return result([{id:hazard,due_on:null,review_on:null,likelihood:2,impact:3}]);
+      if(sql.includes('UPDATE object_hazards SET'))return result([{id:hazard,status:'closed',likelihood:4,impact:3,risk_score:12}]);
+      return result([]);
+    });
+    const response=await request(app).patch(`/api/v1/sites/${site}/hazards/${hazard}`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({status:'closed',likelihood:4});
+    expect(response.status).toBe(200);
+    expect(response.body.risk_score).toBe(12);
+    const update=queryMock.mock.calls.find(([sql])=>String(sql).includes('UPDATE object_hazards SET'));
+    expect(update?.[1]).toEqual([tenant,site,hazard,4,'closed']);
+    const audit=queryMock.mock.calls.find(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='site.hazard.updated');
+    expect(audit?.[1]?.[5]).toEqual(expect.objectContaining({risk_score:12}));
+  });
+
   it('creates an approved instruction and records employee acknowledgement by version',async()=>{
     const instruction='00000000-0000-4000-8000-0000000000df';
     const employee='00000000-0000-4000-8000-0000000000dd';

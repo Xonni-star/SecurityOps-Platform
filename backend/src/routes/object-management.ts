@@ -14,19 +14,24 @@ const relationshipSchema=z.object({
   ends_on:z.coerce.date().nullable().optional(),
   notes:z.string().trim().max(4000).nullable().optional(),
 }).strict();
-const locationSchema=z.object({
+const locationFields=z.object({
   parent_id:uuid.nullable().optional(),
   code:z.string().trim().max(80).nullable().optional(),
   name:nonempty.max(160),
   location_type:z.enum(['building','area','zone']),
   description:z.string().trim().max(4000).nullable().optional(),
-  security_level:z.enum(['unknown','low','medium','high','critical']).default('unknown'),
+  security_level:z.enum(['unknown','low','medium','high','critical']),
   hazard_notes:z.string().trim().max(4000).nullable().optional(),
   access_rules:z.string().trim().max(4000).nullable().optional(),
   responsible_employee_id:uuid.nullable().optional(),
+  sort_order:z.number().int().min(0).max(100000),
+}).strict();
+const locationSchema=locationFields.extend({
+  security_level:z.enum(['unknown','low','medium','high','critical']).default('unknown'),
   sort_order:z.number().int().min(0).max(100000).default(0),
 }).strict();
-const hazardSchema=z.object({
+const locationPatchSchema=locationFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
+const hazardFields=z.object({
   location_id:uuid.nullable().optional(),
   title:nonempty.max(160),
   category:z.enum(['burglary','theft','vandalism','fire','robbery','unauthorized_access','sabotage','conflict','technical','environmental','other']),
@@ -38,8 +43,11 @@ const hazardSchema=z.object({
   responsible_employee_id:uuid.nullable().optional(),
   due_on:z.string().date().nullable().optional(),
   review_on:z.string().date().nullable().optional(),
-  status:z.enum(['open','mitigated','accepted','closed']).default('open'),
-}).strict().refine(value=>!value.due_on||!value.review_on||value.review_on>=value.due_on,{message:'review_on must be on or after due_on'});
+  status:z.enum(['open','mitigated','accepted','closed']),
+}).strict();
+const hazardSchema=hazardFields.extend({status:z.enum(['open','mitigated','accepted','closed']).default('open')}).strict()
+  .refine(value=>!value.due_on||!value.review_on||value.review_on>=value.due_on,{message:'review_on must be on or after due_on'});
+const hazardPatchSchema=hazardFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
 const instructionSchema=z.object({
   location_id:uuid.nullable().optional(),
   title:nonempty.max(200),
@@ -51,6 +59,14 @@ const instructionSchema=z.object({
   valid_until:z.string().date().nullable().optional(),
   supersedes_id:uuid.nullable().optional(),
 }).strict().refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from,{message:'valid_until must be on or after valid_from'});
+
+function patchAssignments<T extends object>(body:T,columns:Record<keyof T,string>,firstParameter:number){
+  const entries=Object.entries(body);
+  return {
+    assignments:entries.map(([key],index)=>`${columns[key as keyof T]}=$${firstParameter+index}`).join(','),
+    values:entries.map(([,value])=>value),
+  };
+}
 
 export const objectManagementRouter=Router();
 
@@ -385,6 +401,43 @@ objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requi
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid location'});next(error);}
 });
 
+objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id)); const locationId=uuid.parse(String(req.params.locationId)); const body=locationPatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
+    const current=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,locationId])).rows[0];
+    if(!current)return res.status(404).json({error:'Location not found'});
+    if(body.parent_id){
+      const parent=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.parent_id])).rows[0];
+      if(!parent)return res.status(400).json({error:'Parent location not found in site'});
+      const cycle=(await query(
+        `WITH RECURSIVE descendants AS (
+           SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND parent_id=$3
+          UNION
+           SELECT child.id FROM object_locations child JOIN descendants d ON child.parent_id=d.id
+           WHERE child.tenant_id=$1 AND child.site_id=$2
+         )
+         SELECT 1 FROM descendants WHERE id=$4`,
+        [tenantId,siteId,locationId,body.parent_id],
+      )).rows[0];
+      if(body.parent_id===locationId||cycle)return res.status(400).json({error:'Parent location would create a hierarchy cycle'});
+    }
+    if(body.responsible_employee_id){
+      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
+      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+    }
+    const columns:Record<keyof typeof body,string>={parent_id:'parent_id',code:'code',name:'name',location_type:'location_type',description:'description',security_level:'security_level',hazard_notes:'hazard_notes',access_rules:'access_rules',responsible_employee_id:'responsible_employee_id',sort_order:'sort_order'};
+    const patch=patchAssignments(body,columns,4);
+    const row=(await query(
+      `UPDATE object_locations SET ${patch.assignments},updated_at=now()
+       WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING *`,
+      [tenantId,siteId,locationId,...patch.values],
+    )).rows[0];
+    if(!row)return res.status(404).json({error:'Location not found'});
+    await recordAudit(tenantId,req.user!.id,'site.location.updated','object_locations',locationId,{site_id:siteId,changed_fields:Object.keys(body)});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid location'});next(error);}
+});
+
 objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=hazardSchema.parse(req.body); const tenantId=req.user!.tenantId;
@@ -403,6 +456,35 @@ objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,require
       [tenantId,siteId,body.location_id??null,body.title,body.category,body.description,body.likelihood,body.impact,body.protective_measures??null,body.required_actions??null,body.responsible_employee_id??null,body.due_on??null,body.review_on??null,body.status,req.user!.id])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.hazard.created','object_hazards',row.id,{site_id:siteId,risk_score:body.likelihood*body.impact});
     res.status(201).json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
+});
+
+objectManagementRouter.patch('/sites/:id/hazards/:hazardId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id)); const hazardId=uuid.parse(String(req.params.hazardId)); const body=hazardPatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
+    const current=(await query('SELECT id,due_on,review_on,likelihood,impact FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,hazardId])).rows[0];
+    if(!current)return res.status(404).json({error:'Hazard not found'});
+    if(body.location_id){
+      const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.location_id])).rows[0];
+      if(!location)return res.status(400).json({error:'Location not found in site'});
+    }
+    if(body.responsible_employee_id){
+      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.responsible_employee_id])).rows[0];
+      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+    }
+    const dueOn=body.due_on===undefined?(current.due_on?String(current.due_on).slice(0,10):null):body.due_on;
+    const reviewOn=body.review_on===undefined?(current.review_on?String(current.review_on).slice(0,10):null):body.review_on;
+    if(dueOn&&reviewOn&&reviewOn<dueOn)return res.status(400).json({error:'review_on must be on or after due_on'});
+    const columns:Record<keyof typeof body,string>={location_id:'location_id',title:'title',category:'category',description:'description',likelihood:'likelihood',impact:'impact',protective_measures:'protective_measures',required_actions:'required_actions',responsible_employee_id:'responsible_employee_id',due_on:'due_on',review_on:'review_on',status:'status'};
+    const patch=patchAssignments(body,columns,4);
+    const row=(await query(
+      `UPDATE object_hazards SET ${patch.assignments},updated_at=now()
+       WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING *`,
+      [tenantId,siteId,hazardId,...patch.values],
+    )).rows[0];
+    if(!row)return res.status(404).json({error:'Hazard not found'});
+    await recordAudit(tenantId,req.user!.id,'site.hazard.updated','object_hazards',hazardId,{site_id:siteId,changed_fields:Object.keys(body),risk_score:(body.likelihood??Number(current.likelihood))*(body.impact??Number(current.impact))});
+    res.json(row);
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
 });
 

@@ -21,12 +21,14 @@ type CustomerTask={id:string;customer_id:string;customer_name:string;title:strin
 type MaintenanceEntry={id:string;created_at:string;revision_no:number;content:string;status:string;priority_name:string};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
+type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
+type ObjectHazard={id:string;title:string;category:string;description:string;likelihood:number;impact:number;risk_score:number;protective_measures:string|null;required_actions:string|null;responsible_employee_id:string|null;due_on:string|null;review_on:string|null;status:string;location_id:string|null;location_name:string|null;responsible_employee_name:string|null};
 type Context={
   site:Site&{object_manager_name?:string|null;operations_manager_name?:string|null};
   customers:{customer_id:string;customer_name:string;relationship_type:string;relationship_status:string}[]|null;
   contracts:{id:string;contract_number:string;customer_name:string;status:string}[]|null;
-  locations:{id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;responsible_employee_name?:string|null}[];
-  hazards:{id:string;title:string;risk_score:number;status:string;location_name:string|null;responsible_employee_name?:string|null}[];
+  locations:ObjectLocation[];
+  hazards:ObjectHazard[];
   instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;location_name?:string|null}[];
   journal:{id:string;created_at:string;revision_no:number;content:string;status:string;category_name:string;priority_name:string}[]|null;
   staffing:StaffingAssignment[]|null;
@@ -44,7 +46,10 @@ type Context={
 };
 const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',active:'Aktiv',restricted:'Eingeschränkt',temporarily_closed:'Temporär geschlossen',decommissioned:'Stillgelegt',archived:'Archiviert'};
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
+const hazardCategories:Record<string,string>={burglary:'Einbruch',theft:'Diebstahl',vandalism:'Vandalismus',fire:'Brand',robbery:'Raub',unauthorized_access:'Unbefugter Zutritt',sabotage:'Sabotage',conflict:'Konflikt',technical:'Technisch',environmental:'Umwelt',other:'Sonstige'};
 const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown'};
+const emptyLocation={name:'',location_type:'building',code:'',parent_id:'',responsible_employee_id:'',security_level:'unknown',description:'',hazard_notes:'',access_rules:'',sort_order:0};
+const emptyHazard={title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:'',required_actions:''};
 type SiteForm=typeof emptySite;
 const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['qualifikationen','Qualifikationen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['einsaetze','Einsätze & Alarme'],['berichte','Berichte'],['aufgaben','Aufgaben & Wartung'],['uebergaben','Übergaben'],['journal','Journal']] as const;
 
@@ -77,8 +82,10 @@ export function Sites(){
   const [contractCustomer,setContractCustomer]=useState('');
   const [contractId,setContractId]=useState('');
   const [availableContracts,setAvailableContracts]=useState<{id:string;contract_number:string;sites:{id:string}[]}[]>([]);
-  const [locationForm,setLocationForm]=useState({name:'',location_type:'building',code:'',parent_id:'',responsible_employee_id:''});
-  const [hazardForm,setHazardForm]=useState({title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:'',required_actions:''});
+  const [locationForm,setLocationForm]=useState(emptyLocation);
+  const [editingLocation,setEditingLocation]=useState<string|null>(null);
+  const [hazardForm,setHazardForm]=useState(emptyHazard);
+  const [editingHazard,setEditingHazard]=useState<string|null>(null);
   const [instructionForm,setInstructionForm]=useState({title:'',content:'',status:'draft',version:1,requires_acknowledgement:false,location_id:'',valid_from:'',valid_until:''});
   const [supersedesId,setSupersedesId]=useState('');
   const [ackEmployee,setAckEmployee]=useState('');
@@ -176,13 +183,29 @@ export function Sites(){
   }
   async function createLocation(event:FormEvent){
     event.preventDefault();if(!selected)return;
-    try{    await api(`/sites/${selected.site.id}/locations`,{method:'POST',body:JSON.stringify({...locationForm,code:locationForm.code||null,parent_id:locationForm.parent_id||null,responsible_employee_id:locationForm.responsible_employee_id||null})});setLocationForm({name:'',location_type:'building',code:'',parent_id:'',responsible_employee_id:''});await refreshContext();setError('');}
+    try{
+      const body={...locationForm,code:locationForm.code.trim()||null,parent_id:locationForm.parent_id||null,responsible_employee_id:locationForm.responsible_employee_id||null,description:locationForm.description.trim()||null,hazard_notes:locationForm.hazard_notes.trim()||null,access_rules:locationForm.access_rules.trim()||null};
+      await api(editingLocation?`/sites/${selected.site.id}/locations/${editingLocation}`:`/sites/${selected.site.id}/locations`,{method:editingLocation?'PATCH':'POST',body:JSON.stringify(body)});
+      setLocationForm(emptyLocation);setEditingLocation(null);await refreshContext();setError('');
+    }
     catch(e){setError((e as Error).message);}
   }
   async function createHazard(event:FormEvent){
     event.preventDefault();if(!selected)return;
-    try{    await api(`/sites/${selected.site.id}/hazards`,{method:'POST',body:JSON.stringify({...hazardForm,location_id:hazardForm.location_id||null,responsible_employee_id:hazardForm.responsible_employee_id||null,due_on:hazardForm.due_on||null,review_on:hazardForm.review_on||null})});setHazardForm({title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:'',required_actions:''});await refreshContext();setError('');}
+    try{
+      const body={...hazardForm,location_id:hazardForm.location_id||null,responsible_employee_id:hazardForm.responsible_employee_id||null,due_on:hazardForm.due_on||null,review_on:hazardForm.review_on||null};
+      await api(editingHazard?`/sites/${selected.site.id}/hazards/${editingHazard}`:`/sites/${selected.site.id}/hazards`,{method:editingHazard?'PATCH':'POST',body:JSON.stringify(body)});
+      setHazardForm(emptyHazard);setEditingHazard(null);await refreshContext();setError('');
+    }
     catch(e){setError((e as Error).message);}
+  }
+  function editLocation(location:ObjectLocation){
+    setEditingLocation(location.id);
+    setLocationForm({name:location.name,location_type:location.location_type,code:location.code??'',parent_id:location.parent_id??'',responsible_employee_id:location.responsible_employee_id??'',security_level:location.security_level,description:location.description??'',hazard_notes:location.hazard_notes??'',access_rules:location.access_rules??'',sort_order:location.sort_order});
+  }
+  function editHazard(hazard:ObjectHazard){
+    setEditingHazard(hazard.id);
+    setHazardForm({title:hazard.title,category:hazard.category,description:hazard.description,likelihood:hazard.likelihood,impact:hazard.impact,location_id:hazard.location_id??'',responsible_employee_id:hazard.responsible_employee_id??'',due_on:hazard.due_on??'',review_on:hazard.review_on??'',status:hazard.status,protective_measures:hazard.protective_measures??'',required_actions:hazard.required_actions??''});
   }
   async function createInstruction(event:FormEvent){
     event.preventDefault();if(!selected)return;
@@ -254,14 +277,43 @@ export function Sites(){
       </div>}
       {active==='struktur'&&<div className="employee-detail-content">
       <h3>Gebäude, Bereiche und Zonen</h3>
-      {writable&&<form onSubmit={createLocation}><input placeholder="Bezeichnung" value={locationForm.name} onChange={e=>setLocationForm({...locationForm,name:e.target.value})} required/><input placeholder="Code" value={locationForm.code} onChange={e=>setLocationForm({...locationForm,code:e.target.value})}/><select aria-label="Strukturtyp" value={locationForm.location_type} onChange={e=>setLocationForm({...locationForm,location_type:e.target.value})}><option value="building">Gebäude</option><option value="area">Bereich</option><option value="zone">Zone</option></select><select aria-label="Übergeordnete Struktur" value={locationForm.parent_id} onChange={e=>setLocationForm({...locationForm,parent_id:e.target.value})}><option value="">Keine übergeordnete Struktur</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select>{hasPermission('employees:read')&&<select aria-label="Verantwortliche Person" value={locationForm.responsible_employee_id} onChange={e=>setLocationForm({...locationForm,responsible_employee_id:e.target.value})}><option value="">Keine verantwortliche Person</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select>}<button>Struktur anlegen</button></form>}
-      <ul>{selected.locations.map(location=><li key={location.id}>{location.parent_id?`${selected.locations.find(parent=>parent.id===location.parent_id)?.name??'–'} / `:''}{location.code||'–'} · {location.name} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}</li>)}</ul>
+      {writable&&<form onSubmit={createLocation}>
+        <label>Bezeichnung<input value={locationForm.name} onChange={e=>setLocationForm({...locationForm,name:e.target.value})} required/></label>
+        <label>Code<input value={locationForm.code} onChange={e=>setLocationForm({...locationForm,code:e.target.value})}/></label>
+        <label>Strukturtyp<select aria-label="Strukturtyp" value={locationForm.location_type} onChange={e=>setLocationForm({...locationForm,location_type:e.target.value})}><option value="building">Gebäude</option><option value="area">Bereich</option><option value="zone">Zone</option></select></label>
+        <label>Übergeordnete Struktur<select aria-label="Übergeordnete Struktur" value={locationForm.parent_id} onChange={e=>setLocationForm({...locationForm,parent_id:e.target.value})}><option value="">Keine übergeordnete Struktur</option>{selected.locations.filter(location=>location.id!==editingLocation).map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+        <label>Sicherheitsstufe<select aria-label="Sicherheitsstufe" value={locationForm.security_level} onChange={e=>setLocationForm({...locationForm,security_level:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+        {hasPermission('employees:read')&&<label>Verantwortliche Person<select aria-label="Verantwortliche Person" value={locationForm.responsible_employee_id} onChange={e=>setLocationForm({...locationForm,responsible_employee_id:e.target.value})}><option value="">Keine verantwortliche Person</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+        <label>Beschreibung<textarea value={locationForm.description} onChange={e=>setLocationForm({...locationForm,description:e.target.value})}/></label>
+        <label>Gefahrenhinweise<textarea value={locationForm.hazard_notes} onChange={e=>setLocationForm({...locationForm,hazard_notes:e.target.value})}/></label>
+        <label>Zutrittsregeln<textarea value={locationForm.access_rules} onChange={e=>setLocationForm({...locationForm,access_rules:e.target.value})}/></label>
+        <label>Sortierung<input type="number" min="0" max="100000" value={locationForm.sort_order} onChange={e=>setLocationForm({...locationForm,sort_order:Number(e.target.value)})}/></label>
+        <button>{editingLocation?'Struktur speichern':'Struktur anlegen'}</button>
+        {editingLocation&&<button type="button" onClick={()=>{setEditingLocation(null);setLocationForm(emptyLocation);}}>Abbrechen</button>}
+      </form>}
+      <ul>{selected.locations.map(location=><li key={location.id}>{location.parent_id?`${selected.locations.find(parent=>parent.id===location.parent_id)?.name??'–'} / `:''}{location.code||'–'} · {location.name} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editLocation(location)}>Bearbeiten</button>}</li>)}</ul>
       </div>}
       {active==='gefaehrdungen'&&<div className="employee-detail-content">
       <h3>Gefährdungen</h3>
-      {writable&&<form onSubmit={createHazard}><label>Titel<input placeholder="Gefährdung" value={hazardForm.title} onChange={e=>setHazardForm({...hazardForm,title:e.target.value})} required/></label><label>Beschreibung<input placeholder="Beschreibung" value={hazardForm.description} onChange={e=>setHazardForm({...hazardForm,description:e.target.value})} required/></label><label>Kategorie<select aria-label="Gefährdungskategorie" value={hazardForm.category} onChange={e=>setHazardForm({...hazardForm,category:e.target.value})}><option value="other">Sonstige</option><option value="fire">Brand</option><option value="burglary">Einbruch</option><option value="unauthorized_access">Unbefugter Zutritt</option><option value="technical">Technische Störung</option></select></label><label>Status<select aria-label="Gefährdungsstatus" value={hazardForm.status} onChange={e=>setHazardForm({...hazardForm,status:e.target.value})}><option value="open">Offen</option><option value="mitigated">Gemindert</option><option value="accepted">Akzeptiert</option><option value="closed">Geschlossen</option></select></label><label>Bereich<select aria-label="Gefährdungsbereich" value={hazardForm.location_id} onChange={e=>setHazardForm({...hazardForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Eintritt <input type="number" min="1" max="5" value={hazardForm.likelihood} onChange={e=>setHazardForm({...hazardForm,likelihood:Number(e.target.value)})}/></label><label>Auswirkung <input type="number" min="1" max="5" value={hazardForm.impact} onChange={e=>setHazardForm({...hazardForm,impact:Number(e.target.value)})}/></label>{hasPermission('employees:read')&&<label>Verantwortlich<select aria-label="Gefährdungsverantwortliche Person" value={hazardForm.responsible_employee_id} onChange={e=>setHazardForm({...hazardForm,responsible_employee_id:e.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}<label>Fällig am<input type="date" value={hazardForm.due_on} onChange={e=>setHazardForm({...hazardForm,due_on:e.target.value})}/></label><label>Überprüfung am<input type="date" value={hazardForm.review_on} onChange={e=>setHazardForm({...hazardForm,review_on:e.target.value})}/></label><input placeholder="Schutzmaßnahmen" value={hazardForm.protective_measures} onChange={e=>setHazardForm({...hazardForm,protective_measures:e.target.value})}/><input placeholder="Erforderliche Maßnahmen" value={hazardForm.required_actions} onChange={e=>setHazardForm({...hazardForm,required_actions:e.target.value})}/><button>Gefährdung erfassen</button></form>}
+      {writable&&<form onSubmit={createHazard}>
+        {editingHazard&&<h4>Gefährdung bearbeiten</h4>}
+        <label>Titel<input placeholder="Gefährdung" value={hazardForm.title} onChange={e=>setHazardForm({...hazardForm,title:e.target.value})} required/></label>
+        <label>Beschreibung<textarea placeholder="Beschreibung" value={hazardForm.description} onChange={e=>setHazardForm({...hazardForm,description:e.target.value})} required/></label>
+        <label>Kategorie<select aria-label="Gefährdungskategorie" value={hazardForm.category} onChange={e=>setHazardForm({...hazardForm,category:e.target.value})}>{Object.entries(hazardCategories).map(([category,label])=><option key={category} value={category}>{label}</option>)}</select></label>
+        <label>Status<select aria-label="Gefährdungsstatus" value={hazardForm.status} onChange={e=>setHazardForm({...hazardForm,status:e.target.value})}><option value="open">Offen</option><option value="mitigated">Gemindert</option><option value="accepted">Akzeptiert</option><option value="closed">Geschlossen</option></select></label>
+        <label>Bereich<select aria-label="Gefährdungsbereich" value={hazardForm.location_id} onChange={e=>setHazardForm({...hazardForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+        <label>Eintritt<input type="number" min="1" max="5" value={hazardForm.likelihood} onChange={e=>setHazardForm({...hazardForm,likelihood:Number(e.target.value)})}/></label>
+        <label>Auswirkung<input type="number" min="1" max="5" value={hazardForm.impact} onChange={e=>setHazardForm({...hazardForm,impact:Number(e.target.value)})}/></label>
+        {hasPermission('employees:read')&&<label>Verantwortlich<select aria-label="Gefährdungsverantwortliche Person" value={hazardForm.responsible_employee_id} onChange={e=>setHazardForm({...hazardForm,responsible_employee_id:e.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+        <label>Fällig am<input type="date" value={hazardForm.due_on} onChange={e=>setHazardForm({...hazardForm,due_on:e.target.value})}/></label>
+        <label>Überprüfung am<input type="date" value={hazardForm.review_on} onChange={e=>setHazardForm({...hazardForm,review_on:e.target.value})}/></label>
+        <label>Schutzmaßnahmen<textarea value={hazardForm.protective_measures} onChange={e=>setHazardForm({...hazardForm,protective_measures:e.target.value})}/></label>
+        <label>Erforderliche Maßnahmen<textarea value={hazardForm.required_actions} onChange={e=>setHazardForm({...hazardForm,required_actions:e.target.value})}/></label>
+        <button>{editingHazard?'Gefährdung speichern':'Gefährdung erfassen'}</button>
+        {editingHazard&&<button type="button" onClick={()=>{setEditingHazard(null);setHazardForm(emptyHazard);}}>Abbrechen</button>}
+      </form>}
       <table aria-label="Risikomatrix"><caption>Erfasste Gefährdungen nach Eintritt und Auswirkung</caption><thead><tr><th scope="col">Eintritt / Auswirkung</th>{[1,2,3,4,5].map(impact=><th scope="col" key={impact}>{impact}</th>)}</tr></thead><tbody>{[5,4,3,2,1].map(likelihood=><tr key={likelihood}><th scope="row">{likelihood}</th>{[1,2,3,4,5].map(impact=>{const count=selected.hazards.filter(hazard=>hazard.risk_score===likelihood*impact).length;return <td key={impact} aria-label={`${likelihood} mal ${impact}: ${count} Gefährdungen`}>{count}</td>;})}</tr>)}</tbody></table>
-      <ul>{selected.hazards.map(hazard=><li key={hazard.id}>{hazard.title} · Risiko {hazard.risk_score} · {hazard.status}{hazard.location_name?` · ${hazard.location_name}`:''} · Verantwortlich: {hazard.responsible_employee_name||'–'}</li>)}</ul>
+      <ul>{selected.hazards.map(hazard=><li key={hazard.id}>{hazard.title} · Risiko {hazard.risk_score} · {hazard.status}{hazard.location_name?` · ${hazard.location_name}`:''} · Verantwortlich: {hazard.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editHazard(hazard)}>Bearbeiten</button>}</li>)}</ul>
       </div>}
       {active==='anweisungen'&&<div className="employee-detail-content">
       <h3>Dienstanweisungen</h3>

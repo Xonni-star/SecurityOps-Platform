@@ -173,7 +173,7 @@ database restore.
 
 ## Phase 1, step 2: object security hub
 
-Migration `035_object_security_hub.sql` is additive. It keeps `sites` as the
+Migration `038_object_security_hub.sql` is additive. It keeps `sites` as the
 canonical object record and adds tenant/RLS-protected buildings, areas and
 zones, explainable hazard assessments with a persisted likelihood x impact
 score, and versioned site instructions with optional employee
@@ -202,6 +202,12 @@ independent read permissions. Task creation/completion reuses the audited
 customer-task endpoints; maintenance remains append-only watchbook evidence.
 The journal now includes the latest revision and category/priority metadata.
 These integrations add no schema or parallel workflow.
+
+Object locations and hazard assessments can be edited through site-scoped,
+CSRF-protected and audited updates. Location edits validate same-site parents
+and reject hierarchy cycles; hazard edits validate same-site references and
+the due/review date relationship. The existing tables and generated risk score
+are sufficient, so these write flows require no migration.
 
 Current or future site-assigned employees' qualifications and their computed
 validity state are exposed only when both employee and qualification read

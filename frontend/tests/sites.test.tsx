@@ -59,6 +59,44 @@ describe('Objektübersicht',()=>{
     expect(screen.getByRole('heading',{name:'Dienstanweisungen'})).toBeTruthy();
   });
 
+  it('edits object hierarchy through the site-scoped API',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],
+      locations:[{id:'location-1',parent_id:null,name:'Main building',code:'B1',location_type:'building',security_level:'medium',description:'Original description',hazard_notes:null,access_rules:'Badge required',responsible_employee_id:null,responsible_employee_name:null,sort_order:0}],
+      hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:options?.method==='PATCH'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gebäude & Bereiche'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Bearbeiten'}));
+    fireEvent.change(screen.getByLabelText('Bezeichnung'),{target:{value:'North building'}});
+    fireEvent.change(screen.getByLabelText('Sicherheitsstufe'),{target:{value:'high'}});
+    fireEvent.click(screen.getByRole('button',{name:'Struktur speichern'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/locations/location-1',expect.objectContaining({method:'PATCH'})));
+    const update=apiMock.mock.calls.find(([path,options])=>path==='/sites/0/locations/location-1'&&options?.method==='PATCH')!;
+    expect(JSON.parse(update[1].body)).toEqual(expect.objectContaining({name:'North building',security_level:'high',parent_id:null}));
+  });
+
+  it('edits risk assessment fields and status through the site-scoped API',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],
+      hazards:[{id:'hazard-1',title:'Loading bay fire risk',category:'fire',description:'Original risk',likelihood:2,impact:3,risk_score:6,protective_measures:'Extinguishers',required_actions:'Inspect monthly',responsible_employee_id:null,due_on:'2026-12-01',review_on:'2026-12-15',status:'open',location_id:null,location_name:null,responsible_employee_name:null}],
+      instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:options?.method==='PATCH'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Gefährdungen'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Bearbeiten'}));
+    fireEvent.change(screen.getByLabelText('Beschreibung'),{target:{value:'Updated risk description'}});
+    fireEvent.change(screen.getByLabelText('Status'),{target:{value:'mitigated'}});
+    fireEvent.click(screen.getByRole('button',{name:'Gefährdung speichern'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/hazards/hazard-1',expect.objectContaining({method:'PATCH'})));
+    const update=apiMock.mock.calls.find(([path,options])=>path==='/sites/0/hazards/hazard-1'&&options?.method==='PATCH')!;
+    expect(JSON.parse(update[1].body)).toEqual(expect.objectContaining({description:'Updated risk description',status:'mitigated',likelihood:2,impact:3}));
+  });
+
   it('shows real object staffing assignments and upcoming duty shifts',async()=>{
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/sites')return sites.slice(0,1);
