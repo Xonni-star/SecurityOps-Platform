@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {MemoryRouter,Route,Routes} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
 vi.mock('../src/lib/api',()=>({api:apiMock,hasPermission:()=>true}));
@@ -10,11 +11,12 @@ const sites=Array.from({length:12},(_,index)=>({
   id:String(index),name:`Objekt ${String(index+1).padStart(2,'0')}`,site_number:`S${index+1}`,address:'Berlin',status:index===0?'active':'planning',security_classification:'unknown',
 }));
 beforeEach(()=>{cleanup();apiMock.mockReset();});
+const renderSites=()=>render(<MemoryRouter initialEntries={['/sites']}><Routes><Route path="/sites" element={<Sites/>}/><Route path="/sites/:siteId" element={<Sites/>}/><Route path="/sites/:siteId/:section" element={<Sites/>}/></Routes></MemoryRouter>);
 
 describe('Objektübersicht',()=>{
   it('filters, sorts and paginates actual site data',async()=>{
     apiMock.mockResolvedValue(sites);
-    render(<Sites/>);
+    renderSites();
     expect(await screen.findByText('12 Objekte · Seite 1 von 2')).toBeTruthy();
     expect(screen.queryByRole('button',{name:'Objekt 12'})).toBeNull();
     fireEvent.click(screen.getByRole('button',{name:'Weiter'}));
@@ -30,7 +32,7 @@ describe('Objektübersicht',()=>{
 
   it('saves cleared optional site fields as null',async()=>{
     apiMock.mockImplementation(async(_path:string,options?:RequestInit)=>options?.method==='PATCH'?{}:sites.slice(0,1));
-    render(<Sites/>);
+    renderSites();
     const row=(await screen.findByRole('button',{name:'Objekt 01'})).closest('tr')!;
     fireEvent.click(within(row).getByRole('button',{name:'Bearbeiten'}));
     fireEvent.change(screen.getByLabelText('Objektnummer'),{target:{value:''}});
@@ -43,13 +45,16 @@ describe('Objektübersicht',()=>{
   it('retains the existing object context and distinguishes restricted journal access',async()=>{
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/sites')return sites.slice(0,1);
-      if(path==='/customers')return [];
+      if(path==='/customers'||path==='/employees')return [];
       return {site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:null};
     });
-    render(<Sites/>);
+    renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
     expect(await screen.findByText('Keine Berechtigung für das Wachbuch.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Gefährdungen'}));
     expect(screen.getByRole('heading',{name:'Gefährdungen'})).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'Dienstanweisungen'}));
     expect(screen.getByRole('heading',{name:'Dienstanweisungen'})).toBeTruthy();
   });
 });

@@ -60,6 +60,8 @@ export default function App(){
         <Route path="/customers/:customerId" element={<CustomerDetail/>}/>
         <Route path="/customers/:customerId/:section" element={<CustomerDetail/>}/>
         <Route path="/sites" element={<Sites/>}/>
+        <Route path="/sites/:siteId" element={<Sites/>}/>
+        <Route path="/sites/:siteId/:section" element={<Sites/>}/>
         <Route path="/devices" element={<Resource name="devices" fields={['name','status','site_id']}/>}/>
         <Route path="/alarms" element={<Operations/>}/>
         <Route path="/patrols" element={<Patrols/>}/>
