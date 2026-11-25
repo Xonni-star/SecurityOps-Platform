@@ -34,9 +34,51 @@ describe('object management',()=>{
   it('keeps object context behind tenant and permission checks',async()=>{
     const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:[]}));
+    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null}));
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(true);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM contract_sites'))).toBe(true);
+  });
+
+  it('rejects a site-scoped user outside their assigned sites before reading or writing',async()=>{
+    const scoped={...sessionUser,permission_grants:[{code:'sites:read',scope:'site'},{code:'sites:write',scope:'site'}],site_ids:[]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    const read=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    const write=await request(app).post(`/api/v1/sites/${site}/hazards`)
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({title:'Fire',category:'fire',description:'Risk',likelihood:1,impact:1});
+    expect(read.status).toBe(403);
+    expect(write.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM sites'))).toBe(false);
+  });
+
+  it('requires ownership for own-scoped object context',async()=>{
+    const scoped={...sessionUser,permission_grants:[{code:'sites:read',scope:'own'}]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM resource_owners'))).toBe(true);
+  });
+
+  it('does not expose CRM data through a narrower customer permission',async()=>{
+    const scoped={...sessionUser,permission_grants:[{code:'customers:read',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(false);
+  });
+
+  it('returns journal entries only with watchbook permission for the site',async()=>{
+    const scoped={...sessionUser,permission_grants:[{code:'watchbook:read',scope:'site'}],site_ids:[site]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM watchbook_entries'))return result([{id:'entry'}]);
+      return result([]);
+    });
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.journal).toEqual([{id:'entry'}]);
   });
 
   it('does not create a CRM link for a customer outside the tenant',async()=>{

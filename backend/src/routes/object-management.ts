@@ -1,8 +1,9 @@
-import {Router} from 'express';
+import {Router,type RequestHandler} from 'express';
 import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
+import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
@@ -53,12 +54,32 @@ const instructionSchema=z.object({
 
 export const objectManagementRouter=Router();
 
+function requireSiteScope(permission:string):RequestHandler{
+  return async(req,res,next)=>{
+    try{
+      const siteId=uuid.parse(String(req.params.id));
+      const user=req.user!;
+      const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+      const scope=effectivePermissionScope(grants,permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+      if(!scope)return res.status(403).json({error:'Insufficient permissions'});
+      if(scope==='own'){
+        const owner=await query('SELECT 1 FROM resource_owners WHERE tenant_id=$1 AND resource=$2 AND resource_id=$3 AND user_id=$4',[user.tenantId,'sites',siteId,user.id]);
+        if(!owner.rowCount)return res.status(403).json({error:'Permission scope does not include this site'});
+      }else if(!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId})){
+        return res.status(403).json({error:'Permission scope does not include this site'});
+      }
+      next();
+    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
+  };
+}
+
 objectManagementRouter.get(
   '/sites/:id/object-context',
   requireAuth,
   requirePermission('sites:read',{allowedScopes:['tenant','site','own','system']}),
-  requirePermission('customers:read',{allowedScopes:['tenant','site','own','system']}),
-  requirePermission('contracts:read',{allowedScopes:['tenant','site','own','system']}),
+  requirePermission('customers:read'),
+  requirePermission('contracts:read'),
+  requireSiteScope('sites:read'),
   async(req,res,next)=>{
     try{
       const id=uuid.parse(String(req.params.id));
@@ -112,17 +133,21 @@ objectManagementRouter.get(
          ORDER BY i.title,i.version DESC`,
         [req.user!.tenantId,id],
       )).rows;
-      const journal=(await query(
+      const user=req.user!;
+      const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+      const watchbookScope=effectivePermissionScope(grants,'watchbook:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+      const canReadWatchbook=watchbookScope&&canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},watchbookScope,{tenantId:user.tenantId,siteId:id});
+      const journal=canReadWatchbook?(await query(
         `SELECT id,site_id,created_by,created_at,client_entry_id
          FROM watchbook_entries WHERE tenant_id=$1 AND site_id=$2 ORDER BY created_at DESC LIMIT 20`,
-        [req.user!.tenantId,id],
-      )).rows;
+        [user.tenantId,id],
+      )).rows:null;
       res.json({site,customers,contracts,locations,hazards,instructions,journal});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );
 
-objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=locationSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
@@ -143,7 +168,7 @@ objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requi
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid location'});next(error);}
 });
 
-objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=hazardSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
@@ -164,7 +189,7 @@ objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,require
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
 });
 
-objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=instructionSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
@@ -186,7 +211,7 @@ objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,re
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid instruction'});next(error);}
 });
 
-objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgements',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgements',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId));
     const body=z.object({employee_id:uuid}).strict().parse(req.body); const tenantId=req.user!.tenantId;
@@ -206,7 +231,8 @@ objectManagementRouter.post(
   requireAuth,
   requireCsrf,
   requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),
-  requirePermission('customers:write',{allowedScopes:['tenant','site','system']}),
+  requirePermission('customers:write'),
+  requireSiteScope('sites:write'),
   async(req,res,next)=>{
     try{
       const siteId=uuid.parse(String(req.params.id));
@@ -236,7 +262,8 @@ objectManagementRouter.delete(
   requireAuth,
   requireCsrf,
   requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),
-  requirePermission('customers:write',{allowedScopes:['tenant','site','system']}),
+  requirePermission('customers:write'),
+  requireSiteScope('sites:write'),
   async(req,res,next)=>{
     try{
       const siteId=uuid.parse(String(req.params.id));

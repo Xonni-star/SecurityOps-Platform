@@ -52,9 +52,10 @@ export function Layout(){
   })).filter(group=>group.items.length);
   const employeeRoute=location.pathname==='/employees'||location.pathname.startsWith('/employees/');
   const customerRoute=location.pathname==='/customers'||location.pathname.startsWith('/customers/');
+  const siteRoute=location.pathname==='/sites';
   const title=employeeRoute?'Mitarbeiter':customerRoute?'Kunden':visible.flatMap(group=>group.items).find(([path])=>path===location.pathname)?.[1]??'SecurityOps';
   const description=employeeRoute?descriptions['/employees']:customerRoute?descriptions['/customers']:descriptions[location.pathname];
-  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':customerRoute?'SECURITYOPS / VERWALTUNG / KUNDEN':'SECURITYOPS / ARBEITSBEREICH';
+  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':customerRoute?'SECURITYOPS / VERWALTUNG / KUNDEN':siteRoute?'SECURITYOPS / VERWALTUNG / OBJEKTE':'SECURITYOPS / ARBEITSBEREICH';
 
   return <div className="app-shell">
     <aside className={open?'sidebar open':'sidebar'}>
@@ -85,7 +86,7 @@ export function Layout(){
         </div>
         <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzer'}</span></div>
       </header>
-      <main className={employeeRoute||customerRoute?'page-content employee-page':'page-content'}><Outlet/></main>
+      <main className={employeeRoute||customerRoute||siteRoute?'page-content employee-page':'page-content'}><Outlet/></main>
     </div>
   </div>;
 }

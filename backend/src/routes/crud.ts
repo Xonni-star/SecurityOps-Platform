@@ -24,7 +24,7 @@ const schemas={
   }).strict(),
   customers:z.object({name:nonempty,email:z.string().email().nullable().optional()}).strict(),
   sites:z.object({
-    name:nonempty,address:nonempty.optional(),site_number:nonempty.optional(),alias:nonempty.optional(),
+    name:nonempty,address:nonempty.nullable().optional(),site_number:nonempty.nullable().optional(),alias:nonempty.optional(),
     site_type:nonempty.optional(),description:z.string().trim().max(8000).optional(),
     status:z.enum(['planning','setup','active','restricted','temporarily_closed','decommissioned','archived']).optional(),
     security_classification:z.enum(['unknown','low','medium','high','critical']).optional(),
