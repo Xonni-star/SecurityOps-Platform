@@ -330,6 +330,24 @@ describe('Objektübersicht',()=>{
     expect(screen.getByText(/1\/2 Bestätigungen/)).toBeTruthy();
   });
 
+  it('assigns an object-assigned employee to an upcoming shift through scheduling',async()=>{
+    const context={
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,
+      staffing:[{id:'staffing-1',employee_id:'employee-1',employee_name:'Mia Guard',assignment_type:'operational',role:null,starts_on:'2026-01-01',ends_on:null,primary_assignment:false,notes:null}],
+      shifts:[{id:'shift-1',period_id:'period-1',period_name:'November',period_status:'published',period_starts_at:'2026-11-25T00:00:00Z',period_ends_at:'2026-11-26T00:00:00Z',role_code:'guard',starts_at:'2026-11-25T08:00:00Z',ends_at:'2026-11-25T16:00:00Z',assigned_count:0,assignments:[]}],
+      patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'employee-1',name:'Mia Guard'}]:path==='/scheduling/shifts/shift-1/assignments'?{}:context);
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Personal & Dienste'}));
+    fireEvent.change(await screen.findByLabelText('Mitarbeiter für guard'),{target:{value:'employee-1'}});
+    fireEvent.click(screen.getByRole('button',{name:'Schicht besetzen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/scheduling/shifts/shift-1/assignments',expect.objectContaining({method:'POST'})));
+    const assignment=apiMock.mock.calls.find(([path,options])=>path==='/scheduling/shifts/shift-1/assignments'&&options?.method==='POST')!;
+    expect(JSON.parse(assignment[1].body)).toEqual({employee_id:'employee-1',client_mutation_id:expect.stringMatching(/^[0-9a-f-]{36}$/i)});
+  });
+
   it('links object report exports to the existing site-filtered report module',async()=>{
     apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:{
       site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,

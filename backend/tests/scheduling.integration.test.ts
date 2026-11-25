@@ -51,6 +51,21 @@ describe('dienstplanung authorization and isolation',()=>{
     expect(response.status).toBe(403);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO schedule_periods'))).toBe(false);
   });
+  it('denies shift assignment when the shift belongs to a site outside the grant',async()=>{
+    const outsideSite='00000000-0000-0000-0000-000000000099';
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('INSERT INTO sync_receipts'))return result([{id:'receipt-id'}]);
+      if(sql.includes('SELECT sh.*'))return result([{id:'shift-id',site_id:outsideSite}]);
+      return result([]);
+    });
+    const response=await request(app).post('/api/v1/scheduling/shifts/00000000-0000-4000-8000-000000000060/assignments').set(csrf).send({
+      employee_id:'00000000-0000-4000-8000-000000000061',
+      client_mutation_id:'00000000-0000-4000-8000-000000000062',
+    });
+    expect(response.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO schedule_assignments'))).toBe(false);
+  });
   it('filters conflict findings by the granted sites',async()=>{
     queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([session]):result([]));
     const response=await request(app).get('/api/v1/scheduling/conflicts').set('Cookie',csrf.Cookie);

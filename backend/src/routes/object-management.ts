@@ -195,7 +195,7 @@ objectManagementRouter.get(
           sh.id,sh.role_code,sh.starts_at,sh.ends_at,sh.required_qualification_codes,
           COUNT(a.id)::int AS assigned_count,
           CASE WHEN $3::boolean THEN
-            COALESCE(json_agg(json_build_object('id',a.id,'employee_name',e.name) ORDER BY e.name)
+            COALESCE(json_agg(json_build_object('id',a.id,'employee_id',a.employee_id,'employee_name',e.name) ORDER BY e.name)
               FILTER (WHERE a.id IS NOT NULL),'[]'::json)
           ELSE '[]'::json END AS assignments
          FROM schedule_periods p

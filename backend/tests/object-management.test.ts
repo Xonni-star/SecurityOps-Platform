@@ -85,6 +85,7 @@ describe('object management',()=>{
     expect(response.body.shifts).toEqual(shifts);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_object_assignments'))?.[1]).toEqual([tenant,site]);
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM schedule_periods p'))?.[1]).toEqual([tenant,site,true]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM schedule_periods p'))?.[0]).toContain("'employee_id',a.employee_id");
   });
 
   it('returns site-linked patrol plans and recent scans only within patrol scope',async()=>{

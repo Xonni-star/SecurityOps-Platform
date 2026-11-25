@@ -7,7 +7,7 @@ type Site={id:string;name:string;site_number?:string|null;status:string;security
 type Customer={id:string;name:string;customer_number?:string|null};
 type Employee={id:string;name:string};
 type StaffingAssignment={id:string;employee_id:string;employee_name:string;assignment_type:string;role:string|null;starts_on:string;ends_on:string|null;primary_assignment:boolean;notes:string|null};
-type ScheduledShift={id:string;period_id:string;period_name:string;period_status:string;period_starts_at:string;period_ends_at:string;role_code:string;starts_at:string;ends_at:string;assigned_count:number;assignments:{id:string;employee_name:string}[]};
+type ScheduledShift={id:string;period_id:string;period_name:string;period_status:string;period_starts_at:string;period_ends_at:string;role_code:string;starts_at:string;ends_at:string;assigned_count:number;assignments:{id:string;employee_id:string;employee_name:string}[]};
 type PatrolRoute={id:string;name:string;expected_start:string|null;expected_end:string|null;points:{control_point_id:string;name:string;sequence:number;expected_offset_seconds:number|null}[];assignments:{id:string;starts_at:string;ends_at:string|null;employee_name:string|null}[]};
 type PatrolScan={id:string;scanned_at:string;deviation:string;route_id:string;route_name:string;control_point_id:string;control_point_name:string;employee_name:string|null};
 type KeyRecord={id:string;key_code:string;label:string;key_type:string;status:string;holder_user_id:string|null;holder_employee_id:string|null;issued_at:string|null;returned_at:string|null;lost_at:string|null;deactivated_at:string|null};
@@ -105,6 +105,7 @@ export function Sites(){
   const [maintenanceContent,setMaintenanceContent]=useState('');
   const [maintenanceClientEntryId,setMaintenanceClientEntryId]=useState(uuid());
   const [maintenanceOptionsLoaded,setMaintenanceOptionsLoaded]=useState(false);
+  const [shiftAssignmentRequests,setShiftAssignmentRequests]=useState<Record<string,{employee_id:string;client_mutation_id:string}>>({});
   const [assignmentForm,setAssignmentForm]=useState({employee_id:'',assignment_type:'operational',role:'',starts_on:'',ends_on:'',notes:'',reason:''});
   const [keyAction,setKeyAction]=useState<KeyAction|null>(null);
   const [keyHolderEmployeeId,setKeyHolderEmployeeId]=useState('');
@@ -268,6 +269,17 @@ export function Sites(){
       await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
+  async function assignShiftEmployee(event:FormEvent,shift:ScheduledShift){
+    event.preventDefault();if(!selected)return;
+    const assignment=shiftAssignmentRequests[shift.id];
+    if(!assignment)return;
+    try{
+      await api(`/scheduling/shifts/${shift.id}/assignments`,{method:'POST',body:JSON.stringify(assignment)});
+      await refreshContext();
+      setShiftAssignmentRequests(current=>{const next={...current};delete next[shift.id];return next;});
+      setError('');
+    }catch(e){setError((e as Error).message);}
+  }
   async function saveKeyAction(event:FormEvent){
     event.preventDefault();if(!selected||!keyAction)return;
     try{
@@ -288,6 +300,7 @@ export function Sites(){
   const selectedContracts=selected?.contracts??[];
   const assignableEmployees=employees.filter(employee=>!selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
   const siteAssignedEmployees=employees.filter(employee=>selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
+  const availableShiftEmployees=(shift:ScheduledShift)=>siteAssignedEmployees.filter(employee=>!shift.assignments.some(assignment=>assignment.employee_id===employee.id));
   const selectedSiteId=selected?.site.id;
   const maintenanceReadable=selected?.maintenance!==null&&selected?.maintenance!==undefined;
   useEffect(()=>{
@@ -404,7 +417,12 @@ export function Sites(){
       </form>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
       <h3>Dienstplanung und Schichten</h3>
-      {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}</li>)}</ul>}
+      {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}
+        {selected.staffing!==null&&hasPermission('scheduling:write')&&hasPermission('employees:read')&&availableShiftEmployees(shift).length>0&&<form onSubmit={event=>void assignShiftEmployee(event,shift)}>
+          <label>Mitarbeiter für {shift.role_code}<select aria-label={`Mitarbeiter für ${shift.role_code}`} required value={shiftAssignmentRequests[shift.id]?.employee_id??''} onChange={event=>setShiftAssignmentRequests(current=>({...current,[shift.id]:{employee_id:event.target.value,client_mutation_id:current[shift.id]?.employee_id===event.target.value?current[shift.id].client_mutation_id:uuid()}}))}><option value="">Mitarbeiter auswählen</option>{availableShiftEmployees(shift).map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
+          <button disabled={!shiftAssignmentRequests[shift.id]?.employee_id}>Schicht besetzen</button>
+        </form>}
+      </li>)}</ul>}
       </div>}
       {active==='qualifikationen'&&<div className="employee-detail-content">
       <h3>Qualifikationen der zugeordneten Mitarbeitenden</h3>
