@@ -61,6 +61,17 @@ describe('shift eligibility endpoint',()=>{
     expect(response.body.employees[0].reasons[0]).toMatchObject({code:'instruction_acknowledgement',link:{type:'instruction',id:'instruction-1'}});
   });
 
+  it('normalizes timestamptz Date values returned by PostgreSQL',async()=>{
+    const defaultImplementation=queryMock.getMockImplementation()!;
+    queryMock.mockImplementation(async(sql:string,...args:unknown[])=>{
+      if(sql.includes('FROM schedule_shifts sh'))return result([{...shiftRow,starts_at:new Date('2026-12-01T08:00:00Z'),ends_at:new Date('2026-12-01T16:00:00Z')}]);
+      return defaultImplementation(sql,...args);
+    });
+    const response=await request(app).get(path).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.employees[0]).toMatchObject({employee_id:employee,status:'ineligible'});
+  });
+
   it('withholds eligibility data without qualification read permission',async()=>{
     activeUser={...baseUser,permissions:['scheduling:read','employees:read'],permission_grants:grants.slice(0,2)};
     const response=await request(app).get(path).set('Cookie','securityops_session=opaque');

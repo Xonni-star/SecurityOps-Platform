@@ -32,6 +32,11 @@ const ids = {
   nfcTag: "00000000-0000-4000-8000-000000000110",
   patrolAssignment: "00000000-0000-4000-8000-000000000111",
   objectAssignment: "00000000-0000-4000-8000-000000000112",
+  qualification: "00000000-0000-4000-8000-000000000113",
+  authorUser: "00000000-0000-4000-8000-000000000114",
+  fixtureSession: "00000000-0000-4000-8000-000000000115",
+  ruleProfile: "00000000-0000-4000-8000-000000000116",
+  operationalDevice: "00000000-0000-4000-8000-000000000117",
 };
 
 const client = await pool.connect();
@@ -51,9 +56,35 @@ try {
     [ids.user, ids.tenant, email, hash],
   );
   await client.query(
+    `INSERT INTO users(id,tenant_id,email,password_hash,role,mfa_secret_ciphertext,mfa_secret_nonce,mfa_secret_tag,mfa_enrolled_at)
+      VALUES($1,$2,$3,$4,'operator',NULL,NULL,NULL,NULL)
+      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
+        role='operator',mfa_secret_ciphertext=NULL,mfa_secret_nonce=NULL,mfa_secret_tag=NULL,mfa_enrolled_at=NULL,updated_at=now()`,
+    [ids.authorUser, ids.tenant, "e2e-author@example.invalid", hash],
+  );
+  await client.query(
+    `INSERT INTO sessions(id,tenant_id,user_id,token_hash,csrf_token,expires_at)
+      VALUES($1,$2,$3,'e2e-fixture-token','e2e-fixture-csrf',now() + interval '1 day')
+      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,user_id=EXCLUDED.user_id,
+        token_hash=EXCLUDED.token_hash,csrf_token=EXCLUDED.csrf_token,expires_at=EXCLUDED.expires_at`,
+    [ids.fixtureSession, ids.tenant, ids.user],
+  );
+  await client.query(
     `INSERT INTO sites(id,tenant_id,name,address) VALUES($1,$2,'E2E Leitstellenobjekt','E2E-Teststraße 1')
      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,name=EXCLUDED.name,address=EXCLUDED.address,updated_at=now()`,
     [ids.site, ids.tenant],
+  );
+  await client.query(
+    `INSERT INTO user_sites(tenant_id,user_id,site_id) VALUES($1,$2,$3),($1,$4,$3)
+      ON CONFLICT (tenant_id,user_id,site_id) DO NOTHING`,
+    [ids.tenant, ids.user, ids.site, ids.authorUser],
+  );
+  await client.query(
+    `INSERT INTO schedule_rule_profiles(id,tenant_id,name,version,parameters,created_by,created_session_id)
+      VALUES($1,$2,'E2E Regelprofil',1,'{"max_shift_hours":12}',$3,$4)
+      ON CONFLICT (tenant_id, id) DO UPDATE SET name=EXCLUDED.name,version=EXCLUDED.version,
+        parameters=EXCLUDED.parameters`,
+    [ids.ruleProfile, ids.tenant, ids.user, ids.fixtureSession],
   );
   await client.query(
     `INSERT INTO employees(id,tenant_id,name,email,title) VALUES($1,$2,'E2E Streife','e2e-employee@example.invalid','Wachschutz')
@@ -67,6 +98,20 @@ try {
        assignment_type=EXCLUDED.assignment_type,role=EXCLUDED.role,starts_on=EXCLUDED.starts_on,ends_on=NULL,primary_assignment=false,
        notes=EXCLUDED.notes,updated_at=now()`,
     [ids.objectAssignment,ids.tenant,ids.employee,ids.site],
+  );
+  await client.query(
+    `INSERT INTO employee_qualifications(id,tenant_id,employee_id,code,valid_from,valid_until,document_id,status,notes,updated_at)
+     VALUES($1,$2,$3,'erste_hilfe',CURRENT_DATE - interval '700 days',CURRENT_DATE + interval '20 days',NULL,'valid','E2E expiring qualification',now())
+     ON CONFLICT (tenant_id, employee_id, code) DO UPDATE SET valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,
+       document_id=NULL,status='valid',notes=EXCLUDED.notes,revoked_at=NULL,updated_at=now()`,
+    [ids.qualification, ids.tenant, ids.employee],
+  );
+  await client.query(
+    `INSERT INTO devices(id,tenant_id,site_id,name,status,device_kind,metadata)
+      VALUES($1,$2,$3,'E2E Technische Anlage','online','operational','{"source":"playwright-e2e-maintenance"}')
+      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,site_id=EXCLUDED.site_id,
+        name=EXCLUDED.name,status='online',device_kind='operational',revoked_at=NULL,updated_at=now()`,
+    [ids.operationalDevice, ids.tenant, ids.site],
   );
   await client.query(
     `INSERT INTO devices(id,tenant_id,name,status,device_kind,metadata) VALUES($1,$2,'E2E Mobilgerät','online','authenticated','{"source":"playwright-e2e"}')
@@ -116,6 +161,7 @@ try {
   console.log(
     JSON.stringify({
       email,
+      authorEmail: "e2e-author@example.invalid",
       tenantId: ids.tenant,
       siteId: ids.site,
       employeeId: ids.employee,

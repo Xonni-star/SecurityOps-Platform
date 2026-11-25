@@ -59,7 +59,7 @@ export class ClamAvMalwareScannerAdapter implements MalwareScannerAdapter {
       const timer=setTimeout(()=>{socket.destroy();reject(new Error('ClamAV scan timed out'));},this.timeoutMs);
       socket.on('data',chunk=>chunks.push(Buffer.from(chunk)));
       socket.on('error',error=>{clearTimeout(timer);reject(error);});
-      socket.on('close',()=>{clearTimeout(timer);const result=Buffer.concat(chunks).toString('utf8').trim();if(result.endsWith('OK'))resolve({clean:true});else if(result.startsWith('stream:'))resolve({clean:false,signature:result.slice(7).trim()});else reject(new Error(`Unexpected ClamAV response: ${result}`));});
+      socket.on('close',()=>{clearTimeout(timer);const result=Buffer.concat(chunks).toString('utf8').replace(/\0+$/,'').trim();if(result.endsWith('OK'))resolve({clean:true});else if(result.startsWith('stream:'))resolve({clean:false,signature:result.slice(7).trim()});else reject(new Error(`Unexpected ClamAV response: ${result}`));});
       socket.write(Buffer.from('zINSTREAM\0'));
       for(let offset=0;offset<content.length;offset+=env.CLAMAV_CHUNK_BYTES){
         const chunk=content.subarray(offset,offset+env.CLAMAV_CHUNK_BYTES);

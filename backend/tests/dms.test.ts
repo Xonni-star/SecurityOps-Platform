@@ -1,6 +1,7 @@
+import net from 'node:net';
 import {describe,expect,it} from '@jest/globals';
 import {canAccessResource} from '../src/types/authorization.js';
-import {configuredDmsBackupContract,sha256} from '../src/services/dms-providers.js';
+import {ClamAvMalwareScannerAdapter,configuredDmsBackupContract,sha256} from '../src/services/dms-providers.js';
 import {canDownloadDmsVersion,nextDmsVersion,retentionDue,scanLifecycle,validateDmsUpload} from '../src/services/dms-domain.js';
 
 describe('DMS domain contracts',()=>{
@@ -22,6 +23,18 @@ describe('DMS domain contracts',()=>{
     expect(canDownloadDmsVersion('active','quarantined')).toBe(false);
     expect(canDownloadDmsVersion('active','available')).toBe(true);
     expect(canDownloadDmsVersion('deleted','available')).toBe(false);
+  });
+  it('accepts ClamAV clean responses terminated by a NUL byte',async()=>{
+    const server=net.createServer(socket=>{socket.resume();socket.on('end',()=>socket.end('stream: OK\0'));});
+    await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+    const address=server.address();
+    if(!address||typeof address==='string')throw new Error('ClamAV test server did not bind');
+    try{
+      const scanner=new ClamAvMalwareScannerAdapter('127.0.0.1',address.port,2000);
+      await expect(scanner.scan(Buffer.from('clean content'))).resolves.toEqual({clean:true});
+    }finally{
+      await new Promise<void>(resolve=>server.close(()=>resolve()));
+    }
   });
   it('appends immutable versions and applies retention only when due',()=>{
     expect(nextDmsVersion(undefined)).toBe(1);

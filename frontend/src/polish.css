@@ -178,6 +178,20 @@
 .object-tab-group{display:flex;align-items:center;gap:4px;border-left:1px solid #24415f;padding:0 8px}
 .object-tab-group>span{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#7791ab;margin-right:4px}
 .object-warning{border-left:3px solid #e7a84b!important;padding-left:9px!important;color:#ffd89b!important}
+.object-priority-actions{margin:14px 0;padding:14px;background:#102744;border:1px solid #1e3c5b;border-radius:8px}
+.object-priority-actions h3{margin:0 0 8px;font-size:14px;color:#bad0e7}
+.object-priority-actions ol{list-style:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0}
+.object-priority-actions li{min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:3px;padding:9px 11px;background:#0b1d35;border:1px solid #1e3c5b;border-left:3px solid #44749d;border-radius:6px}
+.object-priority-actions li.object-priority-critical{border-left-color:#ff8a8a;background:#38202d}
+.object-priority-actions li.object-priority-high{border-left-color:#ffc46b;background:#34291d}
+.object-priority-actions li.object-priority-medium{border-left-color:#7db4e4}
+.object-priority-actions li>a{color:#cfe6ff!important;font-weight:700;overflow-wrap:anywhere}
+.object-action-meta{color:#8fa9c4;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.object-action-detail{color:#b6c9dd;font-size:12px;overflow-wrap:anywhere}
+.object-qualification-meta{color:#8fa9c4;font-size:12px}
+.object-scope-hint{font-size:11px;color:#7f9ab5!important;margin-top:8px!important}
+.eligibility-reason-code{color:#8fb5d8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.object-chronicle-no-link{color:#66809a;font-size:11px}
 @media(max-width:1100px){
   .object-filterbar{grid-template-columns:repeat(3,minmax(0,1fr))}
   .object-filterbar>input{grid-column:span 2}
@@ -185,6 +199,7 @@
   .object-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .object-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
   .object-detail-form .form-grid{grid-template-columns:1fr}
+  .object-priority-actions ol{grid-template-columns:1fr}
 }
 @media(max-width:700px){
   .object-management{padding:12px!important}

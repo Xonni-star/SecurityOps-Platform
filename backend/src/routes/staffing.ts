@@ -6,6 +6,7 @@ import {createSitePermissionReader} from '../services/site-permissions.js';
 import {evaluateShiftEligibility,type AbsenceRecord,type AvailabilityRecord,type EligibilityInput,type InstructionRecord,type QualificationRecord} from '../services/staffing-eligibility.js';
 
 const uuid=z.string().uuid();
+const iso=(value:string|Date)=>value instanceof Date?value.toISOString():String(value);
 
 export const staffingRouter=Router();
 
@@ -20,7 +21,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
     }
     const tenantId=req.user!.tenantId;
     const shift=(await query<{
-      id:string;site_id:string;starts_at:string;ends_at:string;
+      id:string;site_id:string;starts_at:string|Date;ends_at:string|Date;
       required_qualification_codes:string[]|string|null;profile_parameters:Record<string,unknown>|string|null;
     }>(
       `SELECT sh.id,p.site_id,sh.starts_at,sh.ends_at,sh.required_qualification_codes,r.parameters AS profile_parameters
@@ -31,6 +32,8 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
       [tenantId,shiftId,siteId],
     )).rows[0];
     if(!shift)return res.status(404).json({error:'Shift not found at this object'});
+    const startsAt=iso(shift.starts_at);
+    const endsAt=iso(shift.ends_at);
     const employees=(await query<{
       id:string;name:string;employment_status:string|null;starts_on:string;ends_on:string|null;
     }>(
@@ -40,7 +43,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
        WHERE oa.tenant_id=$1 AND oa.site_id=$2 AND oa.starts_on<=$3::date
          AND (oa.ends_on IS NULL OR oa.ends_on>=$4::date)
        ORDER BY e.id,oa.starts_on DESC`,
-      [tenantId,siteId,shift.starts_at.slice(0,10),shift.ends_at.slice(0,10)],
+      [tenantId,siteId,startsAt.slice(0,10),endsAt.slice(0,10)],
     )).rows;
     const employeeIds=employees.map(employee=>employee.id);
     const qualificationRows=employeeIds.length?(await query<QualificationRecord & {employee_id:string}>(
@@ -67,7 +70,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
       `SELECT id,employee_id,starts_at,ends_at,status FROM employee_absences
        WHERE tenant_id=$1 AND employee_id=ANY($2::uuid[])
          AND status IN ('requested','approved') AND starts_at<$4 AND $3<ends_at`,
-      [tenantId,employeeIds,shift.starts_at,shift.ends_at],
+      [tenantId,employeeIds,startsAt,endsAt],
     )).rows:[];
     const availabilityRows=employeeIds.length?(await query<AvailabilityRecord & {employee_id:string}>(
       `SELECT employee_id,weekday,starts_time,ends_time,available,valid_from,valid_until
@@ -79,7 +82,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
        JOIN schedule_shifts sh ON sh.tenant_id=a.tenant_id AND sh.id=a.shift_id
        WHERE a.tenant_id=$1 AND a.employee_id=ANY($2::uuid[]) AND a.status='assigned' AND sh.id<>$3
          AND sh.starts_at<$5 AND $4<sh.ends_at`,
-      [tenantId,employeeIds,shiftId,shift.starts_at,shift.ends_at],
+      [tenantId,employeeIds,shiftId,startsAt,endsAt],
     )).rows:[];
     const shiftCodes=Array.isArray(shift.required_qualification_codes)?shift.required_qualification_codes
       :typeof shift.required_qualification_codes==='string'?JSON.parse(shift.required_qualification_codes):[];
@@ -91,7 +94,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
       const input:EligibilityInput={
         employee:{id:employee.id,name:employee.name,employment_status:employee.employment_status,
           assignment:{starts_on:employee.starts_on,ends_on:employee.ends_on}},
-        shift:{starts_at:shift.starts_at,ends_at:shift.ends_at,required_qualification_codes:requiredCodes},
+        shift:{starts_at:startsAt,ends_at:endsAt,required_qualification_codes:requiredCodes},
         qualifications:qualificationRows.filter(row=>row.employee_id===employee.id),
         instructions:instructionRows.map(row=>({
           id:row.id,title:row.title,status:row.status,requires_acknowledgement:row.requires_acknowledgement,

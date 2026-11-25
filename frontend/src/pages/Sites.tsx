@@ -6,7 +6,8 @@ import {uuid} from '../lib/uuid';
 type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;street?:string|null;house_number?:string|null;postal_code?:string|null;city?:string|null;contact_person?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;required_staff_count?:number;updated_at?:string};
 type SiteOverview=Site&{customer_names:string[]|null;object_manager_name:string|null;operations_manager_name:string|null;assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;contract_statuses:string[]|null;open_hazard_count:number;critical_hazard_count:number;overdue_measure_count:number;open_task_count:number|null;overdue_task_count:number|null;open_shift_count:number|null;undercovered_shift_count:number|null;understaffed:boolean;available_document_count:number|null;valid_document_count:number|null;unapproved_document_count:number|null;expired_document_count:number|null;expiring_7d_document_count:number|null;expiring_30d_document_count:number|null;review_due_document_count:number|null;missing_requirement_count:number|null;open_maintenance_count:number|null;overdue_maintenance_count:number|null;last_activity:string|null};
 type OverviewMetrics={total_sites:number;active_sites:number;preparation_sites:number;restricted_sites:number;critical_sites:number;sites_with_critical_hazards:number;sites_with_open_tasks:number;sites_with_understaffing:number;open_hazards:number|null;overdue_measures:number|null;open_tasks:number|null;overdue_tasks:number|null;open_shifts:number|null;undercovered_shifts:number|null;expiring_contracts:number|null;sites_without_available_documents:number|null;valid_documents:number|null;expired_documents:number|null;documents_expiring_7d:number|null;documents_expiring_30d:number|null;documents_review_due:number|null;unapproved_documents:number|null;missing_required_documents:number|null;open_maintenance:number|null;overdue_maintenance:number|null};
-type SiteOverviewResponse={sites:SiteOverview[];metrics:OverviewMetrics};
+type PriorityAction={id:string;site_id?:string|null;site_name?:string|null;entity_id?:string|null;employee_id?:string|null;severity:'critical'|'high'|'medium';category:string;title:string;detail:string;due_on:string|null;tab:string;permission:string;target:string};
+type SiteOverviewResponse={sites:SiteOverview[];metrics:OverviewMetrics;priorityActions?:PriorityAction[]};
 type SiteColumn='site_number'|'name'|'site_type'|'customer_names'|'address'|'object_manager_name'|'operations_manager_name'|'security_classification'|'status'|'assigned_employee_count'|'active_contract_count'|'open_hazard_count'|'open_task_count'|'contract_statuses'|'understaffed'|'last_activity';
 type Customer={id:string;name:string;customer_number?:string|null};
 type Employee={id:string;name:string};
@@ -28,16 +29,17 @@ type MaintenanceEntry={id:string;created_at:string;revision_no:number;content:st
 type WatchbookCategory={id:string;code:string;name:string};
 type WatchbookPriority={code:string;name:string};
 type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowledged_at:string};
-type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string;days_until_expiry?:number|null};
+type QualificationIssue={code:string;label:string;detail:string;severity:'critical'|'high'|'medium'};
+type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string;days_until_expiry?:number|null;issue?:QualificationIssue|null;evidence_status?:string|null;evidence_label?:string|null;evidence_document_id?:string|null;evidence_document_title?:string|null;last_checked_at?:string|null;employee_url?:string|null};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type DocumentRequirement={id:string;document_type:string;required:boolean;responsible_employee_id:string|null;responsible_employee_name:string|null;missing:boolean;requirement_status?:DocumentStatus;status_label?:string;matching_document_id?:string|null;is_approved?:boolean;is_currently_valid?:boolean;is_reviewed?:boolean;review_state?:'none'|'pending'|'due_soon'|'overdue';days_until_expiry?:number|null};
-type MaintenanceOrder={id:string;site_id:string;device_id:string;device_name:string|null;asset_number:string|null;order_number:string;maintenance_type:string;description:string;priority_code:string;due_on:string|null;status:string;computed_status:'planned'|'open'|'in_progress'|'overdue'|'completed'|'cancelled';status_label:string;overdue:boolean;responsible_employee_id:string|null;responsible_employee_name:string|null;performed_work:string|null;result:string|null;remarks:string|null;next_maintenance_on:string|null;documents:{id:string;document_id:string;document_title?:string|null;document_status?:string|null}[];created_at:string};
-type PersonnelSummary={assigned_employee_count:number;expiring_qualification_count:number;invalid_qualification_count:number;expiring_qualifications:{employee_id:string;employee_name:string;code:string;qualification_name:string|null;days_until_expiry:number|null}[];pending_acknowledgement_count:number;missing_acknowledgements:{instruction_id:string;title:string;version:number;missing_employee_ids:string[];missing_employees:{employee_id:string;employee_name:string}[]}[]};
+type MaintenanceOrder={id:string;site_id:string;device_id:string;device_name:string|null;asset_number:string|null;order_number:string;maintenance_type:string;description:string;priority_code:string;due_on:string|null;status:string;computed_status:'planned'|'open'|'in_progress'|'overdue'|'completed'|'cancelled';status_label:string;overdue:boolean;responsible_employee_id:string|null;responsible_employee_name:string|null;performed_work:string|null;result:string|null;remarks:string|null;next_maintenance_on:string|null;documents:{id:string;document_id:string;document_title?:string|null;document_status?:string|null;computed_status?:string|null}[];created_at:string};
+type PersonnelSummary={assigned_employee_count:number;expiring_qualification_count:number;invalid_qualification_count:number;qualification_issue_count?:number;blocking_qualification_issue_count?:number;expiring_qualifications:EmployeeQualification[];invalid_qualifications?:EmployeeQualification[];qualification_issues?:EmployeeQualification[];pending_acknowledgement_count:number;missing_acknowledgements:{instruction_id:string;title:string;version:number;target?:string;missing_employee_ids:string[];missing_employees:{employee_id:string;employee_name:string;employee_url?:string}[]}[]};
 type PersonnelChange={occurred_at:string;event_type:string;entity_id:string|null;employee_id:string|null;employee_name:string|null;actor_email:string|null;details:Record<string,unknown>};
 type EligibilityLink={type:'employee'|'qualification'|'instruction'|'absence';id:string;label:string};
 type EligibilityReason={code:string;message:string;link:EligibilityLink|null};
 type ShiftEligibility={shift_id:string;site_id:string;required_qualification_codes:string[];employees:{employee_id:string;employee_name:string;status:'eligible'|'restricted'|'ineligible';reasons:EligibilityReason[];matched_qualification_codes:string[];missing_qualification_codes:string[]}[]};
-type ChronicleLink={target:string;label:string;permission:string};
+type ChronicleLink={target:string;label:string;permission:string;entity_id?:string|null;entity_type?:string|null};
 type ChronicleEvent={id:string;site_id:string;occurred_at:string;event_kind:string;entity_type:string;entity_id:string;category:string;summary:string;details:Record<string,unknown>;actor_user_id:string|null;actor_email:string|null;actor_employee_name:string|null;source_table:string;link?:ChronicleLink|null};
 type ObjectDevice={id:string;name:string;status:string;site_id:string|null;last_seen_at:string|null;metadata:Record<string,unknown>;asset_number:string|null;category:string|null;manufacturer:string|null;model:string|null;serial_number:string|null;location_id:string|null;responsible_employee_id:string|null;operational_status:string;installed_on:string|null;commissioned_on:string|null;last_inspection_on:string|null;next_inspection_on:string|null;maintenance_interval_days:number|null;next_maintenance_on:string|null;last_maintenance_on:string|null;created_at:string;updated_at:string};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
@@ -73,6 +75,7 @@ type Context={
   recentPersonnelChanges?:PersonnelChange[]|null;
   handovers:HandoverSummary[]|null;
   devices:ObjectDevice[]|null;
+  priorityActions?:PriorityAction[];
 };
 const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',active:'Aktiv',restricted:'Eingeschränkt',temporarily_closed:'Temporär geschlossen',decommissioned:'Stillgelegt',archived:'Archiviert'};
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
@@ -117,6 +120,36 @@ function toBase64(file:File){
   });
 }
 
+function formatDue(due:string|null|undefined){
+  if(!due)return null;
+  const date=new Date(`${String(due).slice(0,10)}T00:00:00Z`);
+  return Number.isNaN(date.getTime())?String(due):date.toLocaleDateString('de-DE',{timeZone:'UTC'});
+}
+function qualificationReason(qualification:EmployeeQualification){
+  if(qualification.issue)return `${qualification.issue.label}: ${qualification.issue.detail}`;
+  if(qualification.computed_status==='expired'||qualification.computed_status==='revoked'||qualification.computed_status==='invalid')return qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig';
+  if(qualification.computed_status==='expiring')return qualification.days_until_expiry!=null?`Läuft bald ab: noch ${qualification.days_until_expiry} Tage`:'Läuft bald ab';
+  return 'Keine offene Qualifikationswarnung';
+}
+function qualificationEvidence(qualification:EmployeeQualification){
+  if(qualification.evidence_label)return qualification.evidence_label;
+  if(qualification.evidence_status==='missing')return 'Kein Nachweis verknüpft';
+  if(qualification.evidence_document_title)return `Nachweis: ${qualification.evidence_document_title}`;
+  return 'Nachweisstatus nicht verfügbar';
+}
+function PriorityActionList({actions,title,showSite=false}:{actions:PriorityAction[];title:string;showSite?:boolean}){
+  const visible=actions.filter(action=>hasPermission(action.permission));
+  if(visible.length===0)return null;
+  return <section className="object-priority-actions" aria-label={title}>
+    <h3>{title}</h3>
+    <ol>{visible.map(action=><li key={action.id} className={`object-priority-${action.severity}`}>
+      <Link to={action.target}>{action.title}</Link>
+      <span className="object-action-meta">{action.category} · {priorityLabels[action.severity]??action.severity}{showSite&&action.site_name?` · ${action.site_name}`:''}{action.due_on?` · fällig ${formatDue(action.due_on)}`:''}</span>
+      <span className="object-action-detail">{action.detail}</span>
+    </li>)}</ol>
+  </section>;
+}
+
 export function Sites(){
   const navigate=useNavigate();
   const {siteId,section}=useParams<{siteId?:string;section?:string}>();
@@ -124,6 +157,7 @@ export function Sites(){
   const active=tabs.some(([key])=>key===resolvedSection)?resolvedSection:'uebersicht';
   const [sites,setSites]=useState<SiteOverview[]>([]);
   const [metrics,setMetrics]=useState<OverviewMetrics|null>(null);
+  const [priorityActions,setPriorityActions]=useState<PriorityAction[]>([]);
   const [customers,setCustomers]=useState<Customer[]>([]);
   const [employees,setEmployees]=useState<Employee[]>([]);
   const [selected,setSelected]=useState<Context|null>(null);
@@ -209,8 +243,8 @@ export function Sites(){
     setListLoading(true);
     try{
       const response=await api<SiteOverviewResponse>('/sites/overview-dashboard');
-      setSites(response?.sites??[]);setMetrics(response?.metrics??null);setListError('');
-    }catch(e){setSites([]);setMetrics(null);setListError((e as Error).message);}
+      setSites(response?.sites??[]);setMetrics(response?.metrics??null);setPriorityActions(response?.priorityActions??[]);setListError('');
+    }catch(e){setSites([]);setMetrics(null);setPriorityActions([]);setListError((e as Error).message);}
     finally{setListLoading(false);}
   }
   useEffect(()=>{if(!siteId){setSelected(null);void load();return;}void open(siteId);},[siteId]);
@@ -680,6 +714,8 @@ export function Sites(){
   },{} as Record<string,number>);
   const upcomingDevices=selected?.devices?.filter(device=>device.next_maintenance_on&&device.next_maintenance_on>=today&&device.next_maintenance_on<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10))??[];
   const personnelSummary=selected?.personnelSummary??null;
+  const qualificationWarnings=personnelSummary?.qualification_issues??personnelSummary?.expiring_qualifications??selected?.qualifications?.filter(qualification=>qualification.issue&&qualification.issue.code!=='none')??[];
+  const detailPriorityActions=selected?.priorityActions??[];
   const recentPersonnelChanges=selected?.recentPersonnelChanges??[];
   const chronicleEvents=chronicle?.events??[];
   const serverActivityItems=chronicleEvents.slice(0,8).map(event=>({id:`chronicle-${event.id}`,created_at:event.occurred_at,title:event.category,detail:`${event.event_kind} · ${event.summary}`,link:event.link}));
@@ -727,6 +763,7 @@ export function Sites(){
           {(personnelSummary?.pending_acknowledgement_count??0)>0&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen: {personnelSummary!.pending_acknowledgement_count}</p>}
           {personnelSummary===null&&selected.instructions.some(instruction=>isInstructionActive(instruction)&&instruction.requires_acknowledgement&&instruction.acknowledgement_count<currentStaff.length)&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen vorhanden.</p>}
         </div>
+        <PriorityActionList actions={detailPriorityActions} title="Nächste Schritte nach Dringlichkeit"/>
         <div className="object-summary-grid">
           {([
             ['stammdaten','Objektstatus',<><strong>{statuses[selected.site.status]??selected.site.status}</strong><p>{classifications[selected.site.security_classification]??selected.site.security_classification}</p></>],
@@ -747,10 +784,15 @@ export function Sites(){
           <h3>Personalüberblick</h3>
           {personnelSummary===null?<p>Keine Berechtigung für Personaldaten.</p>:<>
             <p>{personnelSummary.assigned_employee_count} zugeordnete Mitarbeitende · {personnelSummary.expiring_qualification_count} bald ablaufende · {personnelSummary.invalid_qualification_count} ungültige Qualifikationen</p>
-            <h4>Bald ablaufende Qualifikationen</h4>
-            {personnelSummary.expiring_qualifications.length===0?<p>Keine bald ablaufenden Qualifikationen.</p>:<ul>{personnelSummary.expiring_qualifications.map(qualification=><li key={`${qualification.employee_id}-${qualification.code}`}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code}{qualification.days_until_expiry!=null?` · noch ${qualification.days_until_expiry} Tage`:''}</li>)}</ul>}
+            <h4>Konkrete Qualifikationswarnungen</h4>
+            {qualificationWarnings.length===0?<p>Keine offenen Qualifikationswarnungen.</p>:<ul>{qualificationWarnings.map(qualification=><li key={`${qualification.employee_id}-${qualification.code}-${qualification.id}`} className={qualification.issue?.severity==='critical'||qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''}>
+              <strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualificationReason(qualification)}
+              <span className="object-qualification-meta"> · {qualificationEvidence(qualification)}{qualification.last_checked_at?` · zuletzt geprüft ${new Date(qualification.last_checked_at).toLocaleDateString('de-DE')}`:''}</span>
+              {hasPermission('qualifications:read')&&<Link to={qualification.employee_url??`/employees/${qualification.employee_id}/qualifikationen`}>Nachweis öffnen</Link>}
+            </li>)}</ul>}
+            <p className="object-scope-hint">Allgemeine Personalübersicht; die verbindliche Einsatzprüfung erfolgt schichtbezogen in der Dienstplanung.</p>
             <h4>Ausstehende Dienstanweisungs-Kenntnisnahmen</h4>
-            {personnelSummary.missing_acknowledgements.length===0?<p>Keine ausstehenden Kenntnisnahmen.</p>:<ul>{personnelSummary.missing_acknowledgements.map(acknowledgement=><li key={acknowledgement.instruction_id}><strong>{acknowledgement.title}</strong> v{acknowledgement.version} · {acknowledgement.missing_employees.map(employee=>employee.employee_name).join(', ')}</li>)}</ul>}
+            {personnelSummary.missing_acknowledgements.length===0?<p>Keine ausstehenden Kenntnisnahmen.</p>:<ul>{personnelSummary.missing_acknowledgements.map(acknowledgement=><li key={acknowledgement.instruction_id}><strong>{acknowledgement.title}</strong> v{acknowledgement.version} · {acknowledgement.missing_employees.map(employee=>employee.employee_name).join(', ')}{hasPermission('watchbook:read')&&<Link to={acknowledgement.target??`/sites/${siteId}/anweisungen`}>Dienstanweisung öffnen</Link>}</li>)}</ul>}
             <h4>Letzte Personaländerungen</h4>
             {recentPersonnelChanges===null?<p>Keine Berechtigung für die Personalhistorie.</p>:recentPersonnelChanges.length===0?<p>Keine aktuellen Personaländerungen erfasst.</p>:<ul>{recentPersonnelChanges.map(change=><li key={`${change.event_type}-${change.entity_id??'unbekannt'}-${change.occurred_at}`}><time>{new Date(change.occurred_at).toLocaleString('de-DE')}</time> · {change.event_type} · {change.employee_name??change.employee_id??'Mitarbeiter nicht ermittelbar'}{change.actor_email?` · ${change.actor_email}`:''}</li>)}</ul>}
           </>}
@@ -876,7 +918,12 @@ export function Sites(){
       </form>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
       <h3>Qualifikationen</h3>
-      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id} className={qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualification.computed_status==='valid'?'Gültig':qualification.computed_status==='expiring'?'Läuft bald ab':qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig'}{qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}{qualification.days_until_expiry!=null&&qualification.days_until_expiry>=0?` · noch ${qualification.days_until_expiry} Tage`:qualification.days_until_expiry!=null?` · seit ${Math.abs(qualification.days_until_expiry)} Tagen abgelaufen`:''}</li>)}</ul>}
+      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id} className={qualification.issue?.severity==='critical'||qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''}>
+        <strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualificationReason(qualification)}
+        {qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}
+        <span className="object-qualification-meta"> · {qualificationEvidence(qualification)}{qualification.last_checked_at?` · zuletzt geprüft ${new Date(qualification.last_checked_at).toLocaleDateString('de-DE')}`:''}</span>
+        {hasPermission('qualifications:read')&&<Link to={qualification.employee_url??`/employees/${qualification.employee_id}/qualifikationen`}>Nachweis öffnen</Link>}
+      </li>)}</ul>}
       <h3>Zuordnungshistorie</h3>
       {selected.assignmentHistory==null?<p>Keine Berechtigung für die Zuordnungshistorie.</p>:selected.assignmentHistory.length===0?<p>Keine Zuordnungshistorie vorhanden.</p>:<ul>{selected.assignmentHistory.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
       {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}
@@ -893,7 +940,7 @@ export function Sites(){
             <p>Benötigte Qualifikationen: {eligibility[shift.id]!.required_qualification_codes.join(', ')||'Keine'}</p>
             {eligibility[shift.id]!.employees.length===0?<p>Keine dem Objekt zugeordneten Mitarbeitenden im Schichtzeitraum.</p>:<ul>{eligibility[shift.id]!.employees.map(employee=><li key={employee.employee_id}>
               <strong>{employee.employee_name}</strong> · <span className={`eligibility-${employee.status}`}>{eligibilityLabels[employee.status]}</span>
-              {employee.reasons.length>0&&<ul>{employee.reasons.map((reason,index)=><li key={`${reason.code}-${index}`}>{reason.message}{reason.link&&<> · <Link to={eligibilityHref(reason,employee.employee_id)}> Nachweis öffnen</Link></>}</li>)}</ul>}
+              {employee.reasons.length>0&&<ul>{employee.reasons.map((reason,index)=><li key={`${reason.code}-${index}`} className={`eligibility-reason-${employee.status}`}><span className="eligibility-reason-code">{reason.code}</span> · {reason.message}{reason.link&&<> · <Link to={eligibilityHref(reason,employee.employee_id)}>{reason.link.label?`Nachweis ${reason.link.label}`:'Nachweis öffnen'}</Link></>}</li>)}</ul>}
             </li>)}</ul>}
           </>}
         </div>
@@ -932,7 +979,7 @@ export function Sites(){
       <h3>Objektdokumente</h3>
       {selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=>{
         const statusLabel=document.status_label??(document.computed_status?documentStatusLabels[document.computed_status]:document.document_status);
-        return <li key={document.id} className={['abgelaufen','nicht_freigegeben','fehlend'].includes(document.computed_status??'')?'object-warning':''}><strong>{document.title}</strong> · {statusLabel}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{document.days_until_expiry!=null?` · ${document.days_until_expiry} Tage bis Ablauf`:''}{document.review_state?` · ${reviewStateLabels[document.review_state]}`:''}{document.reviewed_at?` · geprüft am ${new Date(`${document.reviewed_at}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{document.description&&<p>{document.description}</p>}
+        return <li key={document.id} className={['abgelaufen','nicht_freigegeben','fehlend'].includes(document.computed_status??'')?'object-warning':''}><strong>{document.title}</strong> · {statusLabel}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{document.days_until_expiry!=null?` · ${document.days_until_expiry} Tage bis Ablauf`:''}{document.review_state?` · ${reviewStateLabels[document.review_state]}`:''}{document.reviewed_at?` · geprüft am ${formatDue(document.reviewed_at)}`:''}{document.description&&<p>{document.description}</p>}
           <button type="button" onClick={()=>startDocumentEdit(document)}>Metadaten bearbeiten</button>
           {writable&&hasPermission('dms:write')&&<>{['draft','rejected'].includes(document.approval_status)&&<button type="button" onClick={()=>void runDocumentWorkflow(document,'request-review')}>Freigabe anfordern</button>}{['draft','pending_approval','rejected'].includes(document.approval_status)&&<button type="button" onClick={()=>void runDocumentWorkflow(document,'approve')}>Freigabe erteilen</button>}{['pending_approval','approved'].includes(document.approval_status)&&<button type="button" onClick={()=>void runDocumentWorkflow(document,'return-for-revision')}>Zur Überarbeitung zurückgeben</button>}</>}
           <ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>;
@@ -1032,7 +1079,7 @@ export function Sites(){
           <button>Auftrag anlegen</button>
         </form>}
         {maintenanceOrders.length===0?<p>Keine Wartungsaufträge für dieses Objekt vorhanden.</p>:<ul>{maintenanceOrders.map(order=><li key={order.id} className={order.overdue?'object-warning':''}>
-          <strong>{order.order_number}</strong> · {order.device_name??order.device_id}{order.asset_number?` · ${order.asset_number}`:''} · {order.status_label}{order.overdue?' · überfällig':''}{order.due_on?` · fällig am ${new Date(`${order.due_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}
+          <strong>{order.order_number}</strong> · {order.device_name??order.device_id}{order.asset_number?` · ${order.asset_number}`:''} · {order.status_label}{order.overdue?' · überfällig':''}{order.due_on?` · fällig am ${formatDue(order.due_on)}`:''}
           <p>{order.description}</p>
           {order.responsible_employee_name&&<p>Verantwortlich: {order.responsible_employee_name}</p>}
           {order.performed_work&&<p>Durchgeführt: {order.performed_work}{order.result?` · Ergebnis: ${order.result}`:''}</p>}
@@ -1069,7 +1116,7 @@ export function Sites(){
         <label>Bis<input aria-label="Chronik bis" type="date" value={chronicleFilter.to} onChange={event=>setChronicleFilter({...chronicleFilter,to:event.target.value})}/></label>
         <button>Chronik filtern</button>
       </form>
-      {chronicleLoading?<p role="status">Chronik wird geladen …</p>:chronicleEvents.length===0?<p>Keine Ereignisse für die gewählten Filter vorhanden.</p>:<ol>{chronicleEvents.map(event=><li key={event.id}><time>{new Date(event.occurred_at).toLocaleString('de-DE')}</time><strong>{event.category}</strong><span>{event.event_kind} · {event.summary}</span>{event.actor_email&&<span> · {event.actor_email}</span>}{event.link&&hasPermission(event.link.permission)&&<Link to={event.link.target}>{event.link.label}</Link>}</li>)}</ol>}
+      {chronicleLoading?<p role="status">Chronik wird geladen …</p>:chronicleEvents.length===0?<p>Keine Ereignisse für die gewählten Filter vorhanden.</p>:<ol>{chronicleEvents.map(event=><li key={event.id}><time>{new Date(event.occurred_at).toLocaleString('de-DE')}</time><strong>{event.category}</strong><span>{event.event_kind} · {event.summary}</span>{event.actor_email&&<span> · {event.actor_email}</span>}{event.link&&hasPermission(event.link.permission)?<Link to={event.link.target} title={event.link.entity_id??undefined}>{event.link.label}</Link>:<span className="object-chronicle-no-link">Kein direkter Datensatzlink</span>}</li>)}</ol>}
       </div>}
     </article>:detailLoading?<p role="status">Objektakte wird geladen …</p>:detailError?<p className="object-empty">Die Objektakte konnte nicht geladen werden. Bitte Berechtigung und Verbindung prüfen.</p>:null):<>
       <div className="object-page-actions">{writable&&<button type="button" onClick={()=>startEdit()}>+ Objekt anlegen</button>}</div>
@@ -1096,6 +1143,7 @@ export function Sites(){
         <article><strong>{metrics?.open_maintenance??'–'}</strong><span>Offene Wartungsaufträge</span></article>
         <article><strong>{metrics?.overdue_maintenance??'–'}</strong><span>Überfällige Wartungsaufträge</span></article>
       </div>}
+      <PriorityActionList actions={priorityActions} title="Dringende Aufgaben in allen Objekten" showSite/>
       {formOpen&&writable&&<form onSubmit={save} className="object-create-form">
         <label>Objektname<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>
         <label>Objektnummer<input value={form.site_number} onChange={e=>setForm({...form,site_number:e.target.value})}/></label>
