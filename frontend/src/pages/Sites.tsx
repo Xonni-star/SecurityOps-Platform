@@ -1,4 +1,4 @@
-import {ChangeEvent,FormEvent,useEffect,useState} from 'react';
+import {ChangeEvent,FormEvent,useEffect,useRef,useState} from 'react';
 import {useNavigate,useParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {uuid} from '../lib/uuid';
@@ -15,6 +15,10 @@ type KeyMovement={id:string;key_id:string;key_label:string;movement_type:string;
 type KeyBundle={id:string;name:string;status:string;item_count:number;issued_count:number};
 type DmsVersion={id:string;version_no:number;size_bytes:number;content_type:string;lifecycle_state:string;created_at:string;retention_until:string|null};
 type SiteDocument={id:string;title:string;description:string|null;document_status:string;created_at:string;deleted_at:string|null;versions:DmsVersion[]};
+type SiteAlarm={id:string;type:string;description:string;severity:string;status:string;triggered_at:string;acknowledged_at:string|null;resolved_at:string|null;priority_name:string|null};
+type SiteIncident={id:string;alarm_id:string|null;description:string;status:string;created_at:string;updated_at:string;priority_name:string|null;employee_name:string|null;assigned_count:number;assignees:{id:string;name:string}[]};
+type CustomerTask={id:string;customer_id:string;customer_name:string;title:string;description:string|null;status:string;due_at:string|null;assigned_employee_name:string|null;created_at:string;completed_at:string|null};
+type MaintenanceEntry={id:string;created_at:string;revision_no:number;content:string;status:string;priority_name:string};
 type Context={
   site:Site&{object_manager_name?:string|null;operations_manager_name?:string|null};
   customers:{customer_id:string;customer_name:string;relationship_type:string;relationship_status:string}[]|null;
@@ -22,19 +26,23 @@ type Context={
   locations:{id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;responsible_employee_name?:string|null}[];
   hazards:{id:string;title:string;risk_score:number;status:string;location_name:string|null;responsible_employee_name?:string|null}[];
   instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;location_name?:string|null}[];
-  journal:{id:string;created_at:string}[]|null;
+  journal:{id:string;created_at:string;revision_no:number;content:string;status:string;category_name:string;priority_name:string}[]|null;
   staffing:StaffingAssignment[]|null;
   shifts:ScheduledShift[]|null;
   patrols:{routes:PatrolRoute[];recentScans:PatrolScan[]}|null;
   keys:{items:KeyRecord[];recentMovements:KeyMovement[]}|null;
   keyBundles:KeyBundle[]|null;
   documents:SiteDocument[]|null;
+  alarms:SiteAlarm[]|null;
+  incidents:SiteIncident[]|null;
+  customerTasks:CustomerTask[]|null;
+  maintenance:MaintenanceEntry[]|null;
 };
 const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',active:'Aktiv',restricted:'Eingeschränkt',temporarily_closed:'Temporär geschlossen',decommissioned:'Stillgelegt',archived:'Archiviert'};
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
 const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown'};
 type SiteForm=typeof emptySite;
-const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['journal','Journal']] as const;
+const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['einsaetze','Einsätze & Alarme'],['aufgaben','Aufgaben & Wartung'],['journal','Journal']] as const;
 
 function toBase64(file:File){
   return file.arrayBuffer().then(bytes=>{
@@ -72,6 +80,11 @@ export function Sites(){
   const [ackEmployee,setAckEmployee]=useState('');
   const [documentTitle,setDocumentTitle]=useState('');
   const [documentFile,setDocumentFile]=useState<File|null>(null);
+  const documentInput=useRef<HTMLInputElement>(null);
+  const [taskCustomerId,setTaskCustomerId]=useState('');
+  const [taskTitle,setTaskTitle]=useState('');
+  const [taskDue,setTaskDue]=useState('');
+  const [taskAssignee,setTaskAssignee]=useState('');
   const [details,setDetails]=useState({alias:'',site_type:'',description:'',object_manager_employee_id:'',operations_manager_employee_id:''});
   const writable=hasPermission('sites:write');
 
@@ -176,7 +189,7 @@ export function Sites(){
     event.preventDefault();if(!selected||!documentFile)return;
     try{
       await api('/dms/documents',{method:'POST',body:JSON.stringify({title:documentTitle,site_id:selected.site.id,content_type:documentFile.type||'application/octet-stream',content_base64:await toBase64(documentFile),client_mutation_id:uuid()})});
-      setDocumentTitle('');setDocumentFile(null);await refreshContext();setError('');
+      setDocumentTitle('');setDocumentFile(null);if(documentInput.current)documentInput.current.value='';await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
   async function downloadDocument(document:SiteDocument,version:DmsVersion){
@@ -187,6 +200,17 @@ export function Sites(){
       link.href=url;link.download=`${document.title}-v${version.version_no}`;link.click();URL.revokeObjectURL(url);
       setError('');
     }catch(e){setError((e as Error).message);}
+  }
+  async function createCustomerTask(event:FormEvent){
+    event.preventDefault();if(!taskCustomerId)return;
+    try{
+      await api(`/customers/${taskCustomerId}/tasks`,{method:'POST',body:JSON.stringify({title:taskTitle,due_at:taskDue?new Date(taskDue).toISOString():null,assigned_employee_id:taskAssignee||null})});
+      setTaskTitle('');setTaskDue('');setTaskAssignee('');await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
+  async function completeCustomerTask(task:CustomerTask){
+    try{await api(`/customers/${task.customer_id}/tasks/${task.id}`,{method:'PATCH',body:JSON.stringify({status:'completed'})});await refreshContext();setError('');}
+    catch(e){setError((e as Error).message);}
   }
   const filtered=sites.filter(site=>(statusFilter==='all'||site.status===statusFilter)&&`${site.name} ${site.site_number??''} ${site.address??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const sorted=[...filtered].sort((a,b)=>String(a[sortKey]??'').localeCompare(String(b[sortKey]??''),'de')*(descending?-1:1));
@@ -271,10 +295,25 @@ export function Sites(){
       {active==='dokumente'&&<div className="employee-detail-content">
       <h3>Objektdokumente</h3>
       {selected.documents===null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=><li key={document.id}><strong>{document.title}</strong> · {document.document_status}{document.description&&<p>{document.description}</p>}<ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>)}</ul>}
-      {selected.documents!==null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}><label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label><label>Datei<input required type="file" onChange={(event:ChangeEvent<HTMLInputElement>)=>setDocumentFile(event.target.files?.[0]??null)}/></label><button>Dokument hochladen und prüfen</button></form>}
+      {selected.documents!==null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}><label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label><label>Datei<input ref={documentInput} required type="file" onChange={(event:ChangeEvent<HTMLInputElement>)=>setDocumentFile(event.target.files?.[0]??null)}/></label><button>Dokument hochladen und prüfen</button></form>}
+      </div>}
+      {active==='einsaetze'&&<div className="employee-detail-content">
+      <h3>Alarme am Objekt</h3>
+      {selected.alarms===null?<p>Keine Berechtigung für Alarme.</p>:selected.alarms.length===0?<p>Keine site- oder gerätebezogenen Alarme für dieses Objekt vorhanden.</p>:<ul>{selected.alarms.map(alarm=><li key={alarm.id}><strong>{alarm.priority_name??alarm.severity}</strong> · {alarm.type} · {alarm.status} · {new Date(alarm.triggered_at).toLocaleString('de-DE')}<p>{alarm.description}</p></li>)}</ul>}
+      {hasPermission('alarms:read')&&<button type="button" onClick={()=>navigate('/alarms')}>Alarmverwaltung öffnen</button>}
+      <h3>Einsätze</h3>
+      {selected.incidents===null?<p>Keine Berechtigung für Einsätze.</p>:selected.incidents.length===0?<p>Keine Einsätze für dieses Objekt vorhanden.</p>:<ul>{selected.incidents.map(incident=><li key={incident.id}><strong>{incident.priority_name??'Einsatz'}</strong> · {incident.status} · {new Date(incident.created_at).toLocaleString('de-DE')} · {incident.assignees.length?incident.assignees.map(assignee=>assignee.name).join(', '):incident.assigned_count?`${incident.assigned_count} zugewiesen`:'Keine Zuweisung'}<p>{incident.description}</p></li>)}</ul>}
+      {hasPermission('incidents:read')&&<button type="button" onClick={()=>navigate('/incidents')}>Einsatzverwaltung öffnen</button>}
+      </div>}
+      {active==='aufgaben'&&<div className="employee-detail-content">
+      <h3>Kundenaufgaben und Wiedervorlagen</h3>
+      {selected.customerTasks===null?<p>Keine Berechtigung für Kundenaufgaben.</p>:selected.customerTasks.length===0?<p>Keine Kundenaufgaben für aktive Objektbeziehungen vorhanden.</p>:<ul>{selected.customerTasks.map(task=><li key={task.id}><strong>{task.title}</strong> · {task.customer_name} · {task.status} · {task.due_at?new Date(task.due_at).toLocaleString('de-DE'):'Ohne Frist'}{task.assigned_employee_name?` · ${task.assigned_employee_name}`:''}{task.description&&<p>{task.description}</p>}{task.status==='open'&&hasPermission('customers:write')&&<button type="button" onClick={()=>void completeCustomerTask(task)}>Als erledigt markieren</button>}</li>)}</ul>}
+      {selected.customers!==null&&hasPermission('customers:write')&&<form onSubmit={createCustomerTask}><label>Kunde<select required value={taskCustomerId} onChange={event=>setTaskCustomerId(event.target.value)}><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Aufgabe / Wiedervorlage<input required value={taskTitle} onChange={event=>setTaskTitle(event.target.value)}/></label><label>Fällig am<input type="datetime-local" value={taskDue} onChange={event=>setTaskDue(event.target.value)}/></label>{hasPermission('employees:read')&&<label>Verantwortlich<select value={taskAssignee} onChange={event=>setTaskAssignee(event.target.value)}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}<button>Aufgabe anlegen</button></form>}
+      <h3>Technik und Instandhaltung</h3>
+      {selected.maintenance===null?<p>Keine Berechtigung für Wartungseinträge im Wachbuch.</p>:selected.maintenance.length===0?<p>Keine Technik- oder Instandhaltungseinträge vorhanden.</p>:<ul>{selected.maintenance.map(entry=><li key={entry.id}><strong>{entry.priority_name}</strong> · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       </div>}
       {active==='journal'&&<div className="employee-detail-content">
-      <h3>Objektjournal</h3>{selected.journal===null?<p>Keine Berechtigung für das Wachbuch.</p>:<ul>{selected.journal.map(entry=><li key={entry.id}>{new Date(entry.created_at).toLocaleString()}</li>)}</ul>}
+      <h3>Objektjournal</h3>{selected.journal===null?<p>Keine Berechtigung für das Wachbuch.</p>:<ul>{selected.journal.map(entry=><li key={entry.id}><strong>{entry.category_name}</strong> · {entry.priority_name} · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       </div>}
     </article>:!error&&<p>Objektakte wird geladen …</p>):<>
       <div className="employee-page-title"><div className="employee-page-title-spacer"/><div className="employee-page-actions">{writable&&<button type="button" onClick={()=>startEdit()}>+ Objekt anlegen</button>}</div></div>

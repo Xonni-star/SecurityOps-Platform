@@ -179,4 +179,33 @@ describe('Objektübersicht',()=>{
     expect(body).toEqual(expect.objectContaining({title:'Fluchtplan',site_id:'0',content_type:'application/pdf',content_base64:btoa('content')}));
     expect(body.client_mutation_id).toMatch(/^[0-9a-f-]{36}$/i);
   });
+
+  it('shows linked incidents and maintenance and reuses customer-task actions',async()=>{
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:{
+      site:sites[0],
+      customers:[{customer_id:'customer-1',customer_name:'Northwind',relationship_type:'primary',relationship_status:'active'}],
+      contracts:[],locations:[],hazards:[],instructions:[],journal:[{id:'entry-1',created_at:'2026-11-25T10:00:00Z',revision_no:2,content:'Shift report',status:'open',category_name:'Vorkommnis',priority_name:'Hoch'}],
+      staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,
+      alarms:[{id:'alarm-1',type:'panic',description:'Assistance requested',severity:'critical',status:'open',triggered_at:'2026-11-25T10:00:00Z',acknowledged_at:null,resolved_at:null,priority_name:'Kritisch'}],
+      incidents:[{id:'incident-1',alarm_id:'alarm-1',description:'Respond to alarm',status:'on_site',created_at:'2026-11-25T10:00:00Z',updated_at:'2026-11-25T10:00:00Z',priority_name:'Kritisch',employee_name:null,assigned_count:1,assignees:[]}],
+      customerTasks:[{id:'task-1',customer_id:'customer-1',customer_name:'Northwind',title:'Review site access',description:null,status:'open',due_at:null,assigned_employee_name:null,created_at:'2026-11-25T10:00:00Z',completed_at:null}],
+      maintenance:[{id:'maintenance-1',created_at:'2026-11-25T10:00:00Z',revision_no:1,content:'Inspect gate',status:'open',priority_name:'Hoch'}],
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Einsätze & Alarme'}));
+    expect(await screen.findByText('Assistance requested')).toBeTruthy();
+    expect(screen.getByText('Respond to alarm')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Aufgaben & Wartung'}));
+    expect(await screen.findByText('Review site access')).toBeTruthy();
+    expect(screen.getByText('Inspect gate')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Kunde'),{target:{value:'customer-1'}});
+    fireEvent.change(screen.getByLabelText('Aufgabe / Wiedervorlage'),{target:{value:'Test emergency lights'}});
+    fireEvent.click(screen.getByRole('button',{name:'Aufgabe anlegen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/customers/customer-1/tasks',expect.objectContaining({method:'POST'})));
+    fireEvent.click(screen.getByRole('button',{name:'Als erledigt markieren'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/customers/customer-1/tasks/task-1',expect.objectContaining({method:'PATCH',body:JSON.stringify({status:'completed'})})));
+    fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
+    expect(await screen.findByText('Shift report')).toBeTruthy();
+  });
 });

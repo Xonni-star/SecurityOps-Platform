@@ -50,7 +50,7 @@ describe('object management',()=>{
   it('keeps object context behind tenant and permission checks',async()=>{
     const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null}));
+    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:[],maintenance:null}));
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(true);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM contract_sites'))).toBe(true);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM employee_object_assignments'))).toBe(false);
@@ -174,6 +174,56 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM key_movements m'))).toBe(false);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM key_bundles b'))).toBe(false);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM dms_documents d'))).toBe(false);
+  });
+
+  it('returns site-linked alarms, incidents, active-customer tasks and maintenance entries',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'alarms:read',scope:'site'},
+        {code:'incidents:read',scope:'site'},
+        {code:'watchbook:read',scope:'site'},
+        {code:'customers:read',scope:'tenant'},
+        {code:'employees:read',scope:'site'},
+      ],
+    };
+    const alarm={id:'alarm-1',type:'panic',description:'Assistance requested',severity:'critical',status:'open'};
+    const incident={id:'incident-1',description:'Respond to alarm',status:'on_site',assignees:[{id:'employee-1',name:'Mia Guard'}]};
+    const task={id:'task-1',customer_id:customer,customer_name:'Northwind',title:'Review site access',status:'open'};
+    const journalEntry={id:'entry-1',category_name:'Vorkommnis',content:'Entry',status:'open'};
+    const maintenanceEntry={id:'entry-2',content:'Inspect gate',priority_name:'Hoch',status:'open'};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM alarms a'))return result([alarm]);
+      if(sql.includes('FROM incidents i'))return result([incident]);
+      if(sql.includes('FROM customer_tasks t'))return result([task]);
+      if(sql.includes('FROM watchbook_entries e')&&sql.includes("c.code='maintenance'"))return result([maintenanceEntry]);
+      if(sql.includes('FROM watchbook_entries e'))return result([journalEntry]);
+      return result([]);
+    });
+
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.alarms).toEqual([alarm]);
+    expect(response.body.incidents).toEqual([incident]);
+    expect(response.body.customerTasks).toEqual([task]);
+    expect(response.body.journal).toEqual([journalEntry]);
+    expect(response.body.maintenance).toEqual([maintenanceEntry]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM incidents i'))?.[1]).toEqual([tenant,site,true]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM customer_tasks t'))?.[1]).toEqual([tenant,site,true]);
+  });
+
+  it('does not query operational records without their independent permissions',async()=>{
+    const scoped={...sessionUser,permissions:['sites:read'],permission_grants:[]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):sql.includes('FROM sites s')?result([{id:site}]):result([]));
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({alarms:null,incidents:null,customerTasks:null,maintenance:null,journal:null}));
+    for(const table of ['FROM alarms a','FROM incidents i','FROM customer_tasks t','FROM watchbook_entries e']){
+      expect(queryMock.mock.calls.some(([sql])=>String(sql).includes(table))).toBe(false);
+    }
   });
 
   it('rejects a site-scoped user outside their assigned sites before reading or writing',async()=>{

@@ -145,11 +145,20 @@ objectManagementRouter.get(
          ORDER BY i.title,i.version DESC`,
         [req.user!.tenantId,id],
       )).rows;
-      const watchbookScope=effectivePermissionScope(grants,'watchbook:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-      const canReadWatchbook=watchbookScope&&canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},watchbookScope,{tenantId:user.tenantId,siteId:id});
+      const canReadWatchbook=canReadSiteData('watchbook:read');
       const journal=canReadWatchbook?(await query(
-        `SELECT id,site_id,created_by,created_at,client_entry_id
-         FROM watchbook_entries WHERE tenant_id=$1 AND site_id=$2 ORDER BY created_at DESC LIMIT 20`,
+        `SELECT e.id,e.site_id,e.created_by,e.created_at,e.client_entry_id,
+          r.revision_no,r.content,r.status,c.name AS category_name,p.name AS priority_name
+         FROM watchbook_entries e
+         JOIN LATERAL (
+           SELECT r0.* FROM watchbook_revisions r0
+           WHERE r0.tenant_id=e.tenant_id AND r0.entry_id=e.id
+           ORDER BY r0.revision_no DESC LIMIT 1
+         ) r ON true
+         JOIN watchbook_categories c ON c.tenant_id=e.tenant_id AND c.id=r.category_id
+         JOIN watchbook_priorities p ON p.tenant_id=e.tenant_id AND p.id=r.priority_id
+         WHERE e.tenant_id=$1 AND e.site_id=$2
+         ORDER BY e.created_at DESC LIMIT 20`,
         [user.tenantId,id],
       )).rows:null;
       const canReadStaffing=canReadSiteData('employees:read');
@@ -265,7 +274,62 @@ objectManagementRouter.get(
          GROUP BY d.id ORDER BY d.created_at DESC`,
         [user.tenantId,id,canReadCustomerDocuments],
       )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents});
+      const alarms=canReadSiteData('alarms:read')?(await query(
+        `SELECT a.id,a.site_id,a.type,a.description,a.severity,a.status,a.triggered_at,a.acknowledged_at,a.resolved_at,
+          p.name AS priority_name
+         FROM alarms a
+         LEFT JOIN alarm_priorities p ON p.tenant_id=a.tenant_id AND p.id=a.priority_id
+         LEFT JOIN devices d ON d.tenant_id=a.tenant_id AND d.id=a.device_id
+         WHERE a.tenant_id=$1 AND (a.site_id=$2 OR (a.site_id IS NULL AND d.site_id=$2))
+         ORDER BY a.triggered_at DESC LIMIT 20`,
+        [user.tenantId,id],
+      )).rows:null;
+      const incidents=canReadSiteData('incidents:read')?(await query(
+        `SELECT i.id,COALESCE(i.site_id,a.site_id) AS site_id,i.alarm_id,i.description,i.status,i.created_at,i.updated_at,
+          p.name AS priority_name,
+          CASE WHEN $3::boolean THEN e.name ELSE NULL END AS employee_name,
+          COUNT(DISTINCT ia.employee_id)::int AS assigned_count,
+          CASE WHEN $3::boolean THEN
+            COALESCE(json_agg(json_build_object('id',ae.id,'name',ae.name) ORDER BY ae.name)
+              FILTER (WHERE ae.id IS NOT NULL),'[]'::json)
+          ELSE '[]'::json END AS assignees
+         FROM incidents i
+         LEFT JOIN alarms a ON a.tenant_id=i.tenant_id AND a.id=i.alarm_id
+         LEFT JOIN alarm_priorities p ON p.tenant_id=i.tenant_id AND p.id=i.priority_id
+         LEFT JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
+         LEFT JOIN incident_assignments ia ON ia.incident_id=i.id
+         LEFT JOIN employees ae ON ae.tenant_id=i.tenant_id AND ae.id=ia.employee_id
+         WHERE i.tenant_id=$1 AND (i.site_id=$2 OR (i.site_id IS NULL AND a.site_id=$2))
+         GROUP BY i.id,a.site_id,p.name,e.name
+         ORDER BY i.created_at DESC LIMIT 20`,
+        [user.tenantId,id,canReadStaffing],
+      )).rows:null;
+      const customerTasks=canReadTenantData('customers:read')?(await query(
+        `SELECT t.id,t.customer_id,c.name AS customer_name,t.title,t.description,t.status,t.due_at,t.assigned_employee_id,
+          CASE WHEN $3::boolean THEN e.name ELSE NULL END AS assigned_employee_name,t.created_at,t.completed_at
+         FROM customer_tasks t
+         JOIN customer_sites cs ON cs.tenant_id=t.tenant_id AND cs.customer_id=t.customer_id
+         JOIN customers c ON c.tenant_id=t.tenant_id AND c.id=t.customer_id
+         LEFT JOIN employees e ON e.tenant_id=t.tenant_id AND e.id=t.assigned_employee_id
+         WHERE t.tenant_id=$1 AND cs.site_id=$2 AND cs.relationship_status='active'
+         ORDER BY t.status,t.due_at NULLS LAST,t.created_at DESC LIMIT 100`,
+        [user.tenantId,id,canReadStaffing],
+      )).rows:null;
+      const maintenance=canReadWatchbook?(await query(
+        `SELECT e.id,e.created_at,r.revision_no,r.content,r.status,p.name AS priority_name
+         FROM watchbook_entries e
+         JOIN LATERAL (
+           SELECT r0.* FROM watchbook_revisions r0
+           WHERE r0.tenant_id=e.tenant_id AND r0.entry_id=e.id
+           ORDER BY r0.revision_no DESC LIMIT 1
+         ) r ON true
+         JOIN watchbook_categories c ON c.tenant_id=e.tenant_id AND c.id=r.category_id AND c.code='maintenance'
+         JOIN watchbook_priorities p ON p.tenant_id=e.tenant_id AND p.id=r.priority_id
+         WHERE e.tenant_id=$1 AND e.site_id=$2
+         ORDER BY e.created_at DESC LIMIT 20`,
+        [user.tenantId,id],
+      )).rows:null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );

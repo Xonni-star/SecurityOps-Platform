@@ -196,8 +196,14 @@ documents unless `customer_documents:read` is granted. Existing DMS upload and
 download routes remain the only file-storage flows. No key or document records
 are copied into object-specific tables.
 
-Remaining gaps include alarm/incident, qualification, handover, task and
-maintenance read models, plus task-level actions where the existing domain
-supports them.
+Site-linked alarms and incidents, active-customer follow-up tasks and the
+latest maintenance-category watchbook entries are projected with their
+independent read permissions. Task creation/completion reuses the audited
+customer-task endpoints; maintenance remains append-only watchbook evidence.
+The journal now includes the latest revision and category/priority metadata.
+These integrations add no schema or parallel workflow.
+
+Remaining gaps include qualification and handover read models and any
+site-specific maintenance workflow beyond existing watchbook evidence.
 Offline evidence and conflict handling remain governed by the existing sync
 receipts; this migration introduces no simulated evidence or second workflow.
