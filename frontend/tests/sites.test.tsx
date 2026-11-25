@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import {MemoryRouter,Route,Routes} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
@@ -46,7 +47,7 @@ describe('Objektübersicht',()=>{
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/sites')return sites.slice(0,1);
       if(path==='/customers'||path==='/employees')return [];
-      return {site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:null};
+      return {site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null};
     });
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
@@ -56,5 +57,126 @@ describe('Objektübersicht',()=>{
     expect(screen.getByRole('heading',{name:'Gefährdungen'})).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Dienstanweisungen'}));
     expect(screen.getByRole('heading',{name:'Dienstanweisungen'})).toBeTruthy();
+  });
+
+  it('shows real object staffing assignments and upcoming duty shifts',async()=>{
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      return {
+        site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,
+        staffing:[{id:'assignment-1',employee_id:'employee-1',employee_name:'Mia Guard',assignment_type:'operational',role:'Objektschutz',starts_on:'2026-01-01',ends_on:null,primary_assignment:true,notes:null}],
+        shifts:[{id:'shift-1',period_id:'period-1',period_name:'Novemberplan',period_status:'published',period_starts_at:'2026-11-01T00:00:00Z',period_ends_at:'2026-12-01T00:00:00Z',role_code:'night_guard',starts_at:'2026-11-26T20:00:00Z',ends_at:'2026-11-27T06:00:00Z',assigned_count:1,assignments:[{id:'schedule-assignment-1',employee_name:'Mia Guard'}]}],
+      };
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Kunden & Verträge'}));
+    expect(await screen.findByText('Keine Berechtigung für Kundenbeziehungen.')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Personal & Dienste'}));
+    expect(await screen.findByText('Mia Guard')).toBeTruthy();
+    expect(screen.getByText(/Novemberplan/)).toBeTruthy();
+    expect(screen.getByText(/night_guard/)).toBeTruthy();
+  });
+
+  it('shows actual patrol plans and recent checkpoint activity, while explaining restricted access',async()=>{
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      return {
+        site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,
+        patrols:{
+          routes:[{id:'route-1',name:'Night perimeter',expected_start:'22:00:00',expected_end:'23:00:00',points:[{control_point_id:'point-1',name:'North gate',sequence:1,expected_offset_seconds:0}],assignments:[{id:'assignment-1',starts_at:'2026-11-25T22:00:00Z',ends_at:null,employee_name:'Mia Guard'}]}],
+          recentScans:[{id:'scan-1',route_id:'route-1',route_name:'Night perimeter',control_point_id:'point-1',control_point_name:'North gate',scanned_at:'2026-11-24T22:15:00Z',deviation:'none',employee_name:'Mia Guard'}],
+        },
+      };
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Kontrollgänge'}));
+    expect(await screen.findAllByText('Night perimeter')).toHaveLength(2);
+    expect(screen.getByText(/1\. North gate/)).toBeTruthy();
+    expect(screen.getByText(/Zuweisungen: Mia Guard/)).toBeTruthy();
+    expect(screen.getByText(/Ohne Abweichung/)).toBeTruthy();
+
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      return {site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null};
+    });
+    fireEvent.click(screen.getByRole('button',{name:'Zur Objektübersicht'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Kontrollgänge'}));
+    expect(await screen.findAllByText('Keine Berechtigung für Kontrollgänge.')).toHaveLength(2);
+  });
+
+  it('shows site key inventory, bundle status and DMS versions with real read models',async()=>{
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      return {
+        site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,
+        keys:{
+          items:[{id:'key-1',key_code:'K-01',label:'Main entrance',key_type:'physical',status:'issued',holder_user_id:null,holder_employee_id:'employee-1',issued_at:null,returned_at:null,lost_at:null,deactivated_at:null}],
+          recentMovements:[{id:'movement-1',key_id:'key-1',key_label:'Main entrance',movement_type:'issued',from_status:'available',to_status:'issued',created_at:'2026-11-25T10:00:00Z',employee_name:'Mia Guard'}],
+        },
+        keyBundles:[{id:'bundle-1',name:'Night shift',status:'issued',item_count:2,issued_count:2}],
+        documents:[{id:'document-1',title:'Site instructions',description:null,document_status:'active',created_at:'2026-11-25T10:00:00Z',deleted_at:null,versions:[{id:'version-1',version_no:1,size_bytes:128,content_type:'application/pdf',lifecycle_state:'available',created_at:'2026-11-25T10:00:00Z',retention_until:null}]}],
+      };
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Schlüssel & Zutritt'}));
+    expect(await screen.findByText(/K-01/)).toBeTruthy();
+    expect(screen.getByText('Night shift')).toBeTruthy();
+    expect(screen.getByRole('heading',{name:'Letzte Schlüsselbewegungen'})).toBeTruthy();
+    expect(screen.getByText(/Mia Guard/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Dokumente'}));
+    expect(await screen.findByText('Site instructions')).toBeTruthy();
+    expect(screen.getByText(/Version 1 · available · 128 Bytes/)).toBeTruthy();
+    expect(screen.getByRole('button',{name:'Dokument hochladen und prüfen'})).toBeTruthy();
+  });
+
+  it('explains inaccessible key and DMS sections',async()=>{
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      return {site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null};
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Schlüssel & Zutritt'}));
+    expect(await screen.findByText('Keine Berechtigung für Schlüssel.')).toBeTruthy();
+    expect(screen.getByText('Keine Berechtigung für die Schlüsselhistorie.')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Dokumente'}));
+    expect(await screen.findByText('Keine Berechtigung für DMS-Dokumente.')).toBeTruthy();
+    expect(screen.queryByRole('button',{name:'Dokument hochladen und prüfen'})).toBeNull();
+  });
+
+  it('uploads site documents through the existing DMS endpoint',async()=>{
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers'||path==='/employees')return [];
+      return {
+        site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,
+        keys:null,keyBundles:null,documents:[],
+      };
+    });
+    renderSites();
+    const user=userEvent.setup();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Dokumente'}));
+    fireEvent.change(screen.getByLabelText('Dokumenttitel'),{target:{value:'Fluchtplan'}});
+    const file=new File(['content'],'escape-plan.pdf',{type:'application/pdf'});
+    Object.defineProperty(file,'arrayBuffer',{value:async()=>new TextEncoder().encode('content').buffer});
+    const fileInput=screen.getByLabelText('Datei') as HTMLInputElement;
+    await user.upload(fileInput,file);
+    expect(fileInput.files?.[0]).toBe(file);
+    fireEvent.submit(screen.getByRole('button',{name:'Dokument hochladen und prüfen'}).closest('form')!);
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/dms/documents',expect.objectContaining({method:'POST'})));
+    const upload=apiMock.mock.calls.find(([path])=>path==='/dms/documents')!;
+    const body=JSON.parse(upload[1].body);
+    expect(body).toEqual(expect.objectContaining({title:'Fluchtplan',site_id:'0',content_type:'application/pdf',content_base64:btoa('content')}));
+    expect(body.client_mutation_id).toMatch(/^[0-9a-f-]{36}$/i);
   });
 });

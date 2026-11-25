@@ -1,24 +1,48 @@
-import {FormEvent,useEffect,useState} from 'react';
+import {ChangeEvent,FormEvent,useEffect,useState} from 'react';
 import {useNavigate,useParams} from 'react-router-dom';
-import {api,hasPermission} from '../lib/api';
+import {api,csrf,hasPermission} from '../lib/api';
+import {uuid} from '../lib/uuid';
 
 type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null};
 type Customer={id:string;name:string;customer_number?:string|null};
 type Employee={id:string;name:string};
+type StaffingAssignment={id:string;employee_id:string;employee_name:string;assignment_type:string;role:string|null;starts_on:string;ends_on:string|null;primary_assignment:boolean;notes:string|null};
+type ScheduledShift={id:string;period_id:string;period_name:string;period_status:string;period_starts_at:string;period_ends_at:string;role_code:string;starts_at:string;ends_at:string;assigned_count:number;assignments:{id:string;employee_name:string}[]};
+type PatrolRoute={id:string;name:string;expected_start:string|null;expected_end:string|null;points:{control_point_id:string;name:string;sequence:number;expected_offset_seconds:number|null}[];assignments:{id:string;starts_at:string;ends_at:string|null;employee_name:string|null}[]};
+type PatrolScan={id:string;scanned_at:string;deviation:string;route_id:string;route_name:string;control_point_id:string;control_point_name:string;employee_name:string|null};
+type KeyRecord={id:string;key_code:string;label:string;key_type:string;status:string;holder_user_id:string|null;holder_employee_id:string|null;issued_at:string|null;returned_at:string|null;lost_at:string|null;deactivated_at:string|null};
+type KeyMovement={id:string;key_id:string;key_label:string;movement_type:string;from_status:string|null;to_status:string;created_at:string;employee_name:string|null};
+type KeyBundle={id:string;name:string;status:string;item_count:number;issued_count:number};
+type DmsVersion={id:string;version_no:number;size_bytes:number;content_type:string;lifecycle_state:string;created_at:string;retention_until:string|null};
+type SiteDocument={id:string;title:string;description:string|null;document_status:string;created_at:string;deleted_at:string|null;versions:DmsVersion[]};
 type Context={
   site:Site&{object_manager_name?:string|null;operations_manager_name?:string|null};
-  customers:{customer_id:string;customer_name:string;relationship_type:string;relationship_status:string}[];
-  contracts:{id:string;contract_number:string;customer_name:string;status:string}[];
+  customers:{customer_id:string;customer_name:string;relationship_type:string;relationship_status:string}[]|null;
+  contracts:{id:string;contract_number:string;customer_name:string;status:string}[]|null;
   locations:{id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;responsible_employee_name?:string|null}[];
   hazards:{id:string;title:string;risk_score:number;status:string;location_name:string|null;responsible_employee_name?:string|null}[];
   instructions:{id:string;title:string;content:string;version:number;status:string;requires_acknowledgement:boolean;acknowledgement_count:number;location_name?:string|null}[];
   journal:{id:string;created_at:string}[]|null;
+  staffing:StaffingAssignment[]|null;
+  shifts:ScheduledShift[]|null;
+  patrols:{routes:PatrolRoute[];recentScans:PatrolScan[]}|null;
+  keys:{items:KeyRecord[];recentMovements:KeyMovement[]}|null;
+  keyBundles:KeyBundle[]|null;
+  documents:SiteDocument[]|null;
 };
 const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',active:'Aktiv',restricted:'Eingeschränkt',temporarily_closed:'Temporär geschlossen',decommissioned:'Stillgelegt',archived:'Archiviert'};
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
 const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown'};
 type SiteForm=typeof emptySite;
-const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['journal','Journal']] as const;
+const tabs=[['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['gefaehrdungen','Gefährdungen'],['anweisungen','Dienstanweisungen'],['personal','Personal & Dienste'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['dokumente','Dokumente'],['journal','Journal']] as const;
+
+function toBase64(file:File){
+  return file.arrayBuffer().then(bytes=>{
+    let binary='';const values=new Uint8Array(bytes);
+    for(let index=0;index<values.length;index+=0x8000)binary+=String.fromCharCode(...values.subarray(index,index+0x8000));
+    return btoa(binary);
+  });
+}
 
 export function Sites(){
   const navigate=useNavigate();
@@ -46,6 +70,8 @@ export function Sites(){
   const [instructionForm,setInstructionForm]=useState({title:'',content:'',status:'draft',version:1,requires_acknowledgement:false,location_id:'',valid_from:'',valid_until:''});
   const [supersedesId,setSupersedesId]=useState('');
   const [ackEmployee,setAckEmployee]=useState('');
+  const [documentTitle,setDocumentTitle]=useState('');
+  const [documentFile,setDocumentFile]=useState<File|null>(null);
   const [details,setDetails]=useState({alias:'',site_type:'',description:'',object_manager_employee_id:'',operations_manager_employee_id:''});
   const writable=hasPermission('sites:write');
 
@@ -146,11 +172,29 @@ export function Sites(){
     try{await api(`/sites/${selected.site.id}/instructions`,{method:'POST',body:JSON.stringify({...instructionForm,location_id:instructionForm.location_id||null,valid_from:instructionForm.valid_from||null,valid_until:instructionForm.valid_until||null,supersedes_id:supersedesId||null})});setInstructionForm({title:'',content:'',status:'draft',version:1,requires_acknowledgement:false,location_id:'',valid_from:'',valid_until:''});setSupersedesId('');await refreshContext();setError('');}
     catch(e){setError((e as Error).message);}
   }
+  async function uploadSiteDocument(event:FormEvent){
+    event.preventDefault();if(!selected||!documentFile)return;
+    try{
+      await api('/dms/documents',{method:'POST',body:JSON.stringify({title:documentTitle,site_id:selected.site.id,content_type:documentFile.type||'application/octet-stream',content_base64:await toBase64(documentFile),client_mutation_id:uuid()})});
+      setDocumentTitle('');setDocumentFile(null);await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
+  async function downloadDocument(document:SiteDocument,version:DmsVersion){
+    try{
+      const response=await fetch(`/api/v1/dms/documents/${document.id}/versions/${version.id}/download`,{credentials:'include',headers:{'x-csrf-token':csrf()}});
+      if(!response.ok)throw new Error((await response.json()).error||'Download fehlgeschlagen');
+      const url=URL.createObjectURL(await response.blob()),link=window.document.createElement('a');
+      link.href=url;link.download=`${document.title}-v${version.version_no}`;link.click();URL.revokeObjectURL(url);
+      setError('');
+    }catch(e){setError((e as Error).message);}
+  }
   const filtered=sites.filter(site=>(statusFilter==='all'||site.status===statusFilter)&&`${site.name} ${site.site_number??''} ${site.address??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const sorted=[...filtered].sort((a,b)=>String(a[sortKey]??'').localeCompare(String(b[sortKey]??''),'de')*(descending?-1:1));
   const pages=Math.max(1,Math.ceil(sorted.length/10));
   const currentPage=Math.min(page,pages);
   const changeSort=(key:typeof sortKey)=>{if(key===sortKey)setDescending(!descending);else{setSortKey(key);setDescending(false);}setPage(1);};
+  const selectedCustomers=selected?.customers??[];
+  const selectedContracts=selected?.contracts??[];
 
   return <section className="employee-management">
     {error&&<p role="alert" className="error">{error}</p>}
@@ -175,10 +219,10 @@ export function Sites(){
       </div>}
       {active==='kunden'&&<div className="employee-detail-content">
       <h3>Kundenbeziehungen</h3>
-      <ul>{selected.customers.map(customer=><li key={customer.customer_id}>{customer.customer_name} ({customer.relationship_type}, {customer.relationship_status}) {writable&&hasPermission('customers:write')&&customer.relationship_status!=='archived'&&<button type="button" onClick={()=>void archiveLink(customer.customer_id)}>Verknüpfung archivieren</button>}</li>)}</ul>
-      {writable&&hasPermission('customers:write')&&<form onSubmit={linkCustomer}><select aria-label="Kunde verknüpfen" value={customerId} onChange={e=>setCustomerId(e.target.value)} required><option value="">Kunde verknüpfen …</option>{customers.filter(customer=>!selected.customers.some(link=>link.customer_id===customer.id&&link.relationship_status!=='archived')).map(customer=><option key={customer.id} value={customer.id}>{customer.name}{customer.customer_number?` · ${customer.customer_number}`:''}</option>)}</select><button>Verknüpfen</button></form>}
-      <h3>Verträge</h3><ul>{selected.contracts.map(contract=><li key={contract.id}>{contract.contract_number} · {contract.customer_name} · {contract.status}</li>)}</ul>
-      {hasPermission('contracts:write')&&hasPermission('customer_contacts:read')&&<form onSubmit={linkContract}><label>Kunde<select value={contractCustomer} onChange={e=>void chooseContractCustomer(e.target.value)} required><option value="">Kunde auswählen</option>{selected.customers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Vertrag<select value={contractId} onChange={e=>setContractId(e.target.value)} required><option value="">Vertrag auswählen</option>{availableContracts.filter(contract=>!contract.sites.some(site=>site.id===siteId)).map(contract=><option key={contract.id} value={contract.id}>{contract.contract_number}</option>)}</select></label><button>Vertrag verknüpfen</button></form>}
+      {selected.customers===null?<p>Keine Berechtigung für Kundenbeziehungen.</p>:<ul>{selectedCustomers.map(customer=><li key={customer.customer_id}>{customer.customer_name} ({customer.relationship_type}, {customer.relationship_status}) {writable&&hasPermission('customers:write')&&customer.relationship_status!=='archived'&&<button type="button" onClick={()=>void archiveLink(customer.customer_id)}>Verknüpfung archivieren</button>}</li>)}</ul>}
+      {selected.customers!==null&&writable&&hasPermission('customers:write')&&<form onSubmit={linkCustomer}><select aria-label="Kunde verknüpfen" value={customerId} onChange={e=>setCustomerId(e.target.value)} required><option value="">Kunde verknüpfen …</option>{customers.filter(customer=>!selectedCustomers.some(link=>link.customer_id===customer.id&&link.relationship_status!=='archived')).map(customer=><option key={customer.id} value={customer.id}>{customer.name}{customer.customer_number?` · ${customer.customer_number}`:''}</option>)}</select><button>Verknüpfen</button></form>}
+      <h3>Verträge</h3>{selected.contracts===null?<p>Keine Berechtigung für Verträge.</p>:<ul>{selectedContracts.map(contract=><li key={contract.id}>{contract.contract_number} · {contract.customer_name} · {contract.status}</li>)}</ul>}
+      {selected.customers!==null&&hasPermission('contracts:write')&&hasPermission('customer_contacts:read')&&<form onSubmit={linkContract}><label>Kunde<select value={contractCustomer} onChange={e=>void chooseContractCustomer(e.target.value)} required><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Vertrag<select value={contractId} onChange={e=>setContractId(e.target.value)} required><option value="">Vertrag auswählen</option>{availableContracts.filter(contract=>!contract.sites.some(site=>site.id===siteId)).map(contract=><option key={contract.id} value={contract.id}>{contract.contract_number}</option>)}</select></label><button>Vertrag verknüpfen</button></form>}
       </div>}
       {active==='struktur'&&<div className="employee-detail-content">
       <h3>Gebäude, Bereiche und Zonen</h3>
@@ -197,6 +241,37 @@ export function Sites(){
       {writable&&hasPermission('employees:read')&&<label>Mitarbeiter für Kenntnisnahme<select aria-label="Mitarbeiter für Kenntnisnahme" value={ackEmployee} onChange={e=>setAckEmployee(e.target.value)}><option value="">Mitarbeiter auswählen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
       <ul>{selected.instructions.map(instruction=><li key={instruction.id}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>{writable&&<button type="button" onClick={()=>{setSupersedesId(instruction.id);setInstructionForm({title:instruction.title,content:instruction.content,status:'draft',version:instruction.version+1,requires_acknowledgement:instruction.requires_acknowledgement,location_id:'',valid_from:'',valid_until:''});}}>Neue Version vorbereiten</button>}{writable&&hasPermission('employees:read')&&instruction.status==='approved'&&<button type="button" disabled={!ackEmployee} onClick={()=>void acknowledge(instruction.id)}>Kenntnisnahme erfassen</button>}</li>)}</ul>
       {supersedesId&&<p>Neue Version: {instructionForm.version}</p>}
+      </div>}
+      {active==='personal'&&<div className="employee-detail-content">
+      <h3>Personalzuordnungen</h3>
+      {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
+      <h3>Dienstplanung und Schichten</h3>
+      {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}</li>)}</ul>}
+      </div>}
+      {active==='kontrollgaenge'&&<div className="employee-detail-content">
+      <h3>Kontrollgangpläne und Abdeckung</h3>
+      {selected.patrols===null?<p>Keine Berechtigung für Kontrollgänge.</p>:selected.patrols.routes.length===0?<p>Keine Kontrollgangpläne für dieses Objekt vorhanden.</p>:<ul>{selected.patrols.routes.map(route=><li key={route.id}>
+        <strong>{route.name}</strong>{route.expected_start||route.expected_end?` · Geplant ${route.expected_start??'–'}–${route.expected_end??'–'}`:''}
+        <p>Kontrollpunkte: {route.points.length?route.points.map(point=>`${point.sequence}. ${point.name}`).join(', '):'Keine Kontrollpunkte konfiguriert'}</p>
+        <p>{route.assignments.length?`Zuweisungen: ${route.assignments.map(assignment=>`${assignment.employee_name??'Mitarbeiter zugewiesen'} (${new Date(assignment.starts_at).toLocaleString('de-DE')}${assignment.ends_at?` – ${new Date(assignment.ends_at).toLocaleString('de-DE')}`:' – offen'})`).join('; ')}`:'Keine aktuelle oder zukünftige Personalzuweisung'}</p>
+      </li>)}</ul>}
+      <h3>Letzte Kontrollpunktaktivitäten</h3>
+      {selected.patrols===null?<p>Keine Berechtigung für Kontrollgänge.</p>:selected.patrols.recentScans.length===0?<p>Keine erfassten Kontrollpunktaktivitäten vorhanden.</p>:<ul>{selected.patrols.recentScans.map(scan=><li key={scan.id}>
+        <strong>{scan.route_name}</strong> · {scan.control_point_name} · {new Date(scan.scanned_at).toLocaleString('de-DE')}{scan.employee_name?` · ${scan.employee_name}`:''} · {scan.deviation==='none'?'Ohne Abweichung':`Abweichung: ${scan.deviation}`}
+      </li>)}</ul>}
+      </div>}
+      {active==='schluessel'&&<div className="employee-detail-content">
+      <h3>Schlüsselbestand</h3>
+      {selected.keys===null?<p>Keine Berechtigung für Schlüssel.</p>:selected.keys.items.length===0?<p>Keine Schlüssel für dieses Objekt erfasst.</p>:<ul>{selected.keys.items.map(key=><li key={key.id}><strong>{key.label}</strong> · {key.key_code} · {key.key_type} · {key.status==='available'?'Verfügbar':key.status==='issued'?'Ausgegeben':key.status==='lost'?'Verloren':'Deaktiviert'}{key.status==='issued'?(key.holder_employee_id?' · an Mitarbeitende ausgegeben':' · an Benutzer ausgegeben'):''}</li>)}</ul>}
+      <h3>Schlüsselbunde</h3>
+      {selected.keyBundles===null?<p>Keine Berechtigung für Schlüsselbunde.</p>:selected.keyBundles.length===0?<p>Keine Schlüsselbunde für dieses Objekt vorhanden.</p>:<ul>{selected.keyBundles.map(bundle=><li key={bundle.id}><strong>{bundle.name}</strong> · {bundle.status} · {bundle.item_count} Schlüssel ({bundle.issued_count} ausgegeben)</li>)}</ul>}
+      <h3>Letzte Schlüsselbewegungen</h3>
+      {selected.keys===null?<p>Keine Berechtigung für die Schlüsselhistorie.</p>:selected.keys.recentMovements.length===0?<p>Keine Schlüsselbewegungen erfasst.</p>:<ul>{selected.keys.recentMovements.map(movement=><li key={movement.id}><strong>{movement.key_label}</strong> · {movement.movement_type} · {movement.from_status??'–'} → {movement.to_status} · {new Date(movement.created_at).toLocaleString('de-DE')}{movement.employee_name?` · ${movement.employee_name}`:''}</li>)}</ul>}
+      </div>}
+      {active==='dokumente'&&<div className="employee-detail-content">
+      <h3>Objektdokumente</h3>
+      {selected.documents===null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=><li key={document.id}><strong>{document.title}</strong> · {document.document_status}{document.description&&<p>{document.description}</p>}<ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>)}</ul>}
+      {selected.documents!==null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}><label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label><label>Datei<input required type="file" onChange={(event:ChangeEvent<HTMLInputElement>)=>setDocumentFile(event.target.files?.[0]??null)}/></label><button>Dokument hochladen und prüfen</button></form>}
       </div>}
       {active==='journal'&&<div className="employee-detail-content">
       <h3>Objektjournal</h3>{selected.journal===null?<p>Keine Berechtigung für das Wachbuch.</p>:<ul>{selected.journal.map(entry=><li key={entry.id}>{new Date(entry.created_at).toLocaleString()}</li>)}</ul>}

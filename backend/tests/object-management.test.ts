@@ -50,9 +50,130 @@ describe('object management',()=>{
   it('keeps object context behind tenant and permission checks',async()=>{
     const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null}));
+    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null}));
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(true);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM contract_sites'))).toBe(true);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM employee_object_assignments'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM schedule_periods p'))).toBe(false);
+  });
+
+  it('returns site-scoped employee assignments and upcoming shifts only with their read scopes',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'sites:read',scope:'site'},
+        {code:'customers:read',scope:'tenant'},
+        {code:'contracts:read',scope:'tenant'},
+        {code:'employees:read',scope:'site'},
+        {code:'scheduling:read',scope:'site'},
+      ],
+    };
+    const staffing=[{id:'assignment',employee_id:'employee',employee_name:'Guard',assignment_type:'operational'}];
+    const shifts=[{id:'shift',period_id:'period',period_name:'November',role_code:'guard',assigned_count:1,assignments:[]}];
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM employee_object_assignments'))return result(staffing);
+      if(sql.includes('FROM schedule_periods p'))return result(shifts);
+      return result([]);
+    });
+
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.staffing).toEqual(staffing);
+    expect(response.body.shifts).toEqual(shifts);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_object_assignments'))?.[1]).toEqual([tenant,site]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM schedule_periods p'))?.[1]).toEqual([tenant,site,true]);
+  });
+
+  it('returns site-linked patrol plans and recent scans only within patrol scope',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[{code:'patrols:read',scope:'site'}],
+    };
+    const patrolRoute={id:'route-1',name:'Night perimeter',expected_start:'22:00:00',expected_end:'23:00:00',points:[{control_point_id:'point-1',name:'North gate',sequence:1,expected_offset_seconds:0}],assignments:[{id:'assignment-1',starts_at:'2026-11-25T22:00:00Z',ends_at:null,employee_name:null}]};
+    const scan={id:'scan-1',route_id:'route-1',route_name:'Night perimeter',control_point_id:'point-1',control_point_name:'North gate',scanned_at:'2026-11-24T22:15:00Z',deviation:'none',employee_name:null};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM patrol_routes r'))return result([patrolRoute]);
+      if(sql.includes('FROM patrol_scans ps'))return result([scan]);
+      return result([]);
+    });
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.patrols).toEqual({routes:[patrolRoute],recentScans:[scan]});
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM patrol_routes r'))?.[1]).toEqual([tenant,site,false]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM patrol_scans ps'))?.[1]).toEqual([tenant,site,false]);
+  });
+
+  it('distinguishes an authorized empty patrol record set from inaccessible patrol data',async()=>{
+    const scoped={...sessionUser,permissions:['sites:read'],permission_grants:[{code:'patrols:read',scope:'site'}],site_ids:[site]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):sql.includes('FROM sites s')?result([{id:site}]):result([]));
+    const allowed=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.patrols).toEqual({routes:[],recentScans:[]});
+
+    queryMock.mockReset();
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([{...scoped,site_ids:[]}]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      return result([]);
+    });
+    const denied=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(denied.status).toBe(200);
+    expect(denied.body.patrols).toBeNull();
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM patrol_routes r'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM patrol_scans ps'))).toBe(false);
+  });
+
+  it('returns site-scoped keys, bundles and DMS metadata with independent permissions',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'keys:read',scope:'site'},
+        {code:'keys:bundle_read',scope:'site'},
+        {code:'dms:read',scope:'site'},
+      ],
+    };
+    const key={id:'key-1',key_code:'K-01',label:'Main entrance',key_type:'physical',status:'available'};
+    const movement={id:'movement-1',key_id:'key-1',key_label:'Main entrance',movement_type:'returned',to_status:'available'};
+    const bundle={id:'bundle-1',name:'Night shift',status:'available',item_count:2,issued_count:0};
+    const document={id:'document-1',title:'Site instructions',document_status:'active',versions:[{id:'version-1',version_no:1,lifecycle_state:'available'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM keys WHERE'))return result([key]);
+      if(sql.includes('FROM key_movements m'))return result([movement]);
+      if(sql.includes('FROM key_bundles b'))return result([bundle]);
+      if(sql.includes('FROM dms_documents d'))return result([document]);
+      return result([]);
+    });
+
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.keys).toEqual({items:[key],recentMovements:[movement]});
+    expect(response.body.keyBundles).toEqual([bundle]);
+    expect(response.body.documents).toEqual([document]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM keys WHERE'))?.[1]).toEqual([tenant,site]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM key_bundles b'))?.[1]).toEqual([tenant,site]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM dms_documents d'))?.[1]).toEqual([tenant,site,false]);
+    expect(String(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM dms_documents d'))?.[0])).toContain('d.customer_id IS NULL');
+  });
+
+  it('does not query keys or documents when their site permissions are missing',async()=>{
+    const scoped={...sessionUser,permissions:['sites:read'],permission_grants:[]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):sql.includes('FROM sites s')?result([{id:site}]):result([]));
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({keys:null,keyBundles:null,documents:null}));
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM keys WHERE'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM key_movements m'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM key_bundles b'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM dms_documents d'))).toBe(false);
   });
 
   it('rejects a site-scoped user outside their assigned sites before reading or writing',async()=>{
@@ -76,12 +197,43 @@ describe('object management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM resource_owners'))).toBe(true);
   });
 
-  it('does not expose CRM data through a narrower customer permission',async()=>{
+  it('withholds CRM data through a narrower customer permission without blocking the object file',async()=>{
     const scoped={...sessionUser,permission_grants:[{code:'customers:read',scope:'site'}]};
-    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      return result([]);
+    });
     const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
+    expect(response.body.customers).toBeNull();
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(false);
+  });
+
+  it('lets site-scoped personnel read the object file without CRM permissions',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'sites:read',scope:'site'},
+        {code:'employees:read',scope:'site'},
+        {code:'scheduling:read',scope:'site'},
+      ],
+    };
+    const staffing=[{id:'assignment',employee_name:'Guard'}];
+    const shifts=[{id:'shift',period_name:'November'}];
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM employee_object_assignments'))return result(staffing);
+      if(sql.includes('FROM schedule_periods p'))return result(shifts);
+      return result([]);
+    });
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({customers:null,contracts:null,staffing,shifts}));
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM contract_sites'))).toBe(false);
   });
 
   it('returns journal entries only with watchbook permission for the site',async()=>{

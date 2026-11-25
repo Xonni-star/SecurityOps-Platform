@@ -179,18 +179,25 @@ zones, explainable hazard assessments with a persisted likelihood x impact
 score, and versioned site instructions with optional employee
 acknowledgements. All relationships use composite tenant-aware foreign keys.
 The object-context endpoint exposes these records alongside existing customer,
-contract and watchbook links; patrol, alarm, incident, handover and DMS
-records remain in their existing domains and are not duplicated.
+contract and watchbook links, as well as existing site-linked employee
+assignments, active/upcoming duty shifts, patrol route plans and the 20 most
+recent site-linked checkpoint scans. These personnel, scheduling and patrol
+projections remain read-only and permission-scoped; the source records are not
+duplicated. Patrol access requires `patrols:read` for the requested site.
+Employee names in patrol assignments and scans additionally require
+`employees:read`; missing patrol access returns `null`, distinct from an
+authorized empty result.
 
-Current gap after this step: the object context has real customer, contract,
-hierarchy, hazard, instruction and watchbook links, but it does not yet expose
-the existing patrol, alarm, incident, qualification, schedule, key, handover
-or DMS read models in one response. Those domains already have their own
-authorization, audit and offline contracts and must be integrated by read-only
-joins or dedicated projections rather than copied into object tables.
+Existing key inventory, the last 20 key movements, key bundles and DMS
+document/version metadata are also projected from their owning tables. Each
+projection checks its own site-scoped permission independently; employee names
+in key movement history require `employees:read`. DMS results omit customer
+documents unless `customer_documents:read` is granted. Existing DMS upload and
+download routes remain the only file-storage flows. No key or document records
+are copied into object-specific tables.
 
-The next phases should connect existing patrol/control-point, alarm/incident,
-qualification/scheduling, key, handover and DMS read models to the object
-context, then add task-level actions where the existing domain supports them.
+Remaining gaps include alarm/incident, qualification, handover, task and
+maintenance read models, plus task-level actions where the existing domain
+supports them.
 Offline evidence and conflict handling remain governed by the existing sync
 receipts; this migration introduces no simulated evidence or second workflow.

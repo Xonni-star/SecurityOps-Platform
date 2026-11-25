@@ -18,6 +18,12 @@ Eine geschützte Object-Context-API liefert Site, verknüpfte Kunden und Verträ
 
 Der Objektkontext prüft zusätzlich den konkreten Site- bzw. Ownership-Scope. Da Kunden- und Vertragsdaten in diesem Kontext nicht einzeln auf engere Scopes gefiltert werden, sind für sie Tenant- oder Systemrechte erforderlich. Das Wachbuchjournal wird nur mit passender `watchbook:read`-Berechtigung zurückgegeben; `journal: null` kennzeichnet fehlende Berechtigung.
 
+Die Objektakte bindet bestehende Personalzuordnungen (`employee_object_assignments`) und laufende bzw. zukünftige Schichten aus der Dienstplanung ein, ohne neue Tabellen oder Kopien anzulegen. Personalnamen und Zuordnungen benötigen zusätzlich `employees:read` für den konkreten Site-Scope; Schichten benötigen `scheduling:read`. Schichtnamen werden nur mit Personal-Leserecht ausgegeben, andernfalls bleibt es bei der Anzahl zugewiesener Kräfte. Abgelaufene Zuordnungen und beendete Schichten werden nicht als aktuelle Planung angezeigt.
+
+Die Objektakte bindet außerdem vorhandene site-verknüpfte Kontrollgangpläne, aktuelle oder zukünftige Personalzuweisungen und die letzten 20 echten NFC-Kontrollpunktscans read-only ein. Der konkrete Site-Scope wird mit `patrols:read` geprüft; ohne passende Berechtigung ist `patrols: null`, eine berechtigte leere Ergebnismenge ist dagegen explizit leer. Mitarbeiternamen erscheinen nur zusätzlich zu einer passenden `employees:read`-Berechtigung. Es entstehen weder neue Patrol-Daten noch simulierte Läufe oder Aktionen.
+
+Schlüsselbestand, die letzten 20 Schlüsselbewegungen und Schlüsselbunde verwenden getrennte `keys:read`- bzw. `keys:bundle_read`-Site-Berechtigungen. DMS-Dokumente und Versionen kommen aus den vorhandenen DMS-Tabellen; Kundendokumente bleiben ohne `customer_documents:read` ausgeblendet. Upload und Download laufen ausschließlich über die vorhandenen, serverseitig geprüften DMS-Endpunkte. Die Objektakte legt keine parallelen Schlüssel- oder Dokumentdaten an.
+
 ## Risiken und Folgearbeiten
 
-Statusübergänge werden im CRUD validiert, um inkonsistente operative Zustände zu vermeiden. Sensitive Inhalte wie Schlüssel, Alarmpläne und Dokumente bleiben in ihren bestehenden, separat berechtigten Modulen. Als nächstes folgen eine dedizierte Objektakte mit Gebäude/Bereichen und die Verknüpfung von Journal, Risiken und operativen Kennzahlen.
+Statusübergänge werden im CRUD validiert, um inkonsistente operative Zustände zu vermeiden. Schlüsselaktionen und DMS-Lebenszyklus bleiben in ihren bestehenden, separat berechtigten Modulen. Weitere Objektakten-Integrationen umfassen Alarm-/Vorfallsdaten, Qualifikationen, Übergaben, Aufgaben und Wartung.

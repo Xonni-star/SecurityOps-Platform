@@ -77,8 +77,6 @@ objectManagementRouter.get(
   '/sites/:id/object-context',
   requireAuth,
   requirePermission('sites:read',{allowedScopes:['tenant','site','own','system']}),
-  requirePermission('customers:read'),
-  requirePermission('contracts:read'),
   requireSiteScope('sites:read'),
   async(req,res,next)=>{
     try{
@@ -92,14 +90,28 @@ objectManagementRouter.get(
         [req.user!.tenantId,id],
       )).rows[0];
       if(!site)return res.status(404).json({error:'Not found'});
-      const customers=(await query(
+      const user=req.user!;
+      const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+      const canReadTenantData=(code:string)=>{
+        const scope=effectivePermissionScope(grants,code,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+        return scope==='tenant'||scope==='system';
+      };
+      const canReadSiteData=(code:string)=>{
+        const scope=effectivePermissionScope(grants,code,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+        return scope!==null&&canAccessResource(
+          {userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},
+          scope,
+          {tenantId:user.tenantId,siteId:id},
+        );
+      };
+      const customers=canReadTenantData('customers:read')?(await query(
         `SELECT cs.*,c.name AS customer_name,c.customer_number
          FROM customer_sites cs JOIN customers c ON c.tenant_id=cs.tenant_id AND c.id=cs.customer_id
          WHERE cs.tenant_id=$1 AND cs.site_id=$2
          ORDER BY cs.is_primary DESC,c.name`,
         [req.user!.tenantId,id],
-      )).rows;
-      const contracts=(await query(
+      )).rows:null;
+      const contracts=canReadTenantData('contracts:read')?(await query(
         `SELECT con.id,con.contract_number,con.contract_type,con.status,con.customer_id,c.name AS customer_name
          FROM contract_sites cts
          JOIN contracts con ON con.tenant_id=cts.tenant_id AND con.id=cts.contract_id
@@ -107,7 +119,7 @@ objectManagementRouter.get(
          WHERE cts.tenant_id=$1 AND cts.site_id=$2
          ORDER BY con.starts_on DESC,con.contract_number`,
         [req.user!.tenantId,id],
-      )).rows;
+      )).rows:null;
       const locations=(await query(
         `SELECT l.*,e.name AS responsible_employee_name
          FROM object_locations l
@@ -133,8 +145,6 @@ objectManagementRouter.get(
          ORDER BY i.title,i.version DESC`,
         [req.user!.tenantId,id],
       )).rows;
-      const user=req.user!;
-      const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
       const watchbookScope=effectivePermissionScope(grants,'watchbook:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
       const canReadWatchbook=watchbookScope&&canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},watchbookScope,{tenantId:user.tenantId,siteId:id});
       const journal=canReadWatchbook?(await query(
@@ -142,7 +152,120 @@ objectManagementRouter.get(
          FROM watchbook_entries WHERE tenant_id=$1 AND site_id=$2 ORDER BY created_at DESC LIMIT 20`,
         [user.tenantId,id],
       )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal});
+      const canReadStaffing=canReadSiteData('employees:read');
+      const staffing=canReadStaffing?(await query(
+        `SELECT oa.id,oa.employee_id,e.name AS employee_name,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
+          oa.primary_assignment,oa.notes
+         FROM employee_object_assignments oa
+         JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
+         WHERE oa.tenant_id=$1 AND oa.site_id=$2
+           AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+         ORDER BY oa.starts_on<=CURRENT_DATE DESC,oa.primary_assignment DESC,oa.starts_on, e.name`,
+        [user.tenantId,id],
+      )).rows:null;
+      const canReadSchedule=canReadSiteData('scheduling:read');
+      const shifts=canReadSchedule?(await query(
+        `SELECT p.id AS period_id,p.name AS period_name,p.status AS period_status,
+          p.starts_at AS period_starts_at,p.ends_at AS period_ends_at,
+          sh.id,sh.role_code,sh.starts_at,sh.ends_at,sh.required_qualification_codes,
+          COUNT(a.id)::int AS assigned_count,
+          CASE WHEN $3::boolean THEN
+            COALESCE(json_agg(json_build_object('id',a.id,'employee_name',e.name) ORDER BY e.name)
+              FILTER (WHERE a.id IS NOT NULL),'[]'::json)
+          ELSE '[]'::json END AS assignments
+         FROM schedule_periods p
+         JOIN schedule_shifts sh ON sh.tenant_id=p.tenant_id AND sh.period_id=p.id AND sh.site_id=p.site_id
+         LEFT JOIN schedule_assignments a ON a.tenant_id=sh.tenant_id AND a.shift_id=sh.id AND a.status='assigned'
+         LEFT JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=a.employee_id
+         WHERE p.tenant_id=$1 AND p.site_id=$2 AND p.ends_at>=now() AND sh.ends_at>=now()
+         GROUP BY p.id,sh.id ORDER BY sh.starts_at,sh.role_code`,
+        [user.tenantId,id,canReadStaffing],
+      )).rows:null;
+      const canReadPatrols=canReadSiteData('patrols:read');
+      const patrols=canReadPatrols?{
+        routes:(await query(
+          `SELECT r.id,r.name,r.expected_start,r.expected_end,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'control_point_id',rp.control_point_id,'name',cp.name,'sequence',rp.sequence,
+                'expected_offset_seconds',rp.expected_offset_seconds
+              ) ORDER BY rp.sequence)
+              FROM patrol_route_points rp
+              JOIN control_points cp ON cp.tenant_id=r.tenant_id AND cp.id=rp.control_point_id
+              WHERE rp.tenant_id=r.tenant_id AND rp.route_id=r.id
+            ),'[]'::json) AS points,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id',pa.id,'starts_at',pa.starts_at,'ends_at',pa.ends_at,
+                'employee_name',CASE WHEN $3::boolean THEN e.name ELSE NULL END
+              ) ORDER BY pa.starts_at)
+              FROM patrol_assignments pa
+              LEFT JOIN employees e ON e.tenant_id=pa.tenant_id AND e.id=pa.employee_id
+              WHERE pa.tenant_id=r.tenant_id AND pa.route_id=r.id
+                AND (pa.ends_at IS NULL OR pa.ends_at>=now())
+            ),'[]'::json) AS assignments
+           FROM patrol_routes r
+           WHERE r.tenant_id=$1 AND r.site_id=$2
+           ORDER BY r.name,r.created_at DESC`,
+          [user.tenantId,id,canReadStaffing],
+        )).rows,
+        recentScans:(await query(
+          `SELECT ps.id,ps.scanned_at,ps.deviation,r.id AS route_id,r.name AS route_name,
+            cp.id AS control_point_id,cp.name AS control_point_name,
+            CASE WHEN $3::boolean THEN e.name ELSE NULL END AS employee_name
+           FROM patrol_scans ps
+           JOIN patrol_routes r ON r.tenant_id=ps.tenant_id AND r.id=ps.route_id AND r.site_id=$2
+           JOIN control_points cp ON cp.tenant_id=ps.tenant_id AND cp.id=ps.control_point_id
+           LEFT JOIN employees e ON e.tenant_id=ps.tenant_id AND e.id=ps.employee_id
+           WHERE ps.tenant_id=$1
+           ORDER BY ps.scanned_at DESC LIMIT 20`,
+          [user.tenantId,id,canReadStaffing],
+        )).rows,
+      }:null;
+      const keys=canReadSiteData('keys:read')?{
+        items:(await query(
+          `SELECT id,key_code,label,key_type,status,holder_user_id,holder_employee_id,issued_at,returned_at,lost_at,deactivated_at
+           FROM keys WHERE tenant_id=$1 AND site_id=$2 ORDER BY label`,
+          [user.tenantId,id],
+        )).rows,
+        recentMovements:(await query(
+          `SELECT m.id,m.key_id,k.label AS key_label,m.movement_type,m.from_status,m.to_status,m.created_at,
+            CASE WHEN $3::boolean THEN e.name ELSE NULL END AS employee_name
+           FROM key_movements m
+           JOIN keys k ON k.tenant_id=m.tenant_id AND k.id=m.key_id AND k.site_id=$2
+           LEFT JOIN employees e ON e.tenant_id=m.tenant_id AND e.id=m.holder_employee_id
+           WHERE m.tenant_id=$1
+           ORDER BY m.created_at DESC LIMIT 20`,
+          [user.tenantId,id,canReadStaffing],
+        )).rows,
+      }:null;
+      const keyBundles=canReadSiteData('keys:bundle_read')?(await query(
+        `SELECT b.id,b.name,b.status,b.holder_user_id,b.holder_employee_id,
+          COUNT(i.key_id)::int AS item_count,
+          COUNT(i.key_id) FILTER (WHERE k.status='issued')::int AS issued_count
+         FROM key_bundles b
+         LEFT JOIN key_bundle_items i ON i.tenant_id=b.tenant_id AND i.bundle_id=b.id
+         LEFT JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
+         WHERE b.tenant_id=$1 AND b.site_id=$2
+         GROUP BY b.id ORDER BY b.name`,
+        [user.tenantId,id],
+      )).rows:null;
+      const canReadDocuments=canReadSiteData('dms:read');
+      const canReadCustomerDocuments=canReadTenantData('customer_documents:read');
+      const documents=canReadDocuments?(await query(
+        `SELECT d.id,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
+          COALESCE(json_agg(json_build_object(
+            'id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,
+            'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until
+          ) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') AS versions
+         FROM dms_documents d
+         LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
+         WHERE d.tenant_id=$1 AND d.site_id=$2
+           AND ($3::boolean OR d.customer_id IS NULL)
+         GROUP BY d.id ORDER BY d.created_at DESC`,
+        [user.tenantId,id,canReadCustomerDocuments],
+      )).rows:null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );
