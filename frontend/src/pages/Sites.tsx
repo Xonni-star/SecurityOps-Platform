@@ -19,6 +19,8 @@ type SiteAlarm={id:string;type:string;description:string;severity:string;status:
 type SiteIncident={id:string;alarm_id:string|null;description:string;status:string;created_at:string;updated_at:string;priority_name:string|null;employee_name:string|null;assigned_count:number;assignees:{id:string;name:string}[]};
 type CustomerTask={id:string;customer_id:string;customer_name:string;title:string;description:string|null;status:string;due_at:string|null;assigned_employee_name:string|null;created_at:string;completed_at:string|null};
 type MaintenanceEntry={id:string;created_at:string;revision_no:number;content:string;status:string;priority_name:string};
+type WatchbookCategory={id:string;code:string;name:string};
+type WatchbookPriority={code:string;name:string};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
@@ -97,6 +99,12 @@ export function Sites(){
   const [taskTitle,setTaskTitle]=useState('');
   const [taskDue,setTaskDue]=useState('');
   const [taskAssignee,setTaskAssignee]=useState('');
+  const [maintenanceCategoryId,setMaintenanceCategoryId]=useState('');
+  const [maintenancePriorities,setMaintenancePriorities]=useState<WatchbookPriority[]>([]);
+  const [maintenancePriorityCode,setMaintenancePriorityCode]=useState('');
+  const [maintenanceContent,setMaintenanceContent]=useState('');
+  const [maintenanceClientEntryId,setMaintenanceClientEntryId]=useState(uuid());
+  const [maintenanceOptionsLoaded,setMaintenanceOptionsLoaded]=useState(false);
   const [assignmentForm,setAssignmentForm]=useState({employee_id:'',assignment_type:'operational',role:'',starts_on:'',ends_on:'',notes:'',reason:''});
   const [keyAction,setKeyAction]=useState<KeyAction|null>(null);
   const [keyHolderEmployeeId,setKeyHolderEmployeeId]=useState('');
@@ -244,6 +252,13 @@ export function Sites(){
     try{await api(`/customers/${task.customer_id}/tasks/${task.id}`,{method:'PATCH',body:JSON.stringify({status:'completed'})});await refreshContext();setError('');}
     catch(e){setError((e as Error).message);}
   }
+  async function createMaintenanceEntry(event:FormEvent){
+    event.preventDefault();if(!selected||!maintenanceCategoryId||!maintenancePriorityCode)return;
+    try{
+      await api('/watchbook/entries',{method:'POST',body:JSON.stringify({site_id:selected.site.id,category_id:maintenanceCategoryId,priority_code:maintenancePriorityCode,content:maintenanceContent,client_entry_id:maintenanceClientEntryId})});
+      await refreshContext();setMaintenanceContent('');setMaintenanceClientEntryId(uuid());setError('');
+    }catch(e){setError((e as Error).message);}
+  }
   async function createStaffingAssignment(event:FormEvent){
     event.preventDefault();if(!selected||!assignmentForm.employee_id)return;
     try{
@@ -273,6 +288,30 @@ export function Sites(){
   const selectedContracts=selected?.contracts??[];
   const assignableEmployees=employees.filter(employee=>!selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
   const siteAssignedEmployees=employees.filter(employee=>selected?.staffing?.some(assignment=>assignment.employee_id===employee.id));
+  const selectedSiteId=selected?.site.id;
+  const maintenanceReadable=selected?.maintenance!==null&&selected?.maintenance!==undefined;
+  useEffect(()=>{
+    if(!selectedSiteId)return;
+    setMaintenanceClientEntryId(uuid());
+  },[selectedSiteId]);
+  useEffect(()=>{
+    if(active!=='aufgaben'||!selectedSiteId||!maintenanceReadable||!hasPermission('watchbook:read')||!hasPermission('watchbook:write'))return;
+    let current=true;
+    setMaintenanceOptionsLoaded(false);
+    Promise.all([api<WatchbookCategory[]>('/watchbook/categories'),api<WatchbookPriority[]>('/watchbook/priorities')]).then(([categories,priorities])=>{
+      const maintenanceCategory=categories?.find(category=>category.code==='maintenance');
+      if(!maintenanceCategory||!priorities?.length)throw new Error('Wartungskategorie oder Prioritäten sind im Wachbuch nicht konfiguriert.');
+      if(current){
+        setMaintenanceCategoryId(maintenanceCategory.id);
+        setMaintenancePriorities(priorities);
+        setMaintenancePriorityCode(priorities[0].code);
+        setMaintenanceOptionsLoaded(true);
+      }
+    }).catch(error=>{
+      if(current){setError((error as Error).message);setMaintenanceOptionsLoaded(true);}
+    });
+    return ()=>{current=false;};
+  },[active,selectedSiteId,maintenanceReadable]);
 
   return <section className="employee-management">
     {error&&<p role="alert" className="error">{error}</p>}
@@ -424,6 +463,12 @@ export function Sites(){
       {selected.customers!==null&&hasPermission('customers:write')&&<form onSubmit={createCustomerTask}><label>Kunde<select required value={taskCustomerId} onChange={event=>setTaskCustomerId(event.target.value)}><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Aufgabe / Wiedervorlage<input required value={taskTitle} onChange={event=>setTaskTitle(event.target.value)}/></label><label>Fällig am<input type="datetime-local" value={taskDue} onChange={event=>setTaskDue(event.target.value)}/></label>{hasPermission('employees:read')&&<label>Verantwortlich<select value={taskAssignee} onChange={event=>setTaskAssignee(event.target.value)}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}<button>Aufgabe anlegen</button></form>}
       <h3>Technik und Instandhaltung</h3>
       {selected.maintenance===null?<p>Keine Berechtigung für Wartungseinträge im Wachbuch.</p>:selected.maintenance.length===0?<p>Keine Technik- oder Instandhaltungseinträge vorhanden.</p>:<ul>{selected.maintenance.map(entry=><li key={entry.id}><strong>{entry.priority_name}</strong> · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
+      {maintenanceReadable&&hasPermission('watchbook:read')&&hasPermission('watchbook:write')&&<form onSubmit={createMaintenanceEntry}>
+        <h4>Technik-/Instandhaltungseintrag erfassen</h4>
+        <label>Priorität<select required value={maintenancePriorityCode} onChange={event=>setMaintenancePriorityCode(event.target.value)} disabled={!maintenanceOptionsLoaded}>{maintenancePriorities.map(priority=><option key={priority.code} value={priority.code}>{priority.name}</option>)}</select></label>
+        <label>Eintrag<textarea required maxLength={10000} value={maintenanceContent} onChange={event=>setMaintenanceContent(event.target.value)}/></label>
+        <button disabled={!maintenanceOptionsLoaded||!maintenanceCategoryId||!maintenancePriorityCode}>Im Wachbuch erfassen</button>
+      </form>}
       </div>}
       {active==='uebergaben'&&<div className="employee-detail-content">
       <h3>Übergabeprotokolle</h3>

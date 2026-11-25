@@ -207,7 +207,8 @@ records are copied into object-specific tables.
 Site-linked alarms and incidents, active-customer follow-up tasks and the
 latest maintenance-category watchbook entries are projected with their
 independent read permissions. Task creation/completion reuses the audited
-customer-task endpoints; maintenance remains append-only watchbook evidence.
+customer-task endpoints; maintenance entry creation reuses the existing
+idempotent, site-scoped watchbook endpoint and remains append-only evidence.
 The journal now includes the latest revision and category/priority metadata.
 These integrations add no schema or parallel workflow.
 
@@ -229,7 +230,7 @@ site preselected. That module retains its existing site authorization, date
 filters, report types and CSV/PDF generation; no duplicate report store or
 export endpoint was added.
 
-Remaining gaps include any site-specific maintenance workflow beyond existing
+Remaining gaps include any maintenance lifecycle beyond recording immutable
 watchbook evidence.
 Offline evidence and conflict handling remain governed by the existing sync
 receipts; this migration introduces no simulated evidence or second workflow.

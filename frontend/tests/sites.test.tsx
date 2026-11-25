@@ -277,7 +277,7 @@ describe('Objektübersicht',()=>{
   });
 
   it('shows linked incidents and maintenance and reuses customer-task actions',async()=>{
-    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:{
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:path==='/watchbook/categories'?[{id:'maintenance-category',code:'maintenance',name:'Technik / Instandhaltung'}]:path==='/watchbook/priorities'?[{code:'medium',name:'Mittel'}]:{
       site:sites[0],
       customers:[{customer_id:'customer-1',customer_name:'Northwind',relationship_type:'primary',relationship_status:'active'}],
       contracts:[],locations:[],hazards:[],instructions:[],journal:[{id:'entry-1',created_at:'2026-11-25T10:00:00Z',revision_no:2,content:'Shift report',status:'open',category_name:'Vorkommnis',priority_name:'Hoch'}],
@@ -295,6 +295,13 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Aufgaben & Wartung'}));
     expect(await screen.findByText('Review site access')).toBeTruthy();
     expect(screen.getByText('Inspect gate')).toBeTruthy();
+    expect(await screen.findByRole('heading',{name:'Technik-/Instandhaltungseintrag erfassen'})).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Eintrag'),{target:{value:'Inspect backup generator'}});
+    fireEvent.click(screen.getByRole('button',{name:'Im Wachbuch erfassen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/watchbook/entries',expect.objectContaining({method:'POST'})));
+    const maintenanceWrite=apiMock.mock.calls.find(([path,options])=>path==='/watchbook/entries'&&options?.method==='POST')!;
+    expect(JSON.parse(maintenanceWrite[1].body)).toEqual(expect.objectContaining({site_id:'0',category_id:'maintenance-category',priority_code:'medium',content:'Inspect backup generator'}));
+    expect(JSON.parse(maintenanceWrite[1].body).client_entry_id).toMatch(/^[0-9a-f-]{36}$/i);
     fireEvent.change(screen.getByLabelText('Kunde'),{target:{value:'customer-1'}});
     fireEvent.change(screen.getByLabelText('Aufgabe / Wiedervorlage'),{target:{value:'Test emergency lights'}});
     fireEvent.click(screen.getByRole('button',{name:'Aufgabe anlegen'}));

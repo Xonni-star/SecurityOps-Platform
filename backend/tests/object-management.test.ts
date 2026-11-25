@@ -373,6 +373,62 @@ describe('object management',()=>{
     expect(response.body.journal).toEqual([{id:'entry'}]);
   });
 
+  it('allows site-scoped readers to load watchbook categories and priorities',async()=>{
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'watchbook:read',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM watchbook_categories'))return result([{id:'category-id',code:'maintenance',name:'Technik / Instandhaltung'}]);
+      if(sql.includes('FROM watchbook_priorities'))return result([{id:'priority-id',code:'medium',name:'Mittel',rank:2}]);
+      return result([]);
+    });
+    const cookie='securityops_session=opaque';
+    const categories=await request(app).get('/api/v1/watchbook/categories').set('Cookie',cookie);
+    const priorities=await request(app).get('/api/v1/watchbook/priorities').set('Cookie',cookie);
+    expect(categories.status).toBe(200);
+    expect(categories.body).toEqual([{id:'category-id',code:'maintenance',name:'Technik / Instandhaltung'}]);
+    expect(priorities.status).toBe(200);
+    expect(priorities.body).toEqual([{id:'priority-id',code:'medium',name:'Mittel',rank:2}]);
+  });
+
+  it('creates an idempotent maintenance watchbook entry for a site-scoped writer',async()=>{
+    const category='00000000-0000-4000-8000-0000000000e1';
+    const entryId='00000000-0000-4000-8000-0000000000e2';
+    const revisionId='00000000-0000-4000-8000-0000000000e3';
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'watchbook:write',scope:'site'}]};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites WHERE tenant_id=$1 AND id=$2'))return result([{id:site}]);
+      if(sql.includes('FROM watchbook_categories'))return result([{id:category}]);
+      if(sql.includes('FROM watchbook_priorities'))return result([{id:'priority-id'}]);
+      if(sql.includes('INSERT INTO sync_receipts'))return result([{id:'receipt-id'}]);
+      if(sql.includes('INSERT INTO watchbook_entries'))return result([{id:entryId,site_id:site}]);
+      if(sql.includes('INSERT INTO watchbook_revisions'))return result([{id:revisionId}]);
+      return result([]);
+    });
+    const response=await request(app).post('/api/v1/watchbook/entries')
+      .set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value'])
+      .set('x-csrf-token','csrf-value')
+      .send({site_id:site,category_id:category,priority_code:'medium',content:'Inspect loading-bay shutter',client_entry_id:'00000000-0000-4000-8000-0000000000e4'});
+    expect(response.status).toBe(201);
+    expect(response.body.entry).toEqual(expect.objectContaining({id:entryId,site_id:site}));
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO audit_events'))).toBe(true);
+  });
+
+  it('rejects watchbook writes outside the site grant and site-less writes for site-scoped users',async()=>{
+    const scoped={...sessionUser,permissions:[],permission_grants:[{code:'watchbook:write',scope:'site'}],site_ids:[]};
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([scoped]):result([]));
+    const cookie=['securityops_session=opaque','securityops_csrf=csrf-value'];
+    const outside=await request(app).post('/api/v1/watchbook/entries')
+      .set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({site_id:site,category_id:customer,priority_code:'medium',content:'Out of scope',client_entry_id:'00000000-0000-4000-8000-0000000000e5'});
+    expect(outside.status).toBe(403);
+    const withoutSite=await request(app).post('/api/v1/watchbook/entries')
+      .set('Cookie',cookie).set('x-csrf-token','csrf-value')
+      .send({category_id:customer,priority_code:'medium',content:'No site assigned',client_entry_id:'00000000-0000-4000-8000-0000000000e6'});
+    expect(withoutSite.status).toBe(403);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO sync_receipts'))).toBe(false);
+  });
+
   it('does not create a CRM link for a customer outside the tenant',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([sessionUser]);

@@ -7,6 +7,7 @@ import {recordAudit} from '../services/audit.js';
 import {mergeCorrection} from '../services/watchbook.js';
 import {parseSyncConflictStrategy,runIdempotentMutation} from '../services/offline-sync.js';
 import {computeRevisionIntegrity,hashChain,verifyHash,verifyRevisionIntegrity} from '../services/watchbook-integrity.js';
+import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
@@ -24,7 +25,7 @@ watchbookRouter.use((req,res,next)=>/^\/watchbook/.test(req.path)
   ?requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next())
   :next());
 
-watchbookRouter.get('/watchbook/categories',requirePermission('watchbook:read'),async(req,res,next)=>{
+watchbookRouter.get('/watchbook/categories',requirePermission('watchbook:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{res.json((await query('SELECT id,code,name,created_at FROM watchbook_categories WHERE tenant_id=$1 ORDER BY name',[req.user!.tenantId])).rows);}
   catch(error){next(error);}
 });
@@ -36,7 +37,7 @@ watchbookRouter.post('/watchbook/categories',requirePermission('watchbook_catego
     res.status(201).json(row);
   }catch(error){next(error);}
 });
-watchbookRouter.get('/watchbook/priorities',requirePermission('watchbook:read'),async(req,res,next)=>{
+watchbookRouter.get('/watchbook/priorities',requirePermission('watchbook:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{res.json((await query('SELECT id,code,name,rank,color,created_at FROM watchbook_priorities WHERE tenant_id=$1 ORDER BY rank',[req.user!.tenantId])).rows);}
   catch(error){next(error);}
 });
@@ -54,6 +55,7 @@ async function createEntry(req:Express.Request,body:CreateEntryBody,client?:impo
   const audit=(eventType:string,entityId:string,details:Record<string,unknown>)=>client
     ?client.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',[req.user!.tenantId,req.user!.id,eventType,'watchbook_entry',entityId,details]).then(()=>undefined)
     :recordAudit(req.user!.tenantId,req.user!.id,eventType,'watchbook_entry',entityId,details);
+  if(body.site_id&&!(await run('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.site_id])).rows[0])throw Object.assign(new Error('Objekt nicht gefunden.'),{status:404});
   const category=(await run('SELECT id FROM watchbook_categories WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.category_id])).rows[0];
   const priority=(await run('SELECT id FROM watchbook_priorities WHERE tenant_id=$1 AND code=$2',[req.user!.tenantId,body.priority_code])).rows[0];
   if(!category||!priority)throw Object.assign(new Error('Kategorie oder Priorität nicht gefunden.'),{status:404});
@@ -131,9 +133,13 @@ watchbookRouter.get('/watchbook/entries/:id/integrity',requirePermission('watchb
     res.json({valid:firstFailure===null,checked_revisions:rows.length,first_failure:firstFailure});
   }catch(error){next(error);}
 });
-watchbookRouter.post('/watchbook/entries',requirePermission('watchbook:write'),async(req,res,next)=>{
+watchbookRouter.post('/watchbook/entries',requirePermission('watchbook:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const body=revisionInput.extend({site_id:uuid.nullable().optional(),client_entry_id:uuid.optional(),conflict_strategy:z.enum(['USE_LOCAL','USE_SERVER','RECORD_AS_EXCEPTION']).optional()}).strict().parse(req.body);
+    const user=req.user!;
+    const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+    const scope=effectivePermissionScope(grants,'watchbook:write',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
+    if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:body.site_id??null}))return res.status(403).json({error:'Permission scope does not include this site'});
     const mutationId=req.get('Idempotency-Key')??body.client_entry_id;
     if(req.get('Idempotency-Key')&&body.client_entry_id&&req.get('Idempotency-Key')!==body.client_entry_id)return res.status(400).json({error:'Idempotency-Key und client_entry_id müssen übereinstimmen.'});
     if(!mutationId)return res.status(400).json({error:'client_entry_id oder Idempotency-Key ist erforderlich.'});
