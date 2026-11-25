@@ -36,11 +36,12 @@ const schemas={
     hazard_notes:z.string().trim().max(8000).nullable().optional(),
     object_manager_employee_id:uuid.nullable().optional(),
     operations_manager_employee_id:uuid.nullable().optional(),
+    required_staff_count:z.number().int().min(0).max(100000).optional(),
   }).strict(),
   devices:z.object({name:nonempty,status:z.enum(['online','offline','maintenance']).optional(),site_id:uuid.nullable().optional(),last_seen_at:date.nullable().optional()}).strict(),
   alarms:z.object({device_id:uuid.nullable().optional(),severity:z.enum(['low','medium','high','critical']),status:z.enum(['open','acknowledged','resolved']).optional(),message:nonempty,triggered_at:date.optional(),resolved_at:date.nullable().optional()}).strict()
 } as const;
-const fields={employees:['name','email','title','employee_number','first_name','last_name','phone','mobile','address','date_of_birth','hire_date','termination_date','employment_status','employment_type','department','position','work_location','weekly_hours','user_id'],customers:['name','email'],sites:['name','address','site_number','alias','site_type','description','status','security_classification','latitude','longitude','opening_hours','access_information','special_notes','hazard_notes','object_manager_employee_id','operations_manager_employee_id'],devices:['name','status','site_id','last_seen_at'],alarms:['device_id','severity','status','message','triggered_at','resolved_at']} as const;
+const fields={employees:['name','email','title','employee_number','first_name','last_name','phone','mobile','address','date_of_birth','hire_date','termination_date','employment_status','employment_type','department','position','work_location','weekly_hours','user_id'],customers:['name','email'],sites:['name','address','site_number','alias','site_type','description','status','security_classification','latitude','longitude','opening_hours','access_information','special_notes','hazard_notes','object_manager_employee_id','operations_manager_employee_id','required_staff_count'],devices:['name','status','site_id','last_seen_at'],alarms:['device_id','severity','status','message','triggered_at','resolved_at']} as const;
 type Resource=keyof typeof schemas;
 function parseBody(resource:Resource,body:unknown,partial:boolean){const parsed=(partial?schemas[resource].partial():schemas[resource]).safeParse(body);return parsed.success?parsed.data:null;}
 function invalid(res:import('express').Response){return res.status(400).json({error:'Invalid request'});}

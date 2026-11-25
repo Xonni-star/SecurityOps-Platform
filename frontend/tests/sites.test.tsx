@@ -76,9 +76,11 @@ describe('Objektübersicht',()=>{
     fireEvent.click(within(row).getByRole('button',{name:'Bearbeiten'}));
     fireEvent.change(screen.getByRole('textbox',{name:'Objektnummer'}),{target:{value:''}});
     fireEvent.change(screen.getByRole('textbox',{name:'Adresse'}),{target:{value:''}});
+    fireEvent.change(screen.getByRole('spinbutton',{name:'Sollbesetzung'}),{target:{value:'4'}});
     fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0',expect.objectContaining({method:'PATCH',body:expect.stringContaining('"site_number":null')})));
     expect(JSON.parse(apiMock.mock.calls.find(([,options])=>options?.method==='PATCH')![1].body).address).toBeNull();
+    expect(JSON.parse(apiMock.mock.calls.find(([,options])=>options?.method==='PATCH')![1].body).required_staff_count).toBe(4);
   });
 
   it('retains the existing object context and distinguishes restricted journal access',async()=>{

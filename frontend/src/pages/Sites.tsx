@@ -3,11 +3,11 @@ import {useNavigate,useParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {uuid} from '../lib/uuid';
 
-type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;updated_at?:string};
-type SiteOverview=Site&{customer_names:string[]|null;object_manager_name:string|null;operations_manager_name:string|null;assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;open_hazard_count:number;overdue_measure_count:number;available_document_count:number|null;last_activity:string|null};
-type OverviewMetrics={total_sites:number;active_sites:number;preparation_sites:number;restricted_sites:number;critical_sites:number;open_hazards:number|null;overdue_measures:number|null;expiring_contracts:number|null;sites_without_available_documents:number|null};
+type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;required_staff_count?:number;updated_at?:string};
+type SiteOverview=Site&{customer_names:string[]|null;object_manager_name:string|null;operations_manager_name:string|null;assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;contract_statuses:string[]|null;open_hazard_count:number;critical_hazard_count:number;overdue_measure_count:number;open_task_count:number|null;overdue_task_count:number|null;open_shift_count:number|null;undercovered_shift_count:number|null;understaffed:boolean;available_document_count:number|null;last_activity:string|null};
+type OverviewMetrics={total_sites:number;active_sites:number;preparation_sites:number;restricted_sites:number;critical_sites:number;sites_with_critical_hazards:number;sites_with_open_tasks:number;sites_with_understaffing:number;open_hazards:number|null;overdue_measures:number|null;open_tasks:number|null;overdue_tasks:number|null;open_shifts:number|null;undercovered_shifts:number|null;expiring_contracts:number|null;sites_without_available_documents:number|null};
 type SiteOverviewResponse={sites:SiteOverview[];metrics:OverviewMetrics};
-type SiteColumn='site_number'|'name'|'site_type'|'customer_names'|'address'|'object_manager_name'|'operations_manager_name'|'security_classification'|'status'|'assigned_employee_count'|'active_contract_count'|'open_hazard_count'|'last_activity';
+type SiteColumn='site_number'|'name'|'site_type'|'customer_names'|'address'|'object_manager_name'|'operations_manager_name'|'security_classification'|'status'|'assigned_employee_count'|'active_contract_count'|'open_hazard_count'|'open_task_count'|'contract_statuses'|'understaffed'|'last_activity';
 type Customer={id:string;name:string;customer_number?:string|null};
 type Employee={id:string;name:string};
 type StaffingAssignment={id:string;employee_id:string;employee_name:string;assignment_type:string;role:string|null;starts_on:string;ends_on:string|null;primary_assignment:boolean;notes:string|null};
@@ -56,7 +56,7 @@ type Context={
 const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',active:'Aktiv',restricted:'Eingeschränkt',temporarily_closed:'Temporär geschlossen',decommissioned:'Stillgelegt',archived:'Archiviert'};
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
 const hazardCategories:Record<string,string>={burglary:'Einbruch',theft:'Diebstahl',vandalism:'Vandalismus',fire:'Brand',robbery:'Raub',unauthorized_access:'Unbefugter Zutritt',sabotage:'Sabotage',conflict:'Konflikt',technical:'Technisch',environmental:'Umwelt',other:'Sonstige'};
-const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown'};
+const emptySite={name:'',site_number:'',address:'',status:'planning',security_classification:'unknown',required_staff_count:0};
 const emptyLocation={name:'',location_type:'building',code:'',parent_id:'',responsible_employee_id:'',security_level:'unknown',description:'',hazard_notes:'',access_rules:'',sort_order:0};
 const emptyHazard={title:'',category:'other',description:'',likelihood:1,impact:1,location_id:'',responsible_employee_id:'',due_on:'',review_on:'',status:'open',protective_measures:''};
 const emptyMeasure={title:'',description:'',responsible_employee_id:'',due_on:'',status:'open' as const};
@@ -69,7 +69,9 @@ const siteColumns:{key:SiteColumn;label:string}[]=[
   {key:'object_manager_name',label:'Objektleitung'},{key:'operations_manager_name',label:'Einsatzleitung'},
   {key:'security_classification',label:'Sicherheitsstufe'},{key:'status',label:'Status'},
   {key:'assigned_employee_count',label:'Mitarbeiter'},{key:'active_contract_count',label:'Aktive Verträge'},
-  {key:'open_hazard_count',label:'Offene Gefährdungen'},{key:'last_activity',label:'Letzte Aktivität'},
+  {key:'open_hazard_count',label:'Offene Gefährdungen'},{key:'open_task_count',label:'Offene Aufgaben'},
+  {key:'contract_statuses',label:'Vertragsstatus'},{key:'understaffed',label:'Personalunterdeckung'},
+  {key:'last_activity',label:'Letzte Aktivität'},
 ];
 
 function toBase64(file:File){
@@ -97,6 +99,8 @@ export function Sites(){
   const [customerFilter,setCustomerFilter]=useState('all');
   const [managerFilter,setManagerFilter]=useState('all');
   const [siteTypeFilter,setSiteTypeFilter]=useState('all');
+  const [criticalFilter,setCriticalFilter]=useState(false);
+  const [understaffedFilter,setUnderstaffedFilter]=useState(false);
   const [visibleColumns,setVisibleColumns]=useState<SiteColumn[]>(siteColumns.map(column=>column.key));
   const [sortKey,setSortKey]=useState<SiteColumn>('name');
   const [descending,setDescending]=useState(false);
@@ -162,7 +166,7 @@ export function Sites(){
       if(context){
         setSelected(context);
         const site=context.site;
-        setForm({name:site.name,site_number:site.site_number??'',address:site.address??'',status:site.status,security_classification:site.security_classification});
+        setForm({name:site.name,site_number:site.site_number??'',address:site.address??'',status:site.status,security_classification:site.security_classification,required_staff_count:site.required_staff_count??0});
         setDetails({alias:site.alias??'',site_type:site.site_type??'',description:site.description??'',object_manager_employee_id:site.object_manager_employee_id??'',operations_manager_employee_id:site.operations_manager_employee_id??''});
       }
       setCustomers(customerRows??[]);setEmployees(employeeRows??[]);setError('');
@@ -177,7 +181,7 @@ export function Sites(){
   async function saveDetails(event:FormEvent){
     event.preventDefault();if(!selected)return;
     try{
-      await api(`/sites/${selected.site.id}`,{method:'PATCH',body:JSON.stringify({name:form.name,site_number:form.site_number.trim()||null,address:form.address.trim()||null,status:form.status,security_classification:form.security_classification,description:details.description,alias:details.alias.trim()||null,site_type:details.site_type.trim()||null,object_manager_employee_id:details.object_manager_employee_id||null,operations_manager_employee_id:details.operations_manager_employee_id||null})});
+      await api(`/sites/${selected.site.id}`,{method:'PATCH',body:JSON.stringify({name:form.name,site_number:form.site_number.trim()||null,address:form.address.trim()||null,status:form.status,security_classification:form.security_classification,required_staff_count:form.required_staff_count,description:details.description,alias:details.alias.trim()||null,site_type:details.site_type.trim()||null,object_manager_employee_id:details.object_manager_employee_id||null,operations_manager_employee_id:details.operations_manager_employee_id||null})});
       await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
@@ -206,13 +210,13 @@ export function Sites(){
   }
   function startEdit(site?:Site){
     setEditing(site??null);
-    setForm(site?{name:site.name,site_number:site.site_number??'',address:site.address??'',status:site.status,security_classification:site.security_classification}:emptySite);
+    setForm(site?{name:site.name,site_number:site.site_number??'',address:site.address??'',status:site.status,security_classification:site.security_classification,required_staff_count:site.required_staff_count??0}:emptySite);
     setFormOpen(true);
   }
   async function save(event:FormEvent){
     event.preventDefault();
     try{
-      const body={name:form.name,status:form.status,security_classification:form.security_classification,site_number:form.site_number.trim()||null,address:form.address.trim()||null};
+      const body={name:form.name,status:form.status,security_classification:form.security_classification,required_staff_count:form.required_staff_count,site_number:form.site_number.trim()||null,address:form.address.trim()||null};
       await api(editing?`/sites/${editing.id}`:'/sites',{method:editing?'PATCH':'POST',body:JSON.stringify(body)});
       setFormOpen(false);setEditing(null);setForm(emptySite);await load();
     }catch(e){setError((e as Error).message);}
@@ -363,6 +367,9 @@ export function Sites(){
       case 'assigned_employee_count':return site.assigned_employee_count;
       case 'active_contract_count':return site.active_contract_count;
       case 'open_hazard_count':return site.open_hazard_count;
+      case 'open_task_count':return site.open_task_count;
+      case 'contract_statuses':return site.contract_statuses?.join(', ')??null;
+      case 'understaffed':return site.understaffed?'Unterbesetzt':'Abgedeckt';
     }
   };
   const displayValue=(site:SiteOverview,key:SiteColumn)=>{
@@ -376,6 +383,8 @@ export function Sites(){
       &&(siteTypeFilter==='all'||site.site_type===siteTypeFilter)
       &&(customerFilter==='all'||site.customer_names?.includes(customerFilter))
       &&(managerFilter==='all'||site.object_manager_employee_id===managerFilter||site.operations_manager_employee_id===managerFilter)
+      &&(!criticalFilter||site.critical_hazard_count>0)
+      &&(!understaffedFilter||site.understaffed)
       &&searchable.includes(search.toLocaleLowerCase());
   });
   const sorted=[...filtered].sort((a,b)=>{
@@ -476,9 +485,10 @@ export function Sites(){
         <div className="object-summary-grid">
           <article><h3>Objektstatus</h3><strong>{statuses[selected.site.status]??selected.site.status}</strong><p>{classifications[selected.site.security_classification]??selected.site.security_classification}</p></article>
           <article><h3>Verantwortliche</h3><p>Objektleitung: {selected.site.object_manager_name||'–'}</p><p>Einsatzleitung: {selected.site.operations_manager_name||'–'}</p></article>
-          <article><h3>Kunde & Verträge</h3>{selected.customers==null?<p>Keine Berechtigung für Kundenbeziehungen.</p>:<p>{selectedCustomers.map(customer=>customer.customer_name).join(', ')||'Keine aktive Kundenbeziehung'}</p>}{selected.contracts==null?<p>Verträge nicht freigegeben.</p>:<p>{selectedContracts.length} aktive Vertragsverknüpfungen</p>}</article>
-          <article><h3>Besetzung</h3><p>{selected.staffing==null?'Keine Berechtigung':`${currentStaff.length} zugeordnete Mitarbeitende`}</p><p>{selected.shifts==null?'Dienstplanung nicht freigegeben':`${currentShifts.length} aktuell besetzte Schichten`}</p></article>
-          <article><h3>Sicherheitslage</h3><p>{selected.hazards.filter(hazard=>hazard.status==='open').length} offene Gefährdungen</p><p>{overdueMeasures.length} überfällige Maßnahmen</p></article>
+          <article><h3>Kunde & Verträge</h3>{selected.customers==null?<p>Keine Berechtigung für Kundenbeziehungen.</p>:<p>{selectedCustomers.map(customer=>customer.customer_name).join(', ')||'Keine aktive Kundenbeziehung'}</p>}{selected.contracts==null?<p>Verträge nicht freigegeben.</p>:<><p>{selectedContracts.length} Vertragsverknüpfungen</p><p>{selectedContracts.map(contract=>contract.status).filter((status,index,statuses)=>statuses.indexOf(status)===index).join(', ')||'Kein Vertragsstatus'}</p></>}</article>
+          <article><h3>Besetzung</h3><p>{selected.staffing==null?'Keine Berechtigung':`${currentStaff.length} zugeordnete / Soll ${selected.site.required_staff_count??0}`}</p><p>{selected.shifts==null?'Dienstplanung nicht freigegeben':`${currentShifts.length} aktuell besetzte Schichten`}</p>{(selected.site.required_staff_count??0)>0&&currentStaff.length<(selected.site.required_staff_count??0)&&<p role="status">Unterbesetzung erkannt.</p>}</article>
+          <article><h3>Sicherheitslage</h3><p>{selected.hazards.filter(hazard=>hazard.status==='open').length} offene Gefährdungen</p><p>{criticalHazards.length} kritisch</p><p>{overdueMeasures.length} überfällige Maßnahmen</p></article>
+          <article><h3>Aufgaben & Maßnahmen</h3><p>{selected.customerTasks==null?'Keine Berechtigung':`${selected.customerTasks.filter(task=>task.status==='open').length} offene Aufgaben`}</p><p>{selected.customerTasks==null?'':`${selected.customerTasks.filter(task=>task.status==='open'&&task.due_at&&new Date(task.due_at)<now).length} überfällig`}</p></article>
           <article><h3>Dienstanweisungen</h3><p>{selected.instructions.filter(isInstructionActive).length} aktuell gültig</p><p>{expiredInstructions.length} abgelaufen</p><p>{selected.instructions.filter(instruction=>instruction.requires_acknowledgement).reduce((total,instruction)=>total+instruction.acknowledgement_count,0)} Kenntnisnahmen erfasst</p></article>
           <article><h3>Dokumente</h3>{selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:<p>{selected.documents.length} aktive DMS-Dokumente</p>}<p>Fachliche Ablaufdaten sind im DMS nicht hinterlegt.</p></article>
           <article><h3>Vorfälle & Alarme</h3><p>{selected.incidents==null?'Einsätze nicht freigegeben':`${selected.incidents.length} Einsätze`}</p><p>{selected.alarms==null?'Alarme nicht freigegeben':`${selected.alarms.length} Alarme`}</p></article>
@@ -495,6 +505,8 @@ export function Sites(){
           <label>Objektart<input value={details.site_type} onChange={e=>setDetails({...details,site_type:e.target.value})}/></label>
           <label>Status<select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
           <label>Sicherheitsklassifizierung<select value={form.security_classification} onChange={e=>setForm({...form,security_classification:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+          <label>Sollbesetzung<input type="number" min="0" max="100000" value={form.required_staff_count} onChange={e=>setForm({...form,required_staff_count:Number(e.target.value)})}/></label>
+          <label>Sollbesetzung<input type="number" min="0" max="100000" value={form.required_staff_count} onChange={e=>setForm({...form,required_staff_count:Number(e.target.value)})}/></label>
           {hasPermission('employees:read')&&<><label>Objektleitung<select value={details.object_manager_employee_id} onChange={e=>setDetails({...details,object_manager_employee_id:e.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label><label>Einsatzleitung<select value={details.operations_manager_employee_id} onChange={e=>setDetails({...details,operations_manager_employee_id:e.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label></>}
           <label>Beschreibung<textarea value={details.description} onChange={e=>setDetails({...details,description:e.target.value})}/></label>
         </div><button>Stammdaten speichern</button></form>:<p>Keine Schreibberechtigung für Stammdaten.</p>}
@@ -679,6 +691,9 @@ export function Sites(){
         <article><strong>{metrics?.preparation_sites??'–'}</strong><span>In Vorbereitung</span></article>
         <article><strong>{metrics?.restricted_sites??'–'}</strong><span>Eingeschränkt</span></article>
         <article><strong>{metrics?.critical_sites??'–'}</strong><span>Kritisch</span></article>
+        <article><strong>{metrics?.sites_with_critical_hazards??'–'}</strong><span>Mit kritischen Gefährdungen</span></article>
+        <article><strong>{metrics?.sites_with_open_tasks??'–'}</strong><span>Mit offenen Aufgaben</span></article>
+        <article><strong>{metrics?.sites_with_understaffing??'–'}</strong><span>Mit Personalunterdeckung</span></article>
         <article><strong>{metrics?.open_hazards??'–'}</strong><span>Offene Gefährdungen</span></article>
         <article><strong>{metrics?.overdue_measures??'–'}</strong><span>Überfällige Maßnahmen</span></article>
         <article><strong>{metrics?.expiring_contracts??'–'}</strong><span>Auslaufende Verträge · 30 Tage</span></article>
@@ -690,6 +705,7 @@ export function Sites(){
         <label>Adresse<input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></label>
         <label>Status<select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         <label>Sicherheitsklassifizierung<select value={form.security_classification} onChange={e=>setForm({...form,security_classification:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+        <label>Sollbesetzung<input type="number" min="0" max="100000" value={form.required_staff_count} onChange={e=>setForm({...form,required_staff_count:Number(e.target.value)})}/></label>
         <button>Speichern</button><button type="button" onClick={()=>setFormOpen(false)}>Abbrechen</button>
       </form>}
       <div className="object-overview">
@@ -700,6 +716,8 @@ export function Sites(){
           <select aria-label="Kunde filtern" value={customerFilter} onChange={e=>{setCustomerFilter(e.target.value);setPage(1);}}><option value="all">Kunde: Alle</option>{customerOptions.map(customer=><option key={customer} value={customer}>{customer}</option>)}</select>
           <select aria-label="Objektleitung filtern" value={managerFilter} onChange={e=>{setManagerFilter(e.target.value);setPage(1);}}><option value="all">Objektleitung: Alle</option>{managerOptions.map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
           <select aria-label="Objektart filtern" value={siteTypeFilter} onChange={e=>{setSiteTypeFilter(e.target.value);setPage(1);}}><option value="all">Objektart: Alle</option>{siteTypeOptions.map(siteType=><option key={siteType} value={siteType}>{siteType}</option>)}</select>
+          <label><input type="checkbox" checked={criticalFilter} onChange={event=>{setCriticalFilter(event.target.checked);setPage(1);}}/> Kritische Gefährdungen</label>
+          <label><input type="checkbox" checked={understaffedFilter} onChange={event=>{setUnderstaffedFilter(event.target.checked);setPage(1);}}/> Personalunterdeckung</label>
           <details className="object-column-picker"><summary>Spalten</summary><fieldset><legend>Sichtbare Tabellenspalten</legend>{siteColumns.map(column=><label key={column.key}><input type="checkbox" checked={visibleColumns.includes(column.key)} onChange={event=>toggleColumn(column.key,event.target.checked)}/>{column.label}</label>)}</fieldset></details>
           <button type="button" onClick={exportCsv} disabled={listLoading||sites.length===0}>CSV exportieren</button>
         </div>

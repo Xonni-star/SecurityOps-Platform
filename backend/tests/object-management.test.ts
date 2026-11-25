@@ -70,6 +70,7 @@ describe('object management',()=>{
         {code:'contracts:read',scope:'tenant'},
         {code:'dms:read',scope:'site'},
         {code:'watchbook:read',scope:'site'},
+        {code:'scheduling:read',scope:'site'},
       ],
     };
     queryMock.mockImplementation(async(sql:string)=>{
@@ -80,6 +81,8 @@ describe('object management',()=>{
         status:'active',security_classification:'critical',object_manager_employee_id:'employee-1',object_manager_name:'Mia Guard',
         operations_manager_employee_id:null,operations_manager_name:null,customer_names:['North Client'],
         assigned_employee_count:2,active_contract_count:1,expiring_contract_count:1,open_hazard_count:2,
+        contract_statuses:['active'],open_task_count:0,overdue_task_count:0,open_shift_count:0,undercovered_shift_count:0,
+        critical_hazard_count:0,required_staff_count:0,understaffed:false,
         overdue_measure_count:3,available_document_count:0,last_activity:'2026-11-25T10:00:00Z',
       }]);
       return result([]);
@@ -94,7 +97,9 @@ describe('object management',()=>{
     })]);
     expect(response.body.metrics).toEqual({
       total_sites:1,active_sites:1,preparation_sites:0,restricted_sites:0,critical_sites:1,
-      open_hazards:2,overdue_measures:3,expiring_contracts:1,sites_without_available_documents:1,
+      sites_with_critical_hazards:0,sites_with_open_tasks:0,sites_with_understaffing:0,
+      open_hazards:2,overdue_measures:3,open_tasks:0,overdue_tasks:0,open_shifts:0,undercovered_shifts:0,
+      expiring_contracts:1,sites_without_available_documents:1,
     });
     expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('SELECT s.id FROM sites s'))?.[1]).toEqual([tenant, [site]]);
   });
@@ -118,7 +123,7 @@ describe('object management',()=>{
     expect(response.status).toBe(200);
     expect(response.body.metrics).toEqual(expect.objectContaining({expiring_contracts:null,sites_without_available_documents:null}));
     const aggregate=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH customer_summary AS'));
-    expect(aggregate?.[1]).toEqual([tenant,[site],[],[],[],[site],[],[]]);
+    expect(aggregate?.[1]).toEqual([tenant,[site],[],[],[],[site],[],[],[],[]]);
     expect(response.body.sites[0]).toEqual(expect.objectContaining({
       customer_names:null,assigned_employee_count:null,active_contract_count:null,available_document_count:null,
     }));

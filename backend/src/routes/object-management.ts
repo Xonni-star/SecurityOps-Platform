@@ -110,6 +110,8 @@ objectManagementRouter.get(
       const employeeSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('employees:read',siteId));
       const documentSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('dms:read',siteId));
       const watchbookSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('watchbook:read',siteId));
+      const scheduleSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('scheduling:read',siteId));
+      const taskSiteIds=customerSiteIds;
       const hasContractRead=effectivePermissionScope(grants,'contracts:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
       const hasDocumentRead=effectivePermissionScope(grants,'dms:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
       type OverviewSite={
@@ -117,7 +119,9 @@ objectManagementRouter.get(
         status:string;security_classification:string;object_manager_employee_id:string|null;object_manager_name:string|null;
         operations_manager_employee_id:string|null;operations_manager_name:string|null;customer_names:string[]|null;
         assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;
-        open_hazard_count:number;overdue_measure_count:number;available_document_count:number|null;last_activity:string|null;
+        contract_statuses:string[]|null;open_hazard_count:number;critical_hazard_count:number;overdue_measure_count:number;
+        open_task_count:number|null;overdue_task_count:number|null;open_shift_count:number|null;undercovered_shift_count:number|null;
+        required_staff_count:number;understaffed:boolean;available_document_count:number|null;last_activity:string|null;
       };
       const sites=(await query<OverviewSite>(
         `WITH customer_summary AS (
@@ -128,7 +132,8 @@ objectManagementRouter.get(
          ), contract_summary AS (
            SELECT cts.site_id,
              count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.starts_on<=CURRENT_DATE AND (con.ends_on IS NULL OR con.ends_on>=CURRENT_DATE))::int AS active_contract_count,
-             count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.ends_on BETWEEN CURRENT_DATE AND CURRENT_DATE+30)::int AS expiring_contract_count
+               count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.ends_on BETWEEN CURRENT_DATE AND CURRENT_DATE+30)::int AS expiring_contract_count,
+               array_agg(DISTINCT con.status ORDER BY con.status) AS contract_statuses
            FROM contract_sites cts JOIN contracts con ON con.tenant_id=cts.tenant_id AND con.id=cts.contract_id
            WHERE cts.tenant_id=$1 AND cts.site_id=ANY($4::uuid[])
            GROUP BY cts.site_id
@@ -139,11 +144,29 @@ objectManagementRouter.get(
            GROUP BY oa.site_id
          ), hazard_summary AS (
            SELECT h.site_id,count(*) FILTER (WHERE h.status='open')::int AS open_hazard_count,
+               count(*) FILTER (WHERE h.status='open' AND h.risk_score>=15)::int AS critical_hazard_count,
              (SELECT count(*)::int FROM object_hazard_measures m
               WHERE m.tenant_id=h.tenant_id AND m.site_id=h.site_id AND m.status IN ('open','in_progress') AND m.due_on<CURRENT_DATE) AS overdue_measure_count
            FROM object_hazards h
            WHERE h.tenant_id=$1 AND h.site_id=ANY($6::uuid[])
            GROUP BY h.tenant_id,h.site_id
+         ), task_summary AS (
+           SELECT cs.site_id,
+             count(*) FILTER (WHERE ct.status='open')::int AS open_task_count,
+             count(*) FILTER (WHERE ct.status='open' AND ct.due_at IS NOT NULL AND ct.due_at<now())::int AS overdue_task_count
+           FROM customer_tasks ct
+           JOIN customer_sites cs ON cs.tenant_id=ct.tenant_id AND cs.customer_id=ct.customer_id AND cs.relationship_status='active'
+           WHERE ct.tenant_id=$1 AND cs.site_id=ANY($9::uuid[])
+           GROUP BY cs.site_id
+         ), shift_summary AS (
+           SELECT sh.site_id,
+             count(*) FILTER (WHERE p.status='published' AND sh.ends_at>=now())::int AS open_shift_count,
+             count(*) FILTER (WHERE p.status='published' AND sh.ends_at>=now()
+               AND NOT EXISTS (SELECT 1 FROM schedule_assignments sa WHERE sa.tenant_id=sh.tenant_id AND sa.shift_id=sh.id AND sa.status='assigned'))::int AS undercovered_shift_count
+           FROM schedule_shifts sh
+           JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id
+           WHERE sh.tenant_id=$1 AND sh.site_id=ANY($10::uuid[])
+           GROUP BY sh.site_id
          ), latest_document_versions AS (
            SELECT DISTINCT ON (v.document_id) v.document_id,v.lifecycle_state
            FROM dms_versions v JOIN dms_documents d ON d.tenant_id=v.tenant_id AND d.id=v.document_id
@@ -169,8 +192,17 @@ objectManagementRouter.get(
            CASE WHEN s.id=ANY($5::uuid[]) THEN COALESCE(staff.assigned_employee_count,0) ELSE NULL END AS assigned_employee_count,
            CASE WHEN s.id=ANY($4::uuid[]) THEN COALESCE(contracts.active_contract_count,0) ELSE NULL END AS active_contract_count,
            CASE WHEN s.id=ANY($4::uuid[]) THEN COALESCE(contracts.expiring_contract_count,0) ELSE NULL END AS expiring_contract_count,
+           CASE WHEN s.id=ANY($4::uuid[]) THEN contracts.contract_statuses ELSE NULL END AS contract_statuses,
            COALESCE(hazards.open_hazard_count,0) AS open_hazard_count,
+           COALESCE(hazards.critical_hazard_count,0) AS critical_hazard_count,
            COALESCE(hazards.overdue_measure_count,0) AS overdue_measure_count,
+           CASE WHEN s.id=ANY($9::uuid[]) THEN COALESCE(tasks.open_task_count,0) ELSE NULL END AS open_task_count,
+           CASE WHEN s.id=ANY($9::uuid[]) THEN COALESCE(tasks.overdue_task_count,0) ELSE NULL END AS overdue_task_count,
+           CASE WHEN s.id=ANY($10::uuid[]) THEN COALESCE(shifts.open_shift_count,0) ELSE NULL END AS open_shift_count,
+           CASE WHEN s.id=ANY($10::uuid[]) THEN COALESCE(shifts.undercovered_shift_count,0) ELSE NULL END AS undercovered_shift_count,
+           s.required_staff_count,
+           CASE WHEN s.required_staff_count>0 AND s.id=ANY($5::uuid[])
+             AND COALESCE(staff.assigned_employee_count,0)<s.required_staff_count THEN true ELSE false END AS understaffed,
            CASE WHEN s.id=ANY($7::uuid[]) THEN COALESCE(documents.available_document_count,0) ELSE NULL END AS available_document_count,
            GREATEST(s.updated_at,activity.last_activity) AS last_activity
          FROM sites s
@@ -180,13 +212,15 @@ objectManagementRouter.get(
          LEFT JOIN contract_summary contracts ON contracts.site_id=s.id
          LEFT JOIN staffing_summary staff ON staff.site_id=s.id
          LEFT JOIN hazard_summary hazards ON hazards.site_id=s.id
+         LEFT JOIN task_summary tasks ON tasks.site_id=s.id
+         LEFT JOIN shift_summary shifts ON shifts.site_id=s.id
          LEFT JOIN document_summary documents ON documents.site_id=s.id
          LEFT JOIN activity_summary activity ON activity.site_id=s.id
          WHERE s.tenant_id=$1 AND s.id=ANY($2::uuid[])
          ORDER BY s.name,s.id`,
-        [user.tenantId,visibleSiteIds,customerSiteIds,contractSiteIds,employeeSiteIds,visibleSiteIds,documentSiteIds,watchbookSiteIds],
+        [user.tenantId,visibleSiteIds,customerSiteIds,contractSiteIds,employeeSiteIds,visibleSiteIds,documentSiteIds,watchbookSiteIds,taskSiteIds,scheduleSiteIds],
       )).rows;
-      const sum=(field:'active_contract_count'|'expiring_contract_count'|'assigned_employee_count'|'open_hazard_count'|'overdue_measure_count',authorized:boolean)=>
+      const sum=(field:'active_contract_count'|'expiring_contract_count'|'assigned_employee_count'|'open_hazard_count'|'critical_hazard_count'|'overdue_measure_count'|'open_task_count'|'overdue_task_count'|'open_shift_count'|'undercovered_shift_count',authorized:boolean)=>
         authorized?sites.reduce((total,site)=>total+(site[field]??0),0):null;
       const metrics={
         total_sites:visibleSites.length,
@@ -194,8 +228,15 @@ objectManagementRouter.get(
         preparation_sites:sites.filter(site=>site.status==='planning'||site.status==='setup').length,
         restricted_sites:sites.filter(site=>site.status==='restricted'||site.status==='temporarily_closed').length,
         critical_sites:sites.filter(site=>site.security_classification==='critical').length,
+        sites_with_critical_hazards:sites.filter(site=>site.critical_hazard_count>0).length,
+        sites_with_open_tasks:sites.filter(site=>site.open_task_count!==null&&site.open_task_count>0).length,
+        sites_with_understaffing:sites.filter(site=>site.understaffed).length,
         open_hazards:sum('open_hazard_count',true),
         overdue_measures:sum('overdue_measure_count',true),
+        open_tasks:sum('open_task_count',taskSiteIds.length>0),
+        overdue_tasks:sum('overdue_task_count',taskSiteIds.length>0),
+        open_shifts:sum('open_shift_count',scheduleSiteIds.length>0),
+        undercovered_shifts:sum('undercovered_shift_count',scheduleSiteIds.length>0),
         expiring_contracts:sum('expiring_contract_count',hasContractRead),
         sites_without_available_documents:hasDocumentRead?sites.filter(site=>site.available_document_count===0).length:null,
       };
