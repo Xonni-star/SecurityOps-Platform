@@ -26,6 +26,8 @@ Schlüsselbestand, die letzten 20 Schlüsselbewegungen und Schlüsselbunde verwe
 
 Site-verknüpfte Alarme und Einsätze werden unabhängig mit `alarms:read` und `incidents:read` abgefragt, einschließlich Alarmen, die über ein dem Objekt zugeordnetes Gerät verbunden sind. Aufgaben werden nur für aktive Kunden-Objektbeziehungen mit `customers:read` angezeigt; Anlegen und Erledigen nutzt die vorhandenen auditierten Kundenaufgaben-Endpunkte. Technik-/Instandhaltungseinträge sind Projektionen der Kategorie `maintenance` aus dem append-only Wachbuch und bleiben dort schreibgeschützt. Journal-Einträge zeigen die jeweils aktuelle Watchbook-Revision; alle Inhalte bleiben site- und berechtigungsgefiltert.
 
+Qualifikationen werden nur für aktuell oder zukünftig dem Objekt zugeordnete Mitarbeitende und nur bei gleichzeitiger Freigabe durch `employees:read` und `qualifications:read` gezeigt. Übergaben verwenden die bestehende `handover:read`-Site-Berechtigung; die Objektakte zeigt Status und Bestätigungszähler, während unveränderbare Ereignisdetails im bestehenden Übergabemodul verbleiben.
+
 ## Risiken und Folgearbeiten
 
-Statusübergänge werden im CRUD validiert, um inkonsistente operative Zustände zu vermeiden. Schlüsselaktionen und DMS-Lebenszyklus bleiben in ihren bestehenden, separat berechtigten Modulen. Weitere Objektakten-Integrationen umfassen Qualifikationen und Übergaben; ein separates Wartungssystem existiert nicht und wird daher nicht simuliert.
+Statusübergänge werden im CRUD validiert, um inkonsistente operative Zustände zu vermeiden. Schlüsselaktionen und DMS-Lebenszyklus bleiben in ihren bestehenden, separat berechtigten Modulen. Ein separates Wartungssystem existiert nicht und wird daher nicht simuliert.

@@ -50,7 +50,7 @@ describe('object management',()=>{
   it('keeps object context behind tenant and permission checks',async()=>{
     const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:[],maintenance:null}));
+    expect(response.body).toEqual(expect.objectContaining({locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:[],maintenance:null,qualifications:null,handovers:null}));
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM customer_sites'))).toBe(true);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM contract_sites'))).toBe(true);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM employee_object_assignments'))).toBe(false);
@@ -224,6 +224,34 @@ describe('object management',()=>{
     for(const table of ['FROM alarms a','FROM incidents i','FROM customer_tasks t','FROM watchbook_entries e']){
       expect(queryMock.mock.calls.some(([sql])=>String(sql).includes(table))).toBe(false);
     }
+  });
+
+  it('returns qualifications only for current site staff and site-scoped handovers',async()=>{
+    const scoped={
+      ...sessionUser,
+      permissions:['sites:read'],
+      permission_grants:[
+        {code:'employees:read',scope:'site'},
+        {code:'qualifications:read',scope:'site'},
+        {code:'handover:read',scope:'site'},
+      ],
+    };
+    const qualification={id:'qualification-1',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',computed_status:'expiring'};
+    const handover={id:'handover-1',title:'Night shift transfer',status:'open',participant_count:2,confirmation_count:1};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([scoped]);
+      if(sql.includes('FROM sites s'))return result([{id:site}]);
+      if(sql.includes('FROM employee_qualifications q'))return result([qualification]);
+      if(sql.includes('FROM handover_records h'))return result([handover]);
+      return result([]);
+    });
+
+    const response=await request(app).get(`/api/v1/sites/${site}/object-context`).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    expect(response.body.qualifications).toEqual([qualification]);
+    expect(response.body.handovers).toEqual([handover]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_qualifications q'))?.[1]).toEqual([tenant,site]);
+    expect(queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM handover_records h'))?.[1]).toEqual([tenant,site]);
   });
 
   it('rejects a site-scoped user outside their assigned sites before reading or writing',async()=>{

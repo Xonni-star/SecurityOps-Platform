@@ -203,7 +203,14 @@ customer-task endpoints; maintenance remains append-only watchbook evidence.
 The journal now includes the latest revision and category/priority metadata.
 These integrations add no schema or parallel workflow.
 
-Remaining gaps include qualification and handover read models and any
-site-specific maintenance workflow beyond existing watchbook evidence.
+Current or future site-assigned employees' qualifications and their computed
+validity state are exposed only when both employee and qualification read
+permissions allow it. Site handovers show existing protocol status and
+participant confirmation counts under `handover:read`; event and confirmation
+history remain in the dedicated handover module. No migration or secondary
+record store was needed.
+
+Remaining gaps include any site-specific maintenance workflow beyond existing
+watchbook evidence.
 Offline evidence and conflict handling remain governed by the existing sync
 receipts; this migration introduces no simulated evidence or second workflow.

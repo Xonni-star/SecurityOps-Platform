@@ -329,7 +329,37 @@ objectManagementRouter.get(
          ORDER BY e.created_at DESC LIMIT 20`,
         [user.tenantId,id],
       )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance});
+      const qualifications=canReadStaffing&&canReadSiteData('qualifications:read')?(await query(
+        `SELECT q.id,q.employee_id,e.name AS employee_name,q.code,c.name AS qualification_name,
+          q.valid_from,q.valid_until,q.status,
+          CASE WHEN q.status IN ('revoked','invalid') THEN q.status
+            WHEN q.valid_until IS NULL THEN 'valid'
+            WHEN q.valid_until<CURRENT_DATE THEN 'expired'
+            WHEN q.valid_until<=CURRENT_DATE+INTERVAL '90 days' THEN 'expiring'
+            ELSE 'valid' END AS computed_status
+         FROM employee_qualifications q
+         JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
+         LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
+         WHERE q.tenant_id=$1 AND EXISTS (
+           SELECT 1 FROM employee_object_assignments oa
+           WHERE oa.tenant_id=q.tenant_id AND oa.employee_id=q.employee_id AND oa.site_id=$2
+             AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+         )
+         ORDER BY e.name,c.name,q.valid_until NULLS LAST LIMIT 200`,
+        [user.tenantId,id],
+      )).rows:null;
+      const handovers=canReadSiteData('handover:read')?(await query(
+        `SELECT h.id,h.shift_id,h.title,h.status,h.created_at,
+          (SELECT count(*)::int FROM handover_participants p
+           WHERE p.tenant_id=h.tenant_id AND p.handover_id=h.id AND p.state='active') AS participant_count,
+          (SELECT count(*)::int FROM handover_confirmations c
+           WHERE c.tenant_id=h.tenant_id AND c.handover_id=h.id AND c.state='confirmed') AS confirmation_count
+         FROM handover_records h
+         WHERE h.tenant_id=$1 AND h.site_id=$2
+         ORDER BY h.created_at DESC LIMIT 20`,
+        [user.tenantId,id],
+      )).rows:null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance,qualifications,handovers});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );

@@ -208,4 +208,22 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Journal'}));
     expect(await screen.findByText('Shift report')).toBeTruthy();
   });
+
+  it('shows expiring qualifications for assigned staff and handover confirmation status',async()=>{
+    apiMock.mockImplementation(async(path:string)=>path==='/sites'?sites.slice(0,1):path==='/customers'||path==='/employees'?[]:{
+      site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,
+      keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,
+      qualifications:[{id:'qualification-1',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',qualification_name:'Erste Hilfe',valid_from:'2026-01-01',valid_until:'2026-12-01',status:'valid',computed_status:'expiring'}],
+      handovers:[{id:'handover-1',shift_id:null,title:'Night shift transfer',status:'open',created_at:'2026-11-25T10:00:00Z',participant_count:2,confirmation_count:1}],
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Qualifikationen'}));
+    expect(await screen.findByText('Mia Guard')).toBeTruthy();
+    expect(screen.getByText(/Erste Hilfe/)).toBeTruthy();
+    expect(screen.getByText(/Läuft bald ab/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button',{name:'Übergaben'}));
+    expect(await screen.findByText('Night shift transfer')).toBeTruthy();
+    expect(screen.getByText(/1\/2 Bestätigungen/)).toBeTruthy();
+  });
 });
