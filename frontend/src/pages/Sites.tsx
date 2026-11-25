@@ -28,6 +28,7 @@ type WatchbookPriority={code:string;name:string};
 type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowledged_at:string};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
+type DocumentRequirement={id:string;document_type:string;required:boolean;responsible_employee_id:string|null;responsible_employee_name:string|null;missing:boolean};
 type ObjectDevice={id:string;name:string;status:string;site_id:string|null;last_seen_at:string|null;metadata:Record<string,unknown>;asset_number:string|null;category:string|null;manufacturer:string|null;model:string|null;serial_number:string|null;location_id:string|null;responsible_employee_id:string|null;operational_status:string;installed_on:string|null;commissioned_on:string|null;last_inspection_on:string|null;next_inspection_on:string|null;maintenance_interval_days:number|null;next_maintenance_on:string|null;last_maintenance_on:string|null;created_at:string;updated_at:string};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
 type HazardMeasure={id:string;hazard_id:string;title:string;description:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;due_on:string|null;status:'open'|'in_progress'|'completed'|'cancelled';completed_at:string|null};
@@ -48,6 +49,7 @@ type Context={
   keys:{items:KeyRecord[];recentMovements:KeyMovement[]}|null;
   keyBundles:KeyBundle[]|null;
   documents:SiteDocument[]|null;
+  documentRequirements:DocumentRequirement[]|null;
   alarms:SiteAlarm[]|null;
   incidents:SiteIncident[]|null;
   customerTasks:CustomerTask[]|null;
@@ -136,6 +138,7 @@ export function Sites(){
   const [documentFile,setDocumentFile]=useState<File|null>(null);
   const [documentMetadata,setDocumentMetadata]=useState({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});
   const [editingDocumentId,setEditingDocumentId]=useState<string|null>(null);
+  const [documentRequirementForm,setDocumentRequirementForm]=useState({document_type:'',responsible_employee_id:'',required:true});
   const documentInput=useRef<HTMLInputElement>(null);
   const [taskCustomerId,setTaskCustomerId]=useState('');
   const [taskTitle,setTaskTitle]=useState('');
@@ -318,6 +321,18 @@ export function Sites(){
       await api(`/dms/documents/${editingDocumentId}`,{method:'PATCH',body:JSON.stringify({title:documentTitle,document_number:documentMetadata.document_number.trim()||null,document_type:documentMetadata.document_type.trim()||null,responsible_employee_id:documentMetadata.responsible_employee_id||null,location_id:documentMetadata.location_id||null,valid_from:documentMetadata.valid_from||null,valid_until:documentMetadata.valid_until||null,review_on:documentMetadata.review_on||null,approval_status:documentMetadata.approval_status})});
       setEditingDocumentId(null);setDocumentTitle('');setDocumentMetadata({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
+  }
+  async function saveDocumentRequirement(event:FormEvent){
+    event.preventDefault();if(!selected||!documentRequirementForm.document_type.trim())return;
+    try{
+      await api(`/sites/${selected.site.id}/document-requirements`,{method:'POST',body:JSON.stringify({document_type:documentRequirementForm.document_type.trim(),required:documentRequirementForm.required,responsible_employee_id:documentRequirementForm.responsible_employee_id||null})});
+      setDocumentRequirementForm({document_type:'',responsible_employee_id:'',required:true});await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
+  async function removeDocumentRequirement(requirement:DocumentRequirement){
+    if(!selected||!window.confirm(`Pflichtdokumenttyp „${requirement.document_type}“ entfernen?`))return;
+    try{await api(`/sites/${selected.site.id}/document-requirements/${requirement.id}`,{method:'DELETE'});await refreshContext();setError('');}
+    catch(e){setError((e as Error).message);}
   }
   async function downloadDocument(document:SiteDocument,version:DmsVersion){
     try{
@@ -517,6 +532,10 @@ export function Sites(){
     medium:selected?.documents?.filter(document=>document.valid_until&&document.valid_until>new Date(now.getTime()+7*86400000).toISOString().slice(0,10)&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10))??[],
     information:selected?.documents?.filter(document=>document.valid_until&&document.valid_until>new Date(now.getTime()+30*86400000).toISOString().slice(0,10)&&document.valid_until<=new Date(now.getTime()+60*86400000).toISOString().slice(0,10))??[],
   };
+  const activeDevices=selected?.devices?.filter(device=>device.operational_status==='active')??[];
+  const faultyDevices=selected?.devices?.filter(device=>device.operational_status==='fault'||device.operational_status==='offline')??[];
+  const overdueDevices=selected?.devices?.filter(device=>device.next_maintenance_on&&device.next_maintenance_on<today)??[];
+  const upcomingDevices=selected?.devices?.filter(device=>device.next_maintenance_on&&device.next_maintenance_on>=today&&device.next_maintenance_on<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10))??[];
   return <section className="object-management">
     {error&&<p role="alert" className="error">{error}</p>}
     {siteId?(selected?<article className="object-detail-page">
@@ -543,6 +562,8 @@ export function Sites(){
           {documentWarnings.high.length>0&&<p role="status">Dokumentablauf kritisch innerhalb 7 Tage: {documentWarnings.high.length}</p>}
           {documentWarnings.medium.length>0&&<p role="status">Dokumentablauf hoch binnen 30 Tage: {documentWarnings.medium.length}</p>}
           {documentWarnings.information.length>0&&<p role="status">Dokumentablauf binnen 60 Tage: {documentWarnings.information.length}</p>}
+          {faultyDevices.length>0&&<p role="status">Technische Störungen oder Offline-Anlagen: {faultyDevices.length}</p>}
+          {overdueDevices.length>0&&<p role="status">Überfällige Wartungen: {overdueDevices.length}</p>}
           {selected.instructions.some(instruction=>isInstructionActive(instruction)&&instruction.requires_acknowledgement&&instruction.acknowledgement_count<currentStaff.length)&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen vorhanden.</p>}
         </div>
         <div className="object-summary-grid">
@@ -553,6 +574,7 @@ export function Sites(){
           <article><h3>Sicherheitslage</h3><p>{selected.hazards.filter(hazard=>hazard.status==='open').length} offene Gefährdungen</p><p>{criticalHazards.length} kritisch</p><p>{overdueMeasures.length} überfällige Maßnahmen</p></article>
           <article><h3>Aufgaben & Maßnahmen</h3><p>{selected.customerTasks==null?'Keine Berechtigung':`${selected.customerTasks.filter(task=>task.status==='open').length} offene Aufgaben`}</p><p>{selected.customerTasks==null?'':`${selected.customerTasks.filter(task=>task.status==='open'&&task.due_at&&new Date(task.due_at)<now).length} überfällig`}</p></article>
           <article><h3>Dienstanweisungen</h3><p>{selected.instructions.filter(isInstructionActive).length} aktuell gültig</p><p>{expiredInstructions.length} abgelaufen</p><p>{selected.instructions.filter(instruction=>instruction.requires_acknowledgement).reduce((total,instruction)=>total+instruction.acknowledgement_count,0)} Kenntnisnahmen erfasst</p></article>
+          <article><h3>Technik & Wartung</h3><p>{selected.devices==null?'Keine Berechtigung':`${selected.devices.length} Anlagen · ${activeDevices.length} aktiv`}</p><p>{faultyDevices.length} Störungen/Offline · {overdueDevices.length} Wartungen überfällig · {upcomingDevices.length} binnen 30 Tagen</p></article>
           <article><h3>Dokumente</h3>{selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:<p>{selected.documents.length} aktive DMS-Dokumente</p>}<p>{expiredDocuments.length} abgelaufen · {expiringDocuments.length} laufen binnen 30 Tagen ab</p></article>
           <article><h3>Vorfälle & Alarme</h3><p>{selected.incidents==null?'Einsätze nicht freigegeben':`${selected.incidents.length} Einsätze`}</p><p>{selected.alarms==null?'Alarme nicht freigegeben':`${selected.alarms.length} Alarme`}</p></article>
           <article><h3>Anstehende Schichten</h3>{selected.shifts==null?<p>Keine Berechtigung für die Dienstplanung.</p>:<p>{selected.shifts.filter(shift=>shift.starts_at>now.toISOString()).slice(0,2).map(shift=>`${shift.role_code} · ${new Date(shift.starts_at).toLocaleString('de-DE')}`).join(' / ')||'Keine zukünftigen Schichten'}</p>}</article>
@@ -728,6 +750,14 @@ export function Sites(){
         const expiring=document.valid_until&&!expired&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10);
         return <li key={document.id} className={expired||expiring?'object-warning':''}><strong>{document.title}</strong> · {document.document_status}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{expired?' · Abgelaufen':expiring?' · Läuft innerhalb 30 Tage ab':''}{document.description&&<p>{document.description}</p>}<button type="button" onClick={()=>startDocumentEdit(document)}>Metadaten bearbeiten</button><ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>;
       })}</ul>}
+      <h3>Pflichtdokumente</h3>
+      {selected.documentRequirements==null?<p>Keine Berechtigung für Dokumentanforderungen.</p>:selected.documentRequirements.length===0?<p>Keine Pflichtdokumenttypen hinterlegt.</p>:<ul>{selected.documentRequirements.map(requirement=><li key={requirement.id} className={requirement.missing?'object-warning':''}><strong>{requirement.document_type}</strong> · {requirement.required?'Pflicht':'Optional'} · {requirement.missing?'Fehlt oder nicht gültig/freigegeben':'Erfüllt'}{requirement.responsible_employee_name?` · Verantwortlich: ${requirement.responsible_employee_name}`:''}{writable&&hasPermission('dms:write')&&<button type="button" onClick={()=>void removeDocumentRequirement(requirement)}>Anforderung entfernen</button>}</li>)}</ul>}
+      {selected.documentRequirements!==null&&writable&&hasPermission('dms:write')&&<form onSubmit={saveDocumentRequirement}>
+        <label>Pflichtdokumenttyp<input required value={documentRequirementForm.document_type} onChange={event=>setDocumentRequirementForm({...documentRequirementForm,document_type:event.target.value})}/></label>
+        {hasPermission('employees:read')&&<label>Verantwortlich<select value={documentRequirementForm.responsible_employee_id} onChange={event=>setDocumentRequirementForm({...documentRequirementForm,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+        <label><input type="checkbox" checked={documentRequirementForm.required} onChange={event=>setDocumentRequirementForm({...documentRequirementForm,required:event.target.checked})}/> Pflichtdokument</label>
+        <button>Anforderung speichern</button>
+      </form>}
       {editingDocumentId&&<form onSubmit={saveDocumentMetadata}>
         <h4>Dokumentenmetadaten bearbeiten</h4>
         <label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label>
