@@ -16,6 +16,8 @@ Die bestehende `sites`-Tabelle bleibt der kanonische Objektstammdatensatz. Migra
 
 Eine geschützte Object-Context-API liefert Site, verknüpfte Kunden und Verträge. Kundenverknüpfungen werden tenant-seitig validiert, archiviert statt gelöscht und auditierbar geschrieben. Die bestehende RLS- und Permission-Schicht bleibt maßgeblich; Frontend-Berechtigungen sind nur UX.
 
+Der Objektkontext prüft zusätzlich den konkreten Site- bzw. Ownership-Scope. Da Kunden- und Vertragsdaten in diesem Kontext nicht einzeln auf engere Scopes gefiltert werden, sind für sie Tenant- oder Systemrechte erforderlich. Das Wachbuchjournal wird nur mit passender `watchbook:read`-Berechtigung zurückgegeben; `journal: null` kennzeichnet fehlende Berechtigung.
+
 ## Risiken und Folgearbeiten
 
 Statusübergänge werden im CRUD validiert, um inkonsistente operative Zustände zu vermeiden. Sensitive Inhalte wie Schlüssel, Alarmpläne und Dokumente bleiben in ihren bestehenden, separat berechtigten Modulen. Als nächstes folgen eine dedizierte Objektakte mit Gebäude/Bereichen und die Verknüpfung von Journal, Risiken und operativen Kennzahlen.
