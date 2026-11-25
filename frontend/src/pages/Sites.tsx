@@ -18,7 +18,7 @@ type KeyRecord={id:string;key_code:string;label:string;key_type:string;status:st
 type KeyMovement={id:string;key_id:string;key_label:string;movement_type:string;from_status:string|null;to_status:string;created_at:string;employee_name:string|null};
 type KeyBundle={id:string;name:string;status:string;item_count:number;issued_count:number};
 type DmsVersion={id:string;version_no:number;size_bytes:number;content_type:string;lifecycle_state:string;created_at:string;retention_until:string|null};
-type SiteDocument={id:string;title:string;description:string|null;document_status:string;created_at:string;deleted_at:string|null;versions:DmsVersion[]};
+type SiteDocument={id:string;title:string;description:string|null;document_status:string;created_at:string;deleted_at:string|null;document_number:string|null;document_type:string|null;responsible_employee_id:string|null;valid_from:string|null;valid_until:string|null;review_on:string|null;approval_status:string;location_id:string|null;versions:DmsVersion[]};
 type SiteAlarm={id:string;type:string;description:string;severity:string;status:string;triggered_at:string;acknowledged_at:string|null;resolved_at:string|null;priority_name:string|null};
 type SiteIncident={id:string;alarm_id:string|null;description:string;status:string;created_at:string;updated_at:string;priority_name:string|null;employee_name:string|null;assigned_count:number;assignees:{id:string;name:string}[]};
 type CustomerTask={id:string;customer_id:string;customer_name:string;title:string;description:string|null;status:string;due_at:string|null;assigned_employee_name:string|null;created_at:string;completed_at:string|null};
@@ -28,6 +28,7 @@ type WatchbookPriority={code:string;name:string};
 type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowledged_at:string};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
+type ObjectDevice={id:string;name:string;status:string;site_id:string|null;last_seen_at:string|null;metadata:Record<string,unknown>;created_at:string;updated_at:string};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
 type HazardMeasure={id:string;hazard_id:string;title:string;description:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;due_on:string|null;status:'open'|'in_progress'|'completed'|'cancelled';completed_at:string|null};
 type ObjectHazard={id:string;title:string;category:string;description:string;likelihood:number;impact:number;risk_score:number;protective_measures:string|null;responsible_employee_id:string|null;due_on:string|null;review_on:string|null;status:string;location_id:string|null;location_name:string|null;responsible_employee_name:string|null;measures:HazardMeasure[]};
@@ -52,6 +53,7 @@ type Context={
   maintenance:MaintenanceEntry[]|null;
   qualifications:EmployeeQualification[]|null;
   handovers:HandoverSummary[]|null;
+  devices:ObjectDevice[]|null;
 };
 const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',active:'Aktiv',restricted:'Eingeschränkt',temporarily_closed:'Temporär geschlossen',decommissioned:'Stillgelegt',archived:'Archiviert'};
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
@@ -62,6 +64,11 @@ const emptyHazard={title:'',category:'other',description:'',likelihood:1,impact:
 const emptyMeasure={title:'',description:'',responsible_employee_id:'',due_on:'',status:'open' as const};
 type SiteForm=typeof emptySite;
 const tabs=[['uebersicht','Übersicht'],['stammdaten','Stammdaten'],['kunden','Kunden & Verträge'],['struktur','Gebäude & Bereiche'],['personal','Mitarbeiter & Verantwortlichkeiten'],['dienstplanung','Dienstplanung'],['gefaehrdungen','Gefährdungen & Sicherheit'],['anweisungen','Dienstanweisungen'],['kontrollgaenge','Kontrollgänge'],['schluessel','Schlüssel & Zutritt'],['technik','Ausstattung & Technik'],['dokumente','Dokumente'],['vorfaelle','Vorfälle & Berichte'],['aufgaben','Aufgaben & Maßnahmen'],['journal','Journal']] as const;
+const tabGroups=[
+  {label:'Organisation',keys:['stammdaten','kunden','personal','dienstplanung']},
+  {label:'Sicherheit',keys:['struktur','gefaehrdungen','anweisungen','kontrollgaenge','schluessel']},
+  {label:'Betrieb',keys:['technik','dokumente','vorfaelle','aufgaben','journal']},
+] as const;
 const sectionAliases:Record<string,string>={qualifikationen:'personal',einsaetze:'vorfaelle',berichte:'vorfaelle',uebergaben:'uebersicht'};
 const siteColumns:{key:SiteColumn;label:string}[]=[
   {key:'site_number',label:'Objektnummer'},{key:'name',label:'Objekt'},{key:'site_type',label:'Objektart'},
@@ -126,6 +133,7 @@ export function Sites(){
   const [ackEmployee,setAckEmployee]=useState('');
   const [documentTitle,setDocumentTitle]=useState('');
   const [documentFile,setDocumentFile]=useState<File|null>(null);
+  const [documentMetadata,setDocumentMetadata]=useState({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});
   const documentInput=useRef<HTMLInputElement>(null);
   const [taskCustomerId,setTaskCustomerId]=useState('');
   const [taskTitle,setTaskTitle]=useState('');
@@ -290,8 +298,8 @@ export function Sites(){
   async function uploadSiteDocument(event:FormEvent){
     event.preventDefault();if(!selected||!documentFile)return;
     try{
-      await api('/dms/documents',{method:'POST',body:JSON.stringify({title:documentTitle,site_id:selected.site.id,content_type:documentFile.type||'application/octet-stream',content_base64:await toBase64(documentFile),client_mutation_id:uuid()})});
-      setDocumentTitle('');setDocumentFile(null);if(documentInput.current)documentInput.current.value='';await refreshContext();setError('');
+      await api('/dms/documents',{method:'POST',body:JSON.stringify({title:documentTitle,site_id:selected.site.id,document_number:documentMetadata.document_number.trim()||null,document_type:documentMetadata.document_type.trim()||null,responsible_employee_id:documentMetadata.responsible_employee_id||null,location_id:documentMetadata.location_id||null,valid_from:documentMetadata.valid_from||null,valid_until:documentMetadata.valid_until||null,review_on:documentMetadata.review_on||null,approval_status:documentMetadata.approval_status,content_type:documentFile.type||'application/octet-stream',content_base64:await toBase64(documentFile),client_mutation_id:uuid()})});
+      setDocumentTitle('');setDocumentFile(null);setDocumentMetadata({document_number:'',document_type:'',responsible_employee_id:'',location_id:'',valid_from:'',valid_until:'',review_on:'',approval_status:'draft'});if(documentInput.current)documentInput.current.value='';await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
   async function downloadDocument(document:SiteDocument,version:DmsVersion){
@@ -327,6 +335,15 @@ export function Sites(){
       const {employee_id,...assignment}=assignmentForm;
       await api(`/employees/${employee_id}/object-assignments`,{method:'POST',body:JSON.stringify({...assignment,site_id:selected.site.id,role:assignment.role.trim()||null,ends_on:assignment.ends_on||null,notes:assignment.notes.trim()||null})});
       setAssignmentForm({employee_id:'',assignment_type:'operational',role:'',starts_on:'',ends_on:'',notes:'',reason:''});
+      await refreshContext();setError('');
+    }catch(e){setError((e as Error).message);}
+  }
+  async function removeStaffingAssignment(assignment:StaffingAssignment){
+    if(!selected)return;
+    const reason=window.prompt('Grund für das Beenden der Objektzuordnung');
+    if(!reason?.trim())return;
+    try{
+      await api(`/employees/${assignment.employee_id}/object-assignments/${assignment.id}`,{method:'PATCH',body:JSON.stringify({ends_on:new Date().toISOString().slice(0,10),reason:reason.trim()})});
       await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
@@ -462,6 +479,8 @@ export function Sites(){
   const criticalHazards=selected?.hazards.filter(hazard=>hazard.status==='open'&&hazard.risk_score>=15)??[];
   const expiredInstructions=selected?.instructions.filter(instruction=>instruction.status==='approved'&&instruction.valid_until&&instruction.valid_until<today)??[];
   const overdueMeasures=selected?.hazards.flatMap(hazard=>hazard.measures).filter(measure=>['open','in_progress'].includes(measure.status)&&measure.due_on&&measure.due_on<today)??[];
+  const expiredDocuments=selected?.documents?.filter(document=>document.valid_until&&document.valid_until<today)??[];
+  const expiringDocuments=selected?.documents?.filter(document=>document.valid_until&&document.valid_until>=today&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10))??[];
   return <section className="object-management">
     {error&&<p role="alert" className="error">{error}</p>}
     {siteId?(selected?<article className="object-detail-page">
@@ -474,12 +493,17 @@ export function Sites(){
         </div>
         <div className="object-actions"><button type="button" onClick={()=>navigate(`/sites/${siteId}/stammdaten`)}>Objekt bearbeiten</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/personal`)}>Mitarbeiter zuweisen</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/aufgaben`)}>Aufgabe erstellen</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/dokumente`)}>Dokument hinzufügen</button><button type="button" onClick={()=>navigate(`/sites/${siteId}/vorfaelle`)}>Vorfall erfassen</button></div>
       </header>
-      <nav className="object-tabs" aria-label="Objektbereiche">{tabs.map(([key,label])=><button type="button" key={key} className={active===key?'active':''} aria-current={active===key?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/${key}`)}>{label}</button>)}</nav>
+      <nav className="object-tabs" aria-label="Objektbereiche">
+        <button type="button" className={active==='uebersicht'?'active':''} aria-current={active==='uebersicht'?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/uebersicht`)}>Übersicht</button>
+        {tabGroups.map(group=><div className="object-tab-group" key={group.label}><span>{group.label}</span>{tabs.filter(([key])=>group.keys.includes(key as never)).map(([key,label])=><button type="button" key={key} className={active===key?'active':''} aria-current={active===key?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/${key}`)}>{label}</button>)}</div>)}
+      </nav>
       {active==='uebersicht'&&<div className="object-detail-content">
         <div className="object-alerts" aria-label="Operative Hinweise">
           {criticalHazards.length>0&&<p role="status">Kritische Gefährdungen: {criticalHazards.length}</p>}
           {overdueMeasures.length>0&&<p role="status">Überfällige Maßnahmen: {overdueMeasures.length}</p>}
           {expiredInstructions.length>0&&<p role="status">Abgelaufene Dienstanweisungen: {expiredInstructions.length}</p>}
+          {expiredDocuments.length>0&&<p role="status">Abgelaufene Dokumente: {expiredDocuments.length}</p>}
+          {expiringDocuments.length>0&&<p role="status">Dokumente laufen binnen 30 Tagen ab: {expiringDocuments.length}</p>}
           {selected.instructions.some(instruction=>isInstructionActive(instruction)&&instruction.requires_acknowledgement&&instruction.acknowledgement_count<currentStaff.length)&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen vorhanden.</p>}
         </div>
         <div className="object-summary-grid">
@@ -490,7 +514,7 @@ export function Sites(){
           <article><h3>Sicherheitslage</h3><p>{selected.hazards.filter(hazard=>hazard.status==='open').length} offene Gefährdungen</p><p>{criticalHazards.length} kritisch</p><p>{overdueMeasures.length} überfällige Maßnahmen</p></article>
           <article><h3>Aufgaben & Maßnahmen</h3><p>{selected.customerTasks==null?'Keine Berechtigung':`${selected.customerTasks.filter(task=>task.status==='open').length} offene Aufgaben`}</p><p>{selected.customerTasks==null?'':`${selected.customerTasks.filter(task=>task.status==='open'&&task.due_at&&new Date(task.due_at)<now).length} überfällig`}</p></article>
           <article><h3>Dienstanweisungen</h3><p>{selected.instructions.filter(isInstructionActive).length} aktuell gültig</p><p>{expiredInstructions.length} abgelaufen</p><p>{selected.instructions.filter(instruction=>instruction.requires_acknowledgement).reduce((total,instruction)=>total+instruction.acknowledgement_count,0)} Kenntnisnahmen erfasst</p></article>
-          <article><h3>Dokumente</h3>{selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:<p>{selected.documents.length} aktive DMS-Dokumente</p>}<p>Fachliche Ablaufdaten sind im DMS nicht hinterlegt.</p></article>
+          <article><h3>Dokumente</h3>{selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:<p>{selected.documents.length} aktive DMS-Dokumente</p>}<p>{expiredDocuments.length} abgelaufen · {expiringDocuments.length} laufen binnen 30 Tagen ab</p></article>
           <article><h3>Vorfälle & Alarme</h3><p>{selected.incidents==null?'Einsätze nicht freigegeben':`${selected.incidents.length} Einsätze`}</p><p>{selected.alarms==null?'Alarme nicht freigegeben':`${selected.alarms.length} Alarme`}</p></article>
           <article><h3>Anstehende Schichten</h3>{selected.shifts==null?<p>Keine Berechtigung für die Dienstplanung.</p>:<p>{selected.shifts.filter(shift=>shift.starts_at>now.toISOString()).slice(0,2).map(shift=>`${shift.role_code} · ${new Date(shift.starts_at).toLocaleString('de-DE')}`).join(' / ')||'Keine zukünftigen Schichten'}</p>}</article>
         </div>
@@ -505,7 +529,6 @@ export function Sites(){
           <label>Objektart<input value={details.site_type} onChange={e=>setDetails({...details,site_type:e.target.value})}/></label>
           <label>Status<select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
           <label>Sicherheitsklassifizierung<select value={form.security_classification} onChange={e=>setForm({...form,security_classification:e.target.value})}>{Object.entries(classifications).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
-          <label>Sollbesetzung<input type="number" min="0" max="100000" value={form.required_staff_count} onChange={e=>setForm({...form,required_staff_count:Number(e.target.value)})}/></label>
           <label>Sollbesetzung<input type="number" min="0" max="100000" value={form.required_staff_count} onChange={e=>setForm({...form,required_staff_count:Number(e.target.value)})}/></label>
           {hasPermission('employees:read')&&<><label>Objektleitung<select value={details.object_manager_employee_id} onChange={e=>setDetails({...details,object_manager_employee_id:e.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label><label>Einsatzleitung<select value={details.operations_manager_employee_id} onChange={e=>setDetails({...details,operations_manager_employee_id:e.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label></>}
           <label>Beschreibung<textarea value={details.description} onChange={e=>setDetails({...details,description:e.target.value})}/></label>
@@ -594,7 +617,7 @@ export function Sites(){
       </div>}
       {active==='personal'&&<div className="object-detail-content">
       <h3>Personalzuordnungen</h3>
-      {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
+      {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}{writable&&hasPermission('employees:write')&&!assignment.ends_on&&<button type="button" onClick={()=>void removeStaffingAssignment(assignment)}>Zuordnung beenden</button>}</li>)}</ul>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length>0&&<form onSubmit={createStaffingAssignment}>
         <h4>Personal dem Objekt zuordnen</h4>
         <label>Mitarbeiter<select required value={assignmentForm.employee_id} onChange={event=>setAssignmentForm({...assignmentForm,employee_id:event.target.value})}><option value="">Mitarbeiter auswählen</option>{assignableEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
@@ -607,6 +630,9 @@ export function Sites(){
         <button>Personalzuordnung anlegen</button>
       </form>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
+      <h3>Qualifikationen</h3>
+      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id} className={qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualification.computed_status==='valid'?'Gültig':qualification.computed_status==='expiring'?'Läuft bald ab':qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig'}{qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}</li>)}</ul>}
+      {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}
       </div>}
       {active==='dienstplanung'&&<div className="object-detail-content"><h3>Dienstplanung und Schichten</h3>
       {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}
@@ -615,11 +641,6 @@ export function Sites(){
           <button disabled={!shiftAssignmentRequests[shift.id]?.employee_id}>Schicht besetzen</button>
         </form>}
       </li>)}</ul>}
-      </div>}
-      {active==='personal'&&<div className="object-detail-content">
-      <h3>Qualifikationen der zugeordneten Mitarbeitenden</h3>
-      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für aktuell zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id}><strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualification.computed_status==='valid'?'Gültig':qualification.computed_status==='expiring'?'Läuft bald ab':qualification.computed_status==='expired'?'Abgelaufen':qualification.computed_status==='revoked'?'Widerrufen':'Ungültig'}{qualification.valid_from?` · ab ${new Date(`${qualification.valid_from}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}</li>)}</ul>}
-      {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}
       </div>}
       {active==='kontrollgaenge'&&<div className="object-detail-content">
       <h3>Kontrollgangpläne und Abdeckung</h3>
@@ -652,8 +673,24 @@ export function Sites(){
       </div>}
       {active==='dokumente'&&<div className="object-detail-content">
       <h3>Objektdokumente</h3>
-      {selected.documents===null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=><li key={document.id}><strong>{document.title}</strong> · {document.document_status}{document.description&&<p>{document.description}</p>}<ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>)}</ul>}
-      {selected.documents!==null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}><label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label><label>Datei<input ref={documentInput} required type="file" onChange={(event:ChangeEvent<HTMLInputElement>)=>setDocumentFile(event.target.files?.[0]??null)}/></label><button>Dokument hochladen und prüfen</button></form>}
+      {selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=>{
+        const expired=document.valid_until&&document.valid_until<now.toISOString().slice(0,10);
+        const expiring=document.valid_until&&!expired&&document.valid_until<=new Date(now.getTime()+30*86400000).toISOString().slice(0,10);
+        return <li key={document.id} className={expired||expiring?'object-warning':''}><strong>{document.title}</strong> · {document.document_status}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{expired?' · Abgelaufen':expiring?' · Läuft innerhalb 30 Tage ab':''}{document.description&&<p>{document.description}</p>}<ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>;
+      })}</ul>}
+      {selected.documents!=null&&hasPermission('dms:write')&&<form onSubmit={uploadSiteDocument}>
+        <label>Dokumenttitel<input required value={documentTitle} onChange={event=>setDocumentTitle(event.target.value)}/></label>
+        <label>Dokumentnummer<input value={documentMetadata.document_number} onChange={event=>setDocumentMetadata({...documentMetadata,document_number:event.target.value})}/></label>
+        <label>Dokumenttyp<input value={documentMetadata.document_type} onChange={event=>setDocumentMetadata({...documentMetadata,document_type:event.target.value})}/></label>
+        {hasPermission('employees:read')&&<label>Dokumentverantwortlich<select value={documentMetadata.responsible_employee_id} onChange={event=>setDocumentMetadata({...documentMetadata,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+        <label>Objektbereich<select value={documentMetadata.location_id} onChange={event=>setDocumentMetadata({...documentMetadata,location_id:event.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{locationPath(location)}</option>)}</select></label>
+        <label>Gültig ab<input type="date" value={documentMetadata.valid_from} onChange={event=>setDocumentMetadata({...documentMetadata,valid_from:event.target.value})}/></label>
+        <label>Gültig bis<input type="date" value={documentMetadata.valid_until} onChange={event=>setDocumentMetadata({...documentMetadata,valid_until:event.target.value})}/></label>
+        <label>Wiedervorlage<input type="date" value={documentMetadata.review_on} onChange={event=>setDocumentMetadata({...documentMetadata,review_on:event.target.value})}/></label>
+        <label>Prüf- und Freigabestatus<select value={documentMetadata.approval_status} onChange={event=>setDocumentMetadata({...documentMetadata,approval_status:event.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option><option value="approved">Freigegeben</option><option value="rejected">Abgelehnt</option></select></label>
+        <label>Datei<input ref={documentInput} required type="file" onChange={(event:ChangeEvent<HTMLInputElement>)=>setDocumentFile(event.target.files?.[0]??null)}/></label>
+        <button>Dokument hochladen und prüfen</button>
+      </form>}
       </div>}
       {active==='vorfaelle'&&<div className="object-detail-content">
       <h3>Alarme am Objekt</h3>
@@ -671,6 +708,9 @@ export function Sites(){
       {selected.customers!==null&&hasPermission('customers:write')&&<form onSubmit={createCustomerTask}><label>Kunde<select required value={taskCustomerId} onChange={event=>setTaskCustomerId(event.target.value)}><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Aufgabe / Wiedervorlage<input required value={taskTitle} onChange={event=>setTaskTitle(event.target.value)}/></label><label>Fällig am<input type="datetime-local" value={taskDue} onChange={event=>setTaskDue(event.target.value)}/></label>{hasPermission('employees:read')&&<label>Verantwortlich<select value={taskAssignee} onChange={event=>setTaskAssignee(event.target.value)}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}<button>Aufgabe anlegen</button></form>}
       </div>}
       {active==='technik'&&<div className="object-detail-content">
+      <h3>Technische Anlagen und Geräte</h3>
+      {selected.devices==null?<p>Keine Berechtigung für den technischen Gerätebestand.</p>:selected.devices.length===0?<p>Keine technischen Anlagen für dieses Objekt erfasst.</p>:<ul>{selected.devices.map(device=><li key={device.id}><strong>{device.name}</strong> · {device.status==='online'?'Aktiv':device.status==='maintenance'?'Wartung':'Offline'}{device.last_seen_at?` · zuletzt gesehen ${new Date(device.last_seen_at).toLocaleString('de-DE')}`:''}</li>)}</ul>}
+      {hasPermission('devices:write')&&<button type="button" onClick={()=>navigate('/devices')}>Anlagenbestand verwalten</button>}
       <h3>Technik und Instandhaltung</h3>
       {selected.maintenance===null?<p>Keine Berechtigung für Wartungseinträge im Wachbuch.</p>:selected.maintenance.length===0?<p>Keine Technik- oder Instandhaltungseinträge vorhanden.</p>:<ul>{selected.maintenance.map(entry=><li key={entry.id}><strong>{entry.priority_name}</strong> · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       {maintenanceReadable&&hasPermission('watchbook:read')&&hasPermission('watchbook:write')&&<form onSubmit={createMaintenanceEntry}>

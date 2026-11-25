@@ -65,6 +65,14 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       customer_id:uuid.nullable().optional(),
       employee_document_category:z.enum(['contract','qualification','training','instruction','personal','other']).nullable().optional(),
       customer_document_category:z.enum(['contract','service','insurance','security_plan','correspondence','other']).nullable().optional(),
+      document_number:z.string().trim().max(100).nullable().optional(),
+      document_type:z.string().trim().max(160).nullable().optional(),
+      responsible_employee_id:uuid.nullable().optional(),
+      location_id:uuid.nullable().optional(),
+      valid_from:z.string().date().nullable().optional(),
+      valid_until:z.string().date().nullable().optional(),
+      review_on:z.string().date().nullable().optional(),
+      approval_status:z.enum(['draft','pending_approval','approved','rejected','archived']).optional(),
       content_base64:z.string(),
       content_type:z.string().trim().min(1).max(160),
       retention_until:z.string().datetime({offset:true}).nullable().optional(),
@@ -72,7 +80,7 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     }).strict().refine(value=>
       Boolean(value.customer_id)===Boolean(value.customer_document_category)
       && !(value.customer_id&&value.employee_id)
-    ).parse(req.body);
+    ).refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from).parse(req.body);
     siteAccess(req,body.site_id??null,'dms:write');
     if(body.customer_id){
       if(!customerDocumentPermission(req,'customer_documents:write'))throw Object.assign(new Error('Insufficient permissions for customer documents'),{status:403});
@@ -84,6 +92,15 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
       if(!employee)throw Object.assign(new Error('Employee not found'),{status:404});
     }
+    if(body.responsible_employee_id){
+      const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rows[0];
+      if(!employee)throw Object.assign(new Error('Responsible employee not found'),{status:404});
+    }
+    if(body.location_id){
+      if(!body.site_id)throw Object.assign(new Error('Location requires a site'),{status:400});
+      const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,body.site_id,body.location_id])).rows[0];
+      if(!location)throw Object.assign(new Error('Object location not found'),{status:404});
+    }
     const content=decodeContent(body.content_base64);
     const maxBytes=env.DMS_MAX_BYTES;
     validateDmsUpload(content,body.content_type,maxBytes,allowedTypes);
@@ -91,8 +108,8 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     await dmsStorage.put(objectKey,content,body.content_type);
     try{
       const result=await withTransaction(client=>runIdempotentMutation<{document:Record<string,unknown>;version:Record<string,unknown>}>(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'dms.document',payload:req.body},async tx=>{
-        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,customer_id,customer_document_category,title,description,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,req.user!.id,session(req)])).rows[0];
+        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,customer_id,customer_document_category,title,description,document_number,document_type,responsible_employee_id,location_id,valid_from,valid_until,review_on,approval_status,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,body.document_number??null,body.document_type??null,body.responsible_employee_id??null,body.location_id??null,body.valid_from??null,body.valid_until??null,body.review_on??null,body.approval_status??'draft',req.user!.id,session(req)])).rows[0];
         const version=(await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
           VALUES($1,$2,$3,1,$4,$5,$6,$7,'quarantined',$8,$9,(SELECT device_id FROM sessions WHERE id=$9),$10) RETURNING *`,
           [versionId,req.user!.tenantId,documentId,objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
