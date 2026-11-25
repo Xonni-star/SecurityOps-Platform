@@ -173,24 +173,64 @@ database restore.
 
 ## Phase 1, step 2: object security hub
 
-Migration `035_object_security_hub.sql` is additive. It keeps `sites` as the
+Migration `038_object_security_hub.sql` is additive. It keeps `sites` as the
 canonical object record and adds tenant/RLS-protected buildings, areas and
 zones, explainable hazard assessments with a persisted likelihood x impact
 score, and versioned site instructions with optional employee
 acknowledgements. All relationships use composite tenant-aware foreign keys.
 The object-context endpoint exposes these records alongside existing customer,
-contract and watchbook links; patrol, alarm, incident, handover and DMS
-records remain in their existing domains and are not duplicated.
+contract and watchbook links, as well as existing site-linked employee
+assignments, active/upcoming duty shifts, patrol route plans and the 20 most
+recent site-linked checkpoint scans. These personnel, scheduling and patrol
+projections remain permission-scoped; the source records are not duplicated.
+Site staffing assignments can be created through the existing employee
+assignment API with an audit reason and site-scope authorization. Existing
+assignments remain read-only for correction/removal because no safe update or
+rollback API exists. Site-scoped writers cannot alter the employee's
+tenant-wide primary-assignment state. Scheduling and patrol projections remain
+read-only.
+Patrol access requires `patrols:read` for the requested site.
+Employee names in patrol assignments and scans additionally require
+`employees:read`; missing patrol access returns `null`, distinct from an
+authorized empty result.
 
-Current gap after this step: the object context has real customer, contract,
-hierarchy, hazard, instruction and watchbook links, but it does not yet expose
-the existing patrol, alarm, incident, qualification, schedule, key, handover
-or DMS read models in one response. Those domains already have their own
-authorization, audit and offline contracts and must be integrated by read-only
-joins or dedicated projections rather than copied into object tables.
+Existing key inventory, the last 20 key movements, key bundles and DMS
+document/version metadata are also projected from their owning tables. Each
+projection checks its own site-scoped permission independently; employee names
+in key movement history require `employees:read`. DMS results omit customer
+documents unless `customer_documents:read` is granted. Existing DMS upload and
+download routes remain the only file-storage flows. Individual key issue and
+return actions use the existing idempotent, audited key endpoints and are
+limited to employees assigned to the object in the UI. No key or document
+records are copied into object-specific tables.
 
-The next phases should connect existing patrol/control-point, alarm/incident,
-qualification/scheduling, key, handover and DMS read models to the object
-context, then add task-level actions where the existing domain supports them.
+Site-linked alarms and incidents, active-customer follow-up tasks and the
+latest maintenance-category watchbook entries are projected with their
+independent read permissions. Task creation/completion reuses the audited
+customer-task endpoints; maintenance entry creation reuses the existing
+idempotent, site-scoped watchbook endpoint and remains append-only evidence.
+The journal now includes the latest revision and category/priority metadata.
+These integrations add no schema or parallel workflow.
+
+Object locations and hazard assessments can be edited through site-scoped,
+CSRF-protected and audited updates. Location edits validate same-site parents
+and reject hierarchy cycles; hazard edits validate same-site references and
+the due/review date relationship. The existing tables and generated risk score
+are sufficient, so these write flows require no migration.
+
+Current or future site-assigned employees' qualifications and their computed
+validity state are exposed only when both employee and qualification read
+permissions allow it. Site handovers show existing protocol status and
+participant confirmation counts under `handover:read`; event and confirmation
+history remain in the dedicated handover module. No migration or secondary
+record store was needed.
+
+Object reports link to the existing audited report-export UI with the current
+site preselected. That module retains its existing site authorization, date
+filters, report types and CSV/PDF generation; no duplicate report store or
+export endpoint was added.
+
+Remaining gaps include any maintenance lifecycle beyond recording immutable
+watchbook evidence.
 Offline evidence and conflict handling remain governed by the existing sync
 receipts; this migration introduces no simulated evidence or second workflow.
