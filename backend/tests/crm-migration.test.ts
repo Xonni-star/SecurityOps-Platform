@@ -55,7 +55,7 @@ test('customer management migration extends the CRM model with tenant-safe activ
 
 test('all repository migrations have a unique, gap-free version sequence',async()=>{
   const migrations=await loadMigrationFiles(join(process.cwd(),'migrations'));
-  expect(migrations[migrations.length-1]?.id).toBe('045_dms_document_metadata.sql');
+  expect(migrations[migrations.length-1]?.id).toBe('048_dms_document_requirements.sql');
 });
 
 test('object staffing target migration adds a guarded site-level headcount',async()=>{
@@ -69,4 +69,27 @@ test('DMS metadata migration adds validity and approval fields without a paralle
   expect(sql).toContain('ADD COLUMN IF NOT EXISTS document_number text');
   expect(sql).toContain('ADD COLUMN IF NOT EXISTS valid_until date');
   expect(sql).toContain('ADD COLUMN IF NOT EXISTS approval_status text');
+});
+
+test('object asset migration extends the existing device inventory without a parallel asset table',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','046_object_asset_and_address_fields.sql'),'utf8');
+  expect(sql).toContain('ALTER TABLE devices');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS asset_number text');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS next_maintenance_on date');
+  expect(sql).toContain('ALTER TABLE dms_documents');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS updated_at timestamptz');
+  expect(sql).not.toContain('CREATE TABLE IF NOT EXISTS assets');
+});
+
+test('DMS metadata patch migration adds document update timestamp',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','047_dms_metadata_update_timestamp.sql'),'utf8');
+  expect(sql).toContain('ALTER TABLE dms_documents');
+  expect(sql).toContain('ADD COLUMN IF NOT EXISTS updated_at timestamptz');
+});
+
+test('DMS document requirements migration creates a canonical per-object requirement model',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','048_dms_document_requirements.sql'),'utf8');
+  expect(sql).toContain('CREATE TABLE IF NOT EXISTS dms_document_requirements');
+  expect(sql).toContain('UNIQUE (tenant_id,site_id,document_type)');
+  expect(sql).toContain('CREATE POLICY tenant_isolation');
 });

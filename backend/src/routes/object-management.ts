@@ -390,13 +390,22 @@ objectManagementRouter.get(
         [user.tenantId,id],
       )).rows:null;
       const staffing=canReadStaffing?(await query(
-        `SELECT oa.id,oa.employee_id,e.name AS employee_name,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
+        `SELECT oa.id,oa.employee_id,e.name AS employee_name,e.employee_number,e.employment_status,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
           oa.primary_assignment,oa.notes
          FROM employee_object_assignments oa
          JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
          WHERE oa.tenant_id=$1 AND oa.site_id=$2
            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
          ORDER BY oa.starts_on<=CURRENT_DATE DESC,oa.primary_assignment DESC,oa.starts_on, e.name`,
+        [user.tenantId,id],
+      )).rows:null;
+      const assignmentHistory=canReadStaffing?(await query(
+        `SELECT oa.id,oa.employee_id,e.name AS employee_name,e.employee_number,oa.assignment_type,oa.role,oa.starts_on,oa.ends_on,
+          oa.primary_assignment,oa.notes
+         FROM employee_object_assignments oa
+         JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
+         WHERE oa.tenant_id=$1 AND oa.site_id=$2
+         ORDER BY oa.ends_on DESC NULLS FIRST,oa.starts_on DESC,e.name LIMIT 100`,
         [user.tenantId,id],
       )).rows:null;
       const canReadSchedule=canReadSiteData('scheduling:read');
@@ -588,16 +597,77 @@ objectManagementRouter.get(
         [user.tenantId,id],
       )).rows:null;
       const devices=canReadSiteData('devices:read')?(await query(
-        `SELECT id,name,status,site_id,last_seen_at,metadata,created_at,updated_at
+        `SELECT id,name,status,site_id,last_seen_at,metadata,asset_number,category,manufacturer,model,serial_number,
+          location_id,responsible_employee_id,operational_status,installed_on,commissioned_on,last_inspection_on,
+          next_inspection_on,maintenance_interval_days,next_maintenance_on,last_maintenance_on,created_at,updated_at
          FROM devices
          WHERE tenant_id=$1 AND site_id=$2 AND device_kind='operational'
          ORDER BY name,last_seen_at DESC NULLS LAST`,
         [user.tenantId,id],
       )).rows:null;
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,shifts,patrols,keys,keyBundles,documents,alarms,incidents,customerTasks,maintenance,qualifications,handovers,devices});
+      const documentRequirements=canReadDocuments?(await query(
+        `SELECT r.id,r.document_type,r.required,r.responsible_employee_id,e.name AS responsible_employee_name,r.created_at,r.updated_at,
+          CASE WHEN r.required AND NOT EXISTS (
+            SELECT 1 FROM dms_documents d
+            WHERE d.tenant_id=r.tenant_id AND d.site_id=r.site_id AND d.document_status='active'
+              AND d.document_type=r.document_type AND d.approval_status='approved'
+              AND (d.valid_until IS NULL OR d.valid_until>=CURRENT_DATE)
+          ) THEN true ELSE false END AS missing
+         FROM dms_document_requirements r
+         LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.responsible_employee_id
+         WHERE r.tenant_id=$1 AND r.site_id=$2
+         ORDER BY r.document_type`,
+        [user.tenantId,id],
+      )).rows:null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentRequirements,alarms,incidents,customerTasks,maintenance,qualifications,handovers,devices});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
   },
 );
+
+objectManagementRouter.post('/sites/:id/document-requirements',requireAuth,requireCsrf,requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('dms:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id));
+    const body=z.object({document_type:nonempty.max(160),required:z.boolean().default(true),responsible_employee_id:uuid.nullable().optional()}).strict().parse(req.body);
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    const row=(await query(
+      `INSERT INTO dms_document_requirements(tenant_id,site_id,document_type,required,responsible_employee_id,created_by)
+       VALUES($1,$2,$3,$4,$5,$6)
+       ON CONFLICT(tenant_id,site_id,document_type) DO UPDATE SET required=EXCLUDED.required,responsible_employee_id=EXCLUDED.responsible_employee_id,updated_at=now()
+       RETURNING *`,
+      [req.user!.tenantId,siteId,body.document_type,body.required,body.responsible_employee_id??null,req.user!.id],
+    )).rows[0];
+    await recordAudit(req.user!.tenantId,req.user!.id,'site.document_requirement.saved','dms_document_requirement',row.id,{site_id:siteId,document_type:body.document_type,required:body.required});
+    res.status(201).json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document requirement'});next(error);}
+});
+
+objectManagementRouter.patch('/sites/:id/document-requirements/:requirementId',requireAuth,requireCsrf,requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('dms:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id));
+    const requirementId=uuid.parse(String(req.params.requirementId));
+    const body=z.object({required:z.boolean(),responsible_employee_id:uuid.nullable().optional()}).strict().parse(req.body);
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    const row=(await query(
+      `UPDATE dms_document_requirements SET required=$4,responsible_employee_id=$5,updated_at=now()
+       WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING *`,
+      [req.user!.tenantId,siteId,requirementId,body.required,body.responsible_employee_id??null],
+    )).rows[0];
+    if(!row)return res.status(404).json({error:'Document requirement not found'});
+    await recordAudit(req.user!.tenantId,req.user!.id,'site.document_requirement.updated','dms_document_requirement',requirementId,{site_id:siteId,required:body.required});
+    res.json(row);
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document requirement'});next(error);}
+});
+
+objectManagementRouter.delete('/sites/:id/document-requirements/:requirementId',requireAuth,requireCsrf,requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('dms:write'),async(req,res,next)=>{
+  try{
+    const siteId=uuid.parse(String(req.params.id));
+    const requirementId=uuid.parse(String(req.params.requirementId));
+    const row=(await query('DELETE FROM dms_document_requirements WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING id',[req.user!.tenantId,siteId,requirementId])).rows[0];
+    if(!row)return res.status(404).json({error:'Document requirement not found'});
+    await recordAudit(req.user!.tenantId,req.user!.id,'site.document_requirement.deleted','dms_document_requirement',requirementId,{site_id:siteId});
+    res.status(204).send();
+  }catch(error){next(error);}
+});
 
 objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{

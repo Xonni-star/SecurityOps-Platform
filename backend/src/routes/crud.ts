@@ -37,11 +37,26 @@ const schemas={
     object_manager_employee_id:uuid.nullable().optional(),
     operations_manager_employee_id:uuid.nullable().optional(),
     required_staff_count:z.number().int().min(0).max(100000).optional(),
+    street:z.string().trim().max(240).nullable().optional(),
+    house_number:z.string().trim().max(30).nullable().optional(),
+    postal_code:z.string().trim().max(20).nullable().optional(),
+    city:z.string().trim().max(160).nullable().optional(),
+    contact_person:z.string().trim().max(240).nullable().optional(),
   }).strict(),
-  devices:z.object({name:nonempty,status:z.enum(['online','offline','maintenance']).optional(),site_id:uuid.nullable().optional(),last_seen_at:date.nullable().optional()}).strict(),
+  devices:z.object({
+    name:nonempty,status:z.enum(['online','offline','maintenance']).optional(),site_id:uuid.nullable().optional(),last_seen_at:date.nullable().optional(),
+    asset_number:z.string().trim().max(100).nullable().optional(),category:z.string().trim().max(160).nullable().optional(),
+    manufacturer:z.string().trim().max(160).nullable().optional(),model:z.string().trim().max(160).nullable().optional(),
+    serial_number:z.string().trim().max(160).nullable().optional(),location_id:uuid.nullable().optional(),
+    responsible_employee_id:uuid.nullable().optional(),operational_status:z.enum(['active','maintenance','fault','offline','decommissioned']).optional(),
+    installed_on:z.string().date().nullable().optional(),commissioned_on:z.string().date().nullable().optional(),
+    last_inspection_on:z.string().date().nullable().optional(),next_inspection_on:z.string().date().nullable().optional(),
+    maintenance_interval_days:z.number().int().positive().nullable().optional(),next_maintenance_on:z.string().date().nullable().optional(),
+    last_maintenance_on:z.string().date().nullable().optional(),
+  }).strict(),
   alarms:z.object({device_id:uuid.nullable().optional(),severity:z.enum(['low','medium','high','critical']),status:z.enum(['open','acknowledged','resolved']).optional(),message:nonempty,triggered_at:date.optional(),resolved_at:date.nullable().optional()}).strict()
 } as const;
-const fields={employees:['name','email','title','employee_number','first_name','last_name','phone','mobile','address','date_of_birth','hire_date','termination_date','employment_status','employment_type','department','position','work_location','weekly_hours','user_id'],customers:['name','email'],sites:['name','address','site_number','alias','site_type','description','status','security_classification','latitude','longitude','opening_hours','access_information','special_notes','hazard_notes','object_manager_employee_id','operations_manager_employee_id','required_staff_count'],devices:['name','status','site_id','last_seen_at'],alarms:['device_id','severity','status','message','triggered_at','resolved_at']} as const;
+const fields={employees:['name','email','title','employee_number','first_name','last_name','phone','mobile','address','date_of_birth','hire_date','termination_date','employment_status','employment_type','department','position','work_location','weekly_hours','user_id'],customers:['name','email'],sites:['name','address','site_number','alias','site_type','description','status','security_classification','latitude','longitude','opening_hours','access_information','special_notes','hazard_notes','object_manager_employee_id','operations_manager_employee_id','required_staff_count','street','house_number','postal_code','city','contact_person'],devices:['name','status','site_id','last_seen_at','asset_number','category','manufacturer','model','serial_number','location_id','responsible_employee_id','operational_status','installed_on','commissioned_on','last_inspection_on','next_inspection_on','maintenance_interval_days','next_maintenance_on','last_maintenance_on'],alarms:['device_id','severity','status','message','triggered_at','resolved_at']} as const;
 type Resource=keyof typeof schemas;
 function parseBody(resource:Resource,body:unknown,partial:boolean){const parsed=(partial?schemas[resource].partial():schemas[resource]).safeParse(body);return parsed.success?parsed.data:null;}
 function invalid(res:import('express').Response){return res.status(400).json({error:'Invalid request'});}
