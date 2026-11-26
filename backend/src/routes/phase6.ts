@@ -44,6 +44,13 @@ function assignmentOf(row:Row):Record<string,string|null>{
   return {employee_id:(row.employee_id as string|null)??null,site_id:(row.site_id as string|null)??null,control_point_id:(row.control_point_id as string|null)??null};
 }
 
+async function controlPointOccupied(runner:{query:(sql:string,values:unknown[])=>Promise<{rows:Row[]}>},tenantId:string,controlPointId:string,excludeId=''):Promise<boolean>{
+  const row=(await runner.query(`SELECT id FROM nfc_devices
+    WHERE tenant_id=$1 AND control_point_id=$2 AND status='active' AND archived_at IS NULL AND id<>$3 LIMIT 1`,
+    [tenantId,controlPointId,excludeId])).rows[0];
+  return Boolean(row);
+}
+
 phase6Router.get('/nfc-devices',requirePermission('nfc_devices:read'),async(req,res,next)=>{
   try{
     const rows=await query(`SELECT n.*,e.name employee_name,s.name site_name,cp.name control_point_name
@@ -57,18 +64,29 @@ phase6Router.get('/nfc-devices',requirePermission('nfc_devices:read'),async(req,
 
 phase6Router.post('/nfc-devices',requirePermission('nfc_devices:write'),async(req,res,next)=>{
   try{
-    const body=z.object({identifier:nonempty,device_type:deviceType,manufacturer:nonempty,status:status.optional(),employee_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),control_point_id:uuid.nullable().optional(),notes:z.string().max(2000).optional()}).strict().parse(req.body);
+    const body=z.object({identifier:nonempty,device_type:deviceType,manufacturer:nonempty,status:status.optional(),
+      model:z.string().trim().max(200).optional(),serial_number:z.string().trim().max(200).optional(),
+      description:z.string().trim().max(2000).optional(),
+      employee_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),control_point_id:uuid.nullable().optional(),
+      notes:z.string().max(2000).optional()}).strict().parse(req.body);
     const queryRunner={query:(sql:string,values:unknown[])=>query(sql,values)};
     const targets=Object.entries({employee_id:body.employee_id,site_id:body.site_id,control_point_id:body.control_point_id}).filter(([,value])=>value);
     if(targets.length>1)return res.status(400).json({error:'Es ist nur ein NFC-Zuordnungsziel erlaubt'});
     if(body.control_point_id&&body.device_type!=='tag')return res.status(400).json({error:'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden'});
     if(targets[0]&&!(await targetExists(queryRunner,req.user!.tenantId,targets[0][0] as 'employee_id'|'site_id'|'control_point_id',String(targets[0][1]))))return res.status(404).json({error:'Zuordnungsziel nicht gefunden'});
+    if(body.control_point_id&&await controlPointOccupied(queryRunner,req.user!.tenantId,body.control_point_id)){
+      return res.status(409).json({error:'Dieser Kontrollpunkt ist bereits einem aktiven NFC-Tag zugeordnet'});
+    }
     const duplicate=(await query('SELECT id FROM nfc_devices WHERE tenant_id=$1 AND identifier=$2',[req.user!.tenantId,body.identifier])).rows[0];
     if(duplicate)throw duplicateError();
     const siteId=body.control_point_id?await targetSiteId(req.user!.tenantId,body.control_point_id):null;
-    const device=(await query(`INSERT INTO nfc_devices(tenant_id,identifier,device_type,manufacturer,status,employee_id,site_id,control_point_id,notes)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[req.user!.tenantId,body.identifier,body.device_type,body.manufacturer,body.status??'active',body.employee_id??null,body.site_id??null,body.control_point_id??null,body.notes??''])).rows[0];
-    await recordAudit(req.user!.tenantId,req.user!.id,'nfc_device.created','nfc_device',String(device.id),{identifier:body.identifier,device_type:body.device_type,assignment:assignmentOf(device as Row),site_id:siteId});
+    const device=(await query(`INSERT INTO nfc_devices
+      (tenant_id,identifier,device_type,manufacturer,model,serial_number,description,status,employee_id,site_id,control_point_id,notes)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [req.user!.tenantId,body.identifier,body.device_type,body.manufacturer,body.model??null,body.serial_number??null,
+        body.description??null,body.status??'active',body.employee_id??null,body.site_id??null,body.control_point_id??null,body.notes??''])).rows[0];
+    await recordAudit(req.user!.tenantId,req.user!.id,'nfc_device.created','nfc_device',String(device.id),
+      {identifier:body.identifier,device_type:body.device_type,assignment:assignmentOf(device as Row),site_id:siteId});
     res.status(201).json(device);
   }catch(error){next(error);}
 });
@@ -77,15 +95,24 @@ phase6Router.patch('/nfc-devices/:id',requirePermission('nfc_devices:write'),asy
   try{
     const id=validId(String(req.params.id));
     if('status' in (req.body??{}))return res.status(400).json({error:'Statusänderungen erfolgen ausschließlich über die dafür vorgesehenen Workflow-Endpunkte'});
-    const {reason,...body}=z.object({identifier:nonempty.optional(),device_type:deviceType.optional(),manufacturer:nonempty.optional(),employee_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),control_point_id:uuid.nullable().optional(),notes:z.string().max(2000).optional(),reason:z.string().trim().max(2000).optional()}).strict().parse(req.body);
+    const {reason,...body}=z.object({identifier:nonempty.optional(),device_type:deviceType.optional(),manufacturer:nonempty.optional(),
+      model:z.string().trim().max(200).optional(),serial_number:z.string().trim().max(200).optional(),
+      description:z.string().trim().max(2000).optional(),
+      employee_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),control_point_id:uuid.nullable().optional(),
+      notes:z.string().max(2000).optional(),reason:z.string().trim().max(2000).optional()}).strict().parse(req.body);
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
+      if(current.archived_at)fail(409,'NFC-Gerät ist archiviert und kann nicht verändert werden');
       const assignment={employee_id:body.employee_id===undefined?current.employee_id:body.employee_id,site_id:body.site_id===undefined?current.site_id:body.site_id,control_point_id:body.control_point_id===undefined?current.control_point_id:body.control_point_id};
       const targets=Object.entries(assignment).filter(([,value])=>value);
       if(targets.length>1)fail(400,'Es ist nur ein NFC-Zuordnungsziel erlaubt');
       if(assignment.control_point_id&&(body.device_type??current.device_type)!=='tag')fail(400,'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden');
       if(targets[0]&&!(await targetExists({query:(sql,values)=>client.query(sql,values)},req.user!.tenantId,targets[0][0] as 'employee_id'|'site_id'|'control_point_id',String(targets[0][1]))))fail(404,'Zuordnungsziel nicht gefunden');
+      if(assignment.control_point_id&&assignment.control_point_id!==current.control_point_id
+        &&await controlPointOccupied({query:(sql,values)=>client.query(sql,values)},req.user!.tenantId,String(assignment.control_point_id),id)){
+        fail(409,'Dieser Kontrollpunkt ist bereits einem aktiven NFC-Tag zugeordnet');
+      }
       if(body.identifier&&body.identifier!==current.identifier){
         const duplicate=(await client.query('SELECT id FROM nfc_devices WHERE tenant_id=$1 AND identifier=$2',[req.user!.tenantId,body.identifier])).rows[0];
         if(duplicate)throw duplicateError();
@@ -114,9 +141,16 @@ phase6Router.delete('/nfc-devices/:id',requirePermission('nfc_devices:write'),as
     const tenantId=req.user!.tenantId;
     const current=(await query<Row>('SELECT identifier FROM nfc_devices WHERE tenant_id=$1 AND id=$2',[tenantId,id])).rows[0];
     if(!current)return res.status(404).json({error:'NFC-Gerät nicht gefunden'});
-    const history=(await query<Row>(`SELECT (SELECT count(*)::int FROM patrol_scans WHERE tenant_id=$1 AND nfc_device_id=$2) scans,
-      (SELECT count(*)::int FROM nfc_device_replacements WHERE tenant_id=$1 AND (old_device_id=$2 OR new_device_id=$2)) replacements`,[tenantId,id])).rows[0];
-    if(Number(history?.scans??0)>0||Number(history?.replacements??0)>0)return res.status(409).json({error:'NFC-Gerät mit Scan- oder Ersatzhistorie kann nicht gelöscht werden'});
+    const history=(await query<Row>(`SELECT
+      (SELECT count(*)::int FROM patrol_scans WHERE tenant_id=$1 AND nfc_device_id=$2) scans,
+      (SELECT count(*)::int FROM nfc_device_replacements WHERE tenant_id=$1 AND (old_device_id=$2 OR new_device_id=$2)) replacements,
+      (SELECT count(*)::int FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2) assignments,
+      (SELECT count(*)::int FROM dms_documents WHERE tenant_id=$1 AND nfc_device_id=$2) documents,
+      (SELECT count(*)::int FROM audit_events WHERE tenant_id=$1 AND entity_type='nfc_device' AND entity_id=$2) events`,[tenantId,id])).rows[0];
+    if(Number(history?.scans??0)>0||Number(history?.replacements??0)>0||Number(history?.assignments??0)>0
+      ||Number(history?.documents??0)>0||Number(history?.events??0)>0){
+      return res.status(409).json({error:'NFC-Gerät mit Scan-, Zuordnungs-, Dokumenten- oder Ereignishistorie kann nicht gelöscht werden. Bitte archivieren Sie das Gerät stattdessen.'});
+    }
     await withTransaction(async client=>{
       await client.query('DELETE FROM nfc_devices WHERE tenant_id=$1 AND id=$2',[tenantId,id]);
       await recordAudit(tenantId,req.user!.id,'nfc_device.deleted','nfc_device',id,{identifier:current.identifier},client);

@@ -4,17 +4,18 @@ import {api,hasPermission} from '../lib/api';
 import {formatDate,formatDateTime,formatNumber} from '../lib/format';
 import {commonText} from '../lib/text';
 import {
-  emptyNfcForm,nfcFormFromDevice,nfcMessage,nfcPayloadFromForm,nfcStatusClass,nfcStatusLabel,nfcTypeLabel,
-  NfcDialog,NfcFormFields,NfcKpiCard,NfcReasonDialog,NfcReplaceDialog,validateNfcForm,
+  emptyNfcForm,nfcAssignmentLabel,nfcFormFromDevice,nfcMessage,nfcPayloadFromForm,nfcStatusClass,nfcStatusLabel,nfcStatusText,nfcTypeLabel,
+  NfcDialog,NfcFormFields,NfcKpiCard,NfcReasonDialog,NfcRecoverDialog,NfcReplaceDialog,validateNfcForm,
   type NfcDevice,type NfcForm,type NfcOptions,type NfcOverview,
 } from './nfcParts';
 
 type Filters={
   q:string;device_type:string;status:string;site_id:string;control_point_id:string;employee_id:string;assignment:string;
+  archived:string;recent:string;
 };
-type DialogKind='create'|'edit'|'block'|'lost'|'replace'|'reactivate'|null;
+type DialogKind='create'|'edit'|'block'|'lost'|'replace'|'reactivate'|'recover'|'archive'|null;
 
-const emptyFilters:Filters={q:'',device_type:'',status:'',site_id:'',control_point_id:'',employee_id:'',assignment:''};
+const emptyFilters:Filters={q:'',device_type:'',status:'',site_id:'',control_point_id:'',employee_id:'',assignment:'',archived:'',recent:''};
 const emptyOptions:NfcOptions={sites:[],control_points:[],employees:[]};
 const today=new Date().toISOString().slice(0,10);
 
@@ -48,7 +49,9 @@ export function NfcDevices(){
   const [form,setForm]=useState<NfcForm>(emptyNfcForm());
   const [reason,setReason]=useState('');
   const [lostDate,setLostDate]=useState(today);
-  const [replacement,setReplacement]=useState({identifier:'',device_type:'tag',manufacturer:'',reason:'',notes:'',copy_assignment:true});
+  const [replacement,setReplacement]=useState({identifier:'',device_type:'tag',manufacturer:'',mode:'new' as 'new'|'existing',
+    existing_device_id:'',reason:'',notes:'',copy_assignment:true});
+  const [recover,setRecover]=useState({found_at:today,identifier_confirmation:'',reason:''});
   const [dialogError,setDialogError]=useState('');
   const [busy,setBusy]=useState(false);
 
@@ -95,7 +98,9 @@ export function NfcDevices(){
     if(kind==='edit'&&device){setSelected(device);setForm(nfcFormFromDevice(device));}
     if(kind!=='create'&&kind!=='edit'&&device){
       setSelected(device);setReason('');setLostDate(today);
-      setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,reason:'',notes:'',copy_assignment:true});
+      setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,mode:'new',
+        existing_device_id:'',reason:'',notes:'',copy_assignment:true});
+      setRecover({found_at:today,identifier_confirmation:'',reason:''});
     }
   };
 
@@ -146,13 +151,16 @@ export function NfcDevices(){
     <div className="object-summary-grid object-metrics">
       <NfcKpiCard label="Registrierte Geräte" value={overview?.total??0} onClick={()=>{setFilters(emptyFilters);setPage(1);}}/>
       <NfcKpiCard label="Aktive NFC-Tags" value={overview?.active_tags??0} hint="Für Kontrollpunkte nutzbar"
-        onClick={()=>{changeFilter('status','active');changeFilter('device_type','tag');}}/>
+        onClick={()=>{setFilters({...emptyFilters,status:'active',device_type:'tag'});setPage(1);}}/>
       <NfcKpiCard label="Aktive Lesegeräte" value={overview?.active_readers??0}
-        onClick={()=>{changeFilter('status','active');changeFilter('device_type','reader');}}/>
-      <NfcKpiCard label="Gesperrt" value={overview?.blocked??0} onClick={()=>changeFilter('status','blocked')}/>
-      <NfcKpiCard label="Verloren" value={overview?.lost??0} onClick={()=>changeFilter('status','lost')}/>
-      <NfcKpiCard label="Ersetzt" value={overview?.replaced??0} onClick={()=>changeFilter('status','replaced')}/>
-      <NfcKpiCard label="Ohne Zuordnung" value={overview?.unassigned??0} onClick={()=>changeFilter('assignment','unassigned')}/>
+        onClick={()=>{setFilters({...emptyFilters,status:'active',device_type:'reader'});setPage(1);}}/>
+      <NfcKpiCard label="Gesperrt" value={overview?.blocked??0} onClick={()=>{setFilters({...emptyFilters,status:'blocked'});setPage(1);}}/>
+      <NfcKpiCard label="Verloren" value={overview?.lost??0} onClick={()=>{setFilters({...emptyFilters,status:'lost'});setPage(1);}}/>
+      <NfcKpiCard label="Ersetzt" value={overview?.replaced??0} onClick={()=>{setFilters({...emptyFilters,status:'replaced'});setPage(1);}}/>
+      <NfcKpiCard label="Archiviert" value={overview?.archived??0} onClick={()=>{setFilters({...emptyFilters,archived:'true'});setPage(1);}}/>
+      <NfcKpiCard label="Ohne Zuordnung" value={overview?.unassigned??0} onClick={()=>{setFilters({...emptyFilters,assignment:'unassigned'});setPage(1);}}/>
+      <NfcKpiCard label="Kürzlich verwendet" value={overview?.recent_devices??0} hint={`Geräte mit Scans in ${overview?.days??30} Tagen`}
+        onClick={()=>{setFilters({...emptyFilters,recent:'true'});setPage(1);}}/>
       <NfcKpiCard label={`Scans (${overview?.days??30} Tage)`} value={overview?.scans??0} hint="Tatsächlich erfasste Kontrollgänge"/>
     </div>
 
@@ -189,6 +197,12 @@ export function NfcDevices(){
       <label>Zuordnung<select value={filters.assignment} onChange={event=>changeFilter('assignment',event.target.value)}>
         <option value="">Alle</option><option value="assigned">Zugewiesen</option><option value="unassigned">Nicht zugewiesen</option>
       </select></label>
+      <label>Archivierung<select value={filters.archived} onChange={event=>changeFilter('archived',event.target.value)}>
+        <option value="">Alle Geräte</option><option value="false">Nicht archiviert</option><option value="true">Archiviert</option>
+      </select></label>
+      <label>Verwendung<select value={filters.recent} onChange={event=>changeFilter('recent',event.target.value)}>
+        <option value="">Alle Geräte</option><option value="true">Kürzlich verwendet</option>
+      </select></label>
       {filtersActive&&<button type="button" onClick={()=>{setFilters(emptyFilters);setPage(1);}}>Filter zurücksetzen</button>}
     </div>
 
@@ -218,16 +232,18 @@ export function NfcDevices(){
             <td>{device.site_name??'–'}</td>
             <td>{device.control_point_name??'–'}</td>
             <td>{device.employee_name??'–'}</td>
-            <td><span className={nfcStatusClass(device.status)}>{nfcStatusLabel(device.status)}</span></td>
+            <td><span className={nfcStatusClass(device.status)}>{nfcStatusText(device)}</span></td>
             <td>{formatDate(device.registered_at)}</td>
             <td>{device.last_used_at?formatDateTime(device.last_used_at):'Noch kein Scan'}</td>
             <td onClick={event=>event.stopPropagation()}>
               <button type="button" onClick={()=>navigate(`/nfc-devices/${device.id}`)}>Akte</button>
               {canWrite&&<button type="button" onClick={()=>openDialog('edit',device)}>Bearbeiten</button>}
-              {canSecurity&&['active','lost'].includes(device.status)&&<button type="button" onClick={()=>openDialog('block',device)}>Sperren</button>}
-              {canSecurity&&device.status==='active'&&<button type="button" onClick={()=>openDialog('lost',device)}>Verlust melden</button>}
-              {canSecurity&&device.status==='lost'&&<button type="button" onClick={()=>openDialog('replace',device)}>Ersatz</button>}
-              {canSecurity&&device.status==='blocked'&&<button type="button" onClick={()=>openDialog('reactivate',device)}>Reaktivieren</button>}
+              {canSecurity&&!device.archived_at&&['active','lost'].includes(device.status)&&<button type="button" onClick={()=>openDialog('block',device)}>Sperren</button>}
+              {canSecurity&&device.status==='active'&&!device.archived_at&&<button type="button" onClick={()=>openDialog('lost',device)}>Verlust melden</button>}
+              {canSecurity&&(device.status==='lost'||device.status==='blocked'||device.status==='replaced')&&<button type="button" onClick={()=>openDialog('replace',device)}>Ersatz</button>}
+              {canSecurity&&(device.status==='lost'||device.archived_at)&&<button type="button" onClick={()=>openDialog('recover',device)}>Wieder in Betrieb</button>}
+              {canSecurity&&device.status==='blocked'&&!device.archived_at&&<button type="button" onClick={()=>openDialog('reactivate',device)}>Reaktivieren</button>}
+              {canSecurity&&!device.archived_at&&<button type="button" onClick={()=>openDialog('archive',device)}>Archivieren</button>}
             </td>
           </tr>)}
         </tbody>
@@ -272,18 +288,53 @@ export function NfcDevices(){
       onConfirm={()=>{if(reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}runStatus('reactivate',{reason:reason.trim()},'NFC-Gerät wurde reaktiviert.');}}
       onClose={()=>setDialog(null)}/>}
 
+    {dialog==='recover'&&selected&&<NfcRecoverDialog
+      identifier={selected.identifier} assignment={nfcAssignmentLabel(selected)}
+      identifierConfirmation={recover.identifier_confirmation}
+      onIdentifierConfirmation={value=>setRecover(current=>({...current,identifier_confirmation:value}))}
+      reason={recover.reason} onReason={value=>setRecover(current=>({...current,reason:value}))}
+      foundAt={recover.found_at} onFoundAt={value=>setRecover(current=>({...current,found_at:value}))}
+      error={dialogError} busy={busy}
+      onConfirm={confirmed=>{
+        if(!recover.found_at){setDialogError('Bitte ein Wiederauffindungsdatum angeben.');return;}
+        if(recover.identifier_confirmation.trim()!==selected.identifier){setDialogError('Die bestätigte NFC-Kennung stimmt nicht überein.');return;}
+        if(!confirmed){setDialogError('Bitte Identität und Zuordnung bestätigen.');return;}
+        if(recover.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
+        runStatus('recover',{found_at:recover.found_at,identifier_confirmation:recover.identifier_confirmation.trim(),
+          assignment_confirmed:true,reason:recover.reason.trim()},'Gerät wurde wieder in Betrieb genommen und ist zunächst gesperrt.');
+      }} onClose={()=>setDialog(null)}/>}
+
+    {dialog==='archive'&&selected&&<NfcReasonDialog title="NFC-Gerät archivieren"
+      description={`${selected.identifier} wird dauerhaft außer Betrieb genommen. Bestehende Scans und Nachweise bleiben erhalten.`}
+      reason={reason} onReason={setReason} error={dialogError} busy={busy} confirmLabel="Archivieren"
+      onConfirm={()=>{if(reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}runStatus('archive',{reason:reason.trim()},'NFC-Gerät wurde archiviert.');}}
+      onClose={()=>setDialog(null)}/>}
+
     {dialog==='replace'&&selected&&<NfcReplaceDialog
       identifier={replacement.identifier} onIdentifier={value=>setReplacement(current=>({...current,identifier:value}))}
       deviceType={replacement.device_type} onDeviceType={value=>setReplacement(current=>({...current,device_type:value}))}
       manufacturer={replacement.manufacturer} onManufacturer={value=>setReplacement(current=>({...current,manufacturer:value}))}
+      mode={replacement.mode} onMode={value=>setReplacement(current=>({...current,mode:value}))}
+      existingDeviceId={replacement.existing_device_id}
+      onExistingDeviceId={value=>setReplacement(current=>({...current,existing_device_id:value}))}
+      devices={(options.devices??[]).filter(device=>device.id!==selected.id)}
       reason={replacement.reason} onReason={value=>setReplacement(current=>({...current,reason:value}))}
       notes={replacement.notes} onNotes={value=>setReplacement(current=>({...current,notes:value}))}
       copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>setReplacement(current=>({...current,copy_assignment:value}))}
       error={dialogError} busy={busy}
       onConfirm={()=>{
-        if(!replacement.identifier.trim()||!replacement.manufacturer.trim()){setDialogError('Bitte Kennung und Hersteller des Ersatzgeräts angeben.');return;}
         if(replacement.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
-        runStatus('replace',replacement,'Ersatzgerät wurde registriert.');
+        if(replacement.mode==='new'&&(!replacement.identifier.trim()||!replacement.manufacturer.trim())){
+          setDialogError('Bitte Kennung und Hersteller des Ersatzgeräts angeben.');return;
+        }
+        if(replacement.mode==='existing'&&!replacement.existing_device_id){
+          setDialogError('Bitte ein vorhandenes Ersatzgerät auswählen.');return;
+        }
+        const payload=replacement.mode==='existing'
+          ?{new_device_id:replacement.existing_device_id,reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment}
+          :{identifier:replacement.identifier.trim(),device_type:replacement.device_type,manufacturer:replacement.manufacturer.trim(),
+            reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment};
+        runStatus('replace',payload,'Austausch wurde dokumentiert.');
       }} onClose={()=>setDialog(null)}/>}
   </section>;
 }

@@ -247,4 +247,180 @@ describe('NFC device management routes',()=>{
     expect(missing.status).toBe(404);
     expect(missing.body.error).toContain('NFC-Gerät nicht gefunden');
   });
+
+  it('exposes archive and recent-use KPIs with matching inventory filters',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('count(*) FILTER'))return result([{total:12,active_tags:4,active_readers:1,blocked:2,lost:1,
+        replaced:2,archived:3,unassigned:5}]);
+      if(sql.includes('count(DISTINCT nfc_device_id)'))return result([{scans:9,devices:4}]);
+      if(sql.includes('count(*)::int total FROM nfc_devices'))return result([{total:3}]);
+      return result([deviceRow]);
+    });
+    const overview=await request(app).get('/api/v1/nfc-devices/overview').set('Cookie',csrf.Cookie);
+    expect(overview.status).toBe(200);
+    expect(overview.body).toEqual(expect.objectContaining({archived:3,recent_devices:4}));
+    const inventory=await request(app).get('/api/v1/nfc-devices/inventory?archived=true&recent=true').set('Cookie',csrf.Cookie);
+    expect(inventory.status).toBe(200);
+    const sql=String(calls('n.archived_at IS NOT NULL')[0]?.[0]);
+    expect(sql).toContain('n.archived_at IS NOT NULL');
+    expect(sql).toContain("interval '30 days'");
+    expect(calls('n.archived_at IS NOT NULL')[0]?.[1]).toEqual(expect.arrayContaining([tenant]));
+  });
+
+  it('offers real devices as replacement options',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('FROM nfc_devices'))return result([{id:newDevice,identifier:'TAG-002',device_type:'tag',manufacturer:'Acme',status:'active'}]);
+      return result([]);
+    });
+    const response=await request(app).get('/api/v1/nfc-devices/filter-options').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.devices).toEqual([{id:newDevice,identifier:'TAG-002',device_type:'tag',manufacturer:'Acme',status:'active'}]);
+    expect(String(calls('FROM nfc_devices')[0]?.[0])).toContain("status<>'replaced'");
+  });
+
+  it('recovers a lost device only into quarantine after identity and assignment confirmation',async()=>{
+    let lockedRow={...deviceRow,status:'lost',lost_at:'2026-11-26'};
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([lockedRow]);
+      if(sql.includes("SET status='blocked'")){
+        lockedRow={...lockedRow,status:'blocked',recovered_at:String(values?.[0]??''),recovered_reason:String(values?.[1]??'')};
+        return result([lockedRow]);
+      }
+      if(sql.includes('INSERT INTO audit_events'))return result([{id:'audit-1'}]);
+      return result([]);
+    });
+    const rejected=await request(app).post(`/api/v1/nfc-devices/${device}/recover`).set(csrf).send({
+      found_at:'2026-11-27',identifier_confirmation:'FALSCH',assignment_confirmed:true,reason:'Wiedergefunden',
+    });
+    expect(rejected.status).toBe(409);
+    expect(calls("SET status='blocked'")).toHaveLength(0);
+    const response=await request(app).post(`/api/v1/nfc-devices/${device}/recover`).set(csrf).send({
+      found_at:'2026-11-27',identifier_confirmation:'TAG-001',assignment_confirmed:true,reason:'Wiedergefunden und geprüft',
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('blocked');
+    expect(response.body.recovered_at).toBe('2026-11-27');
+    expect(auditCall('nfc_device.recovered')?.[1]?.[5]).toEqual(expect.objectContaining({
+      previous_status:'lost',found_at:'2026-11-27',reason:'Wiedergefunden und geprüft',
+    }));
+    expect(calls("SET status='active'")).toHaveLength(0);
+    const missingConfirmation=await request(app).post(`/api/v1/nfc-devices/${device}/recover`).set(csrf).send({
+      found_at:'2026-11-27',identifier_confirmation:'TAG-001',reason:'Wiedergefunden',
+    });
+    expect(missingConfirmation.status).toBe(400);
+  });
+
+  it('archives a device without changing its scan history and blocks further changes',async()=>{
+    let lockedRow={...deviceRow,status:'active',archived_at:null};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([lockedRow]);
+      if(sql.includes('SET archived_at=now()')){
+        lockedRow={...lockedRow,archived_at:'2026-11-26T12:00:00Z'};
+        return result([lockedRow]);
+      }
+      if(sql.includes('INSERT INTO audit_events'))return result([{id:'audit-1'}]);
+      return result([]);
+    });
+    const response=await request(app).post(`/api/v1/nfc-devices/${device}/archive`).set(csrf).send({reason:'Außerbetriebnahme'});
+    expect(response.status).toBe(200);
+    expect(response.body.archived_at).toBeTruthy();
+    expect(auditCall('nfc_device.archived')?.[1]?.[5]).toEqual(expect.objectContaining({reason:'Außerbetriebnahme'}));
+    expect(calls('patrol_scans')).toHaveLength(0);
+    const blocked=await request(app).post(`/api/v1/nfc-devices/${device}/block`).set(csrf).send({reason:'Test'});
+    expect(blocked.status).toBe(409);
+    const assigned=await request(app).post(`/api/v1/nfc-devices/${device}/assign`).set(csrf).send({site_id:site});
+    expect(assigned.status).toBe(409);
+    const reactivated=await request(app).post(`/api/v1/nfc-devices/${device}/reactivate`).set(csrf).send({reason:'Test'});
+    expect(reactivated.status).toBe(409);
+  });
+
+  it('replaces a device with an existing tenant device and preserves the old-new link',async()=>{
+    const existing={...deviceRow,id:newDevice,identifier:'TAG-002',status:'active',control_point_id:null,site_id:null,employee_id:null};
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
+        return result([values?.[1]===device?deviceRow:existing]);
+      }
+      if(sql.includes("status='replaced'"))return result([{...deviceRow,status:'replaced'}]);
+      if(sql.includes('INSERT INTO nfc_device_assignment_history'))return result([{id:'history-1'}]);
+      if(sql.includes('INSERT INTO audit_events'))return result([{id:'audit-1'}]);
+      return result([]);
+    });
+    const response=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:newDevice,reason:'Defekt',copy_assignment:true,
+    });
+    expect(response.status).toBe(201);
+    expect(response.body.device.id).toBe(newDevice);
+    expect(response.body.device.control_point_id).toBe(point);
+    expect(calls('INSERT INTO nfc_devices')).toHaveLength(0);
+    expect(calls('INSERT INTO nfc_device_replacements')[0]?.[1]).toEqual(expect.arrayContaining([tenant,device,newDevice]));
+    expect(String(calls('INSERT INTO nfc_device_assignment_history')[0]?.[1]?.[3])).toContain(point);
+    expect(auditCall('nfc_device.replaced')?.[1]?.[5]).toEqual(expect.objectContaining({new_device_id:newDevice}));
+    expect(auditCall('nfc_device.created')).toBeUndefined();
+  });
+
+  it('rejects self-replacement and unavailable existing replacement devices',async()=>{
+    const invalid=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf)
+      .send({new_device_id:device,reason:'Defekt'});
+    expect(invalid.status).toBe(400);
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
+        return result([values?.[1]===device?deviceRow:{...deviceRow,id:newDevice,archived_at:'2026-11-26'}]);
+      }
+      return result([]);
+    });
+    const archived=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf)
+      .send({new_device_id:newDevice,reason:'Defekt'});
+    expect(archived.status).toBe(409);
+  });
+
+  it('enforces one active tag per control point on assignment changes',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([{...deviceRow,control_point_id:null}]);
+      if(sql.includes('FROM control_points t'))return result([{id:point,site_id:site}]);
+      if(sql.includes('SELECT site_id FROM control_points'))return result([{site_id:site}]);
+      if(sql.includes('SELECT id FROM nfc_devices'))return result([{id:newDevice}]);
+      return result([]);
+    });
+    const response=await request(app).post(`/api/v1/nfc-devices/${device}/assign`).set(csrf)
+      .send({control_point_id:point,reason:'Doppelbelegung'});
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('Kontrollpunkt');
+    expect(calls('UPDATE nfc_devices SET employee_id')).toHaveLength(0);
+  });
+
+  it('requires security permission and CSRF for archive and recovery',async()=>{
+    activeUser={...baseUser,permissions:['nfc_devices:read','nfc_devices:write']};
+    const forbidden=await request(app).post(`/api/v1/nfc-devices/${device}/recover`).set(csrf).send({
+      found_at:'2026-11-27',identifier_confirmation:'TAG-001',assignment_confirmed:true,reason:'Zurück',
+    });
+    expect(forbidden.status).toBe(403);
+    activeUser=baseUser;
+    const noCsrf=await request(app).post(`/api/v1/nfc-devices/${device}/archive`).set('Cookie',csrf.Cookie)
+      .send({reason:'Außerbetriebnahme'});
+    expect(noCsrf.status).toBe(403);
+    expect(calls('SET archived_at=now()')).toHaveLength(0);
+  });
+
+  it('keeps the audit actor for lifecycle events in the device file',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT n.*,e.name employee_name'))return result([deviceRow]);
+      if(sql.includes("entity_type='nfc_device'"))return result([{
+        id:'audit-1',event_type:'nfc_device.recovered',actor_user_id:activeUser.id,actor_email:activeUser.email,
+        details:{previous_status:'lost'},created_at:'2026-11-27',
+      }]);
+      return result([]);
+    });
+    const response=await request(app).get(`/api/v1/nfc-devices/${device}/file`).set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.history[0].actor_email).toBe('operator@example.invalid');
+    expect(String(calls("entity_type='nfc_device'")[0]?.[0])).toContain('u.email actor_email');
+  });
 });

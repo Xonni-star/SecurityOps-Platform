@@ -19,14 +19,16 @@ vi.mock('../src/lib/api',()=>({
 }));
 
 import {ApiError} from '../src/lib/api';
+import type {NfcDevice,NfcFileData} from '../src/pages/nfcParts';
 import {NfcDeviceFile} from '../src/pages/NfcDeviceFile';
 import {NfcDevices} from '../src/pages/NfcDevices';
 
 const deviceId='00000000-0000-4000-8000-000000000020';
+const newDeviceId='00000000-0000-4000-8000-000000000021';
 const siteId='00000000-0000-4000-8000-000000000030';
 const pointId='00000000-0000-4000-8000-000000000031';
 const employeeId='00000000-0000-4000-8000-000000000032';
-const device={
+const device:NfcDevice={
   id:deviceId,identifier:'TAG-001',device_type:'tag',manufacturer:'Acme',status:'active',
   employee_id:null,site_id:null,control_point_id:pointId,employee_name:null,site_name:'Objekt 1',
   control_point_name:'Punkt 1',control_point_site_id:siteId,notes:'Notiz',
@@ -34,15 +36,16 @@ const device={
 };
 const overview={
   total:10,active_tags:6,active_readers:2,blocked:1,lost:1,replaced:1,unassigned:3,scans:42,devices:5,days:30,
-  recent:[device],
+  archived:2,recent_devices:4,recent:[device],
 };
 const options={
   sites:[{id:siteId,name:'Objekt 1'}],
   control_points:[{id:pointId,site_id:siteId,name:'Punkt 1',site_name:'Objekt 1'}],
   employees:[{id:employeeId,name:'Ava Worker'}],
+  devices:[{id:newDeviceId,identifier:'TAG-002',device_type:'tag',manufacturer:'Acme',status:'active'}],
 };
 const inventory={rows:[device],total:26,page:1,pageSize:25,totalPages:2};
-const fileData={
+const fileData:NfcFileData={
   device,
   assignment_history:[{id:'a-1',previous_assignment:{},assignment:{control_point_id:pointId},assigned_at:'2026-01-02T10:00:00Z',reason:'Initial'}],
   replacements:[],
@@ -51,7 +54,7 @@ const fileData={
     {id:'s-2',outcome:'rejected',reason:'NFC-Tag ist nicht aktiv',code:'NFC_TAG_NOT_ACTIVE',server_received_at:'2026-11-26T11:00:00Z'},
   ],
   documents:[{id:'doc-1',title:'Prüfprotokoll',document_number:'DOC-1',created_at:'2026-03-01T10:00:00Z',versions:[{id:'v2',version_no:2}]}],
-  history:[{id:'audit-1',event_type:'nfc_device.created',details:{identifier:'TAG-001'},created_at:'2026-01-01T10:00:00Z'}],
+  history:[{id:'audit-1',event_type:'nfc_device.created',details:{identifier:'TAG-001'},created_at:'2026-01-01T10:00:00Z',actor_email:'operator@example.invalid'}],
 };
 
 function mockApi(fileOverride=fileData){
@@ -152,6 +155,83 @@ describe('NFC-Geräteverwaltung',()=>{
     renderOverview();
     expect(await screen.findByText('Keine Daten erfasst.')).toBeTruthy();
   });
+
+  it('filtert die Liste über die Kennzahlen für archivierte und kürzlich verwendete Geräte',async()=>{
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:/Archiviert/}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('archived=true')));
+    fireEvent.click(screen.getByRole('button',{name:/Kürzlich verwendet/}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('recent=true')));
+  });
+
+  it('registriert Gerät mit Modell, Seriennummer und Beschreibung',async()=>{
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'NFC-Gerät registrieren'}));
+    const dialog=await screen.findByRole('dialog');
+    fireEvent.change(screen.getByPlaceholderText('z. B. NFC-0042'),{target:{value:'TAG-003'}});
+    fireEvent.change(screen.getByPlaceholderText('Herstellername'),{target:{value:'Acme'}});
+    fireEvent.change(screen.getByPlaceholderText('z. B. MIFARE Classic 1K'),{target:{value:'MIFARE 1K'}});
+    fireEvent.change(screen.getByPlaceholderText('Seriennummer'),{target:{value:'SN-12345'}});
+    fireEvent.change(screen.getByPlaceholderText('Kurzbeschreibung'),{target:{value:'Eingangskarte'}});
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/nfc-devices',expect.objectContaining({method:'POST'})));
+    const body=String(apiMock.mock.calls.find(([path,init])=>path==='/nfc-devices'&&init?.method==='POST')?.[1]?.body);
+    expect(body).toContain('MIFARE 1K');
+    expect(body).toContain('SN-12345');
+    expect(body).toContain('Eingangskarte');
+  });
+
+  it('nimmt ein verlorenes Gerät erst nach Bestätigung in die Quarantäne',async()=>{
+    apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+      if(path.startsWith('/nfc-devices/overview'))return overview;
+      if(path.startsWith('/nfc-devices/inventory'))return {...inventory,rows:[{...device,status:'lost'}]};
+      if(path==='/nfc-devices/filter-options')return options;
+      if(init?.method==='POST')return {...device,status:'blocked'};
+      return {};
+    });
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'Wieder in Betrieb'}));
+    const dialog=await screen.findByRole('dialog');
+    fireEvent.change(screen.getByPlaceholderText('TAG-001'),{target:{value:'TAG-001'}});
+    fireEvent.click(dialog.querySelector('input[type="checkbox"]') as HTMLInputElement);
+    fireEvent.change(screen.getByPlaceholderText('Grund der Änderung'),{target:{value:'Wiedergefunden und geprüft'}});
+    fireEvent.click(screen.getByRole('button',{name:'Wieder in Betrieb nehmen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/recover`,expect.objectContaining({method:'POST'})));
+    const call=apiMock.mock.calls.find(([path])=>String(path).endsWith('/recover'));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual(expect.objectContaining({
+      identifier_confirmation:'TAG-001',assignment_confirmed:true,reason:'Wiedergefunden und geprüft',
+    }));
+  });
+
+  it('tauscht gegen ein vorhandenes Gerät ohne Neu-registrierung',async()=>{
+    apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+      if(path.startsWith('/nfc-devices/overview'))return overview;
+      if(path.startsWith('/nfc-devices/inventory'))return {...inventory,rows:[{...device,status:'lost'}]};
+      if(path==='/nfc-devices/filter-options')return options;
+      if(init?.method==='POST')return device;
+      return {};
+    });
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'Ersatz'}));
+    const dialog=await screen.findByRole('dialog');
+    fireEvent.change(screen.getByLabelText('Ersatzgerät-Art'),{target:{value:'existing'}});
+    fireEvent.change(dialog.querySelector('select[aria-label="Ersatzgerät"]') as HTMLSelectElement,{target:{value:newDeviceId}});
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt'}});
+    fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/replace`,expect.objectContaining({method:'POST'})));
+    const call=apiMock.mock.calls.find(([path])=>String(path).endsWith('/replace'));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual(expect.objectContaining({new_device_id:newDeviceId,reason:'Defekt'}));
+  });
+
+  it('archiviert ein Gerät über den begründeten Workflow',async()=>{
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'Archivieren'}));
+    const dialog=await screen.findByRole('dialog');
+    fireEvent.change(screen.getByPlaceholderText('Grund der Änderung'),{target:{value:'Außerbetriebnahme'}});
+    fireEvent.click(dialog.querySelector('button[type="submit"]') as HTMLButtonElement);
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/archive`,
+      expect.objectContaining({method:'POST',body:JSON.stringify({reason:'Außerbetriebnahme'})})));
+  });
 });
 
 describe('NFC-Geräteakte',()=>{
@@ -189,5 +269,24 @@ describe('NFC-Geräteakte',()=>{
     fireEvent.click(dialog.querySelector('button[type="submit"]') as HTMLButtonElement);
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/report-lost`,
       expect.objectContaining({method:'POST'})));
+  });
+
+  it('zeigt Wiederauffindung, Archivierung und ausführende Benutzer im Verlauf',async()=>{
+    mockApi({...fileData,device:{...device,status:'blocked',recovered_at:'2026-11-27T09:00:00Z',archived_at:'2026-11-28T09:00:00Z'}});
+    renderFile();
+    expect(await screen.findByText('Wiedergefunden')).toBeTruthy();
+    expect(screen.getAllByText('Archiviert').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('tab',{name:'Status & Ereignisse'}));
+    expect(await screen.findByText(/Ausgeführt: operator@example.invalid/)).toBeTruthy();
+  });
+
+  it('zeigt Authentifizierung und Abweichung der echten Scan-Historie an',async()=>{
+    mockApi({...fileData,scans:[{...fileData.scans[0],scan_authentication:'vor Ort bestätigt',deviation:'out_of_order'},
+      ...fileData.scans.slice(1)]});
+    renderFile();
+    expect((await screen.findAllByText('TAG-001')).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('tab',{name:'Scan-Historie'}));
+    expect(await screen.findByText('vor Ort bestätigt')).toBeTruthy();
+    expect(screen.getByText('Erfolgreich · Abweichung: Out of order')).toBeTruthy();
   });
 });

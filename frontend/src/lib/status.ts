@@ -145,6 +145,8 @@ const domainLabels: Record<StatusDomain, Record<string, string>> = {
     unassigned: 'Nicht zugewiesen',
     lost: 'Verloren',
     replaced: 'Ersetzt',
+    archived: 'Archiviert',
+    recovered: 'Wiedergefunden',
   },
   key: {
     available: 'Verfügbar',
