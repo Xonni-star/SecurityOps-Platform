@@ -1,7 +1,7 @@
 import {describe,expect,it} from '@jest/globals';
 import {openapi} from '../src/openapi.js';
 
-type Operation = {security?: Array<Record<string, unknown>>};
+type Operation = {security?: Array<Record<string, unknown>>;responses?: Record<string,{description?:string}>};
 const paths = openapi.paths as unknown as Record<string, Record<string, Operation>>;
 
 describe('object management OpenAPI coverage', () => {
@@ -26,6 +26,13 @@ describe('object management OpenAPI coverage', () => {
     ['/dms/documents/{documentId}/request-review', 'post', true],
     ['/dms/documents/{documentId}/approve', 'post', true],
     ['/dms/documents/{documentId}/return-for-revision', 'post', true],
+    ['/customers', 'get', false],
+    ['/customers/action-list', 'get', false],
+    ['/customers/export', 'get', false],
+    ['/customers/bulk', 'post', true],
+    ['/customers/{id}/profile', 'get', false],
+    ['/customers/{id}/tasks', 'post', true],
+    ['/customers/{id}/tasks/{taskId}', 'patch', true],
   ];
 
   it.each(endpoints)('documents %s %s with session security', (path, method, requiresCsrf) => {
@@ -35,6 +42,14 @@ describe('object management OpenAPI coverage', () => {
     expect(security.length).toBeGreaterThan(0);
     expect(security[0]).toHaveProperty('sessionCookie');
     if (requiresCsrf) expect(security[0]).toHaveProperty('csrfToken');
+  });
+
+  it('documents all server-side customer list parameters and permission headers', () => {
+    const parameters = (paths['/customers'].get as unknown as {parameters:Array<{name:string}>}).parameters;
+    expect(parameters.map(parameter=>parameter.name)).toEqual(expect.arrayContaining([
+      'q','customer_status','risk_classification','priority','account_manager_employee_id','contract_status','active','sort','dir','page','pageSize',
+    ]));
+    expect(paths['/customers'].get.responses?.['200']?.description).toContain('X-Total-Count');
   });
 
   it('keeps approval off the generic metadata update description', () => {

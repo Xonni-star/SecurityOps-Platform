@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0 - Enterprise customer cockpit
+
+- Added a server-side customer list with combinable search/filter/sort/pagination, bounded page sizes and total-count headers.
+- Added real KPIs plus A/B/C action buckets derived from risks, contract deadlines, overdue tasks, incidents and master-data gaps.
+- Added permission-checked CSV export, atomic bulk archive/status/manager actions and audited reminders from live contract terms.
+- Split the customer file into permission-filtered sections with `visible_sections`, dedicated `customer_tasks:*` scopes and safe read-only fallbacks.
+- Added task priorities, unique primary-contact handling, object/contract/document linkage improvements and CRM indexes in a non-destructive migration.
+- Extended backend, frontend, PostgreSQL integration and real-browser E2E coverage including a restricted viewer account.
+- Kept object-file customer linking usable with the paginated customer list by adding a server-side customer search.
+
 ## 1.1.0 - Object management finalization and quality tooling
 
 - Added A/B/C priorities from real backend metrics, grouped object navigation and record-level focus/highlighting for sites, employees, DMS, customers and the watchbook, with safe fallbacks for inaccessible or deleted records.

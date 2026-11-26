@@ -32,7 +32,7 @@ describePostgres('PostgreSQL CRM foundation constraints and tenant isolation',()
     ({tenant_a:tenantA,tenant_b:tenantB,customer_a:customerA,customer_b:_customerB,site_a:siteA,site_b:siteB}=seed.rows[0]);
     await client.query(`CREATE ROLE ${testName} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
     await client.query(`GRANT USAGE ON SCHEMA public TO ${testName}`);
-    await client.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON customer_sites,customer_contacts,contracts,contract_sites,services,contract_services,customers,sites,tenants TO ${testName}`);
+    await client.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON customer_sites,customer_contacts,contracts,contract_sites,services,contract_services,customers,sites,tenants,customer_tasks,customer_history TO ${testName}`);
     await client.query(`SET ROLE ${testName}`);
   });
 
@@ -64,6 +64,23 @@ describePostgres('PostgreSQL CRM foundation constraints and tenant isolation',()
       last_name:null,
       is_primary:true,
     }]);
+  });
+
+  it('defaults task priority, validates it and keeps one active primary contact',async()=>{
+    await client.query(`SELECT set_config('app.tenant_id',$1,false)`,[tenantA]);
+    const task=await client.query<{priority:string}>(
+      'INSERT INTO customer_tasks(tenant_id,customer_id,title) VALUES ($1,$2,$3) RETURNING priority',
+      [tenantA,customerA,`${testName}-task`],
+    );
+    expect(task.rows[0].priority).toBe('normal');
+    await expect(client.query(
+      'INSERT INTO customer_tasks(tenant_id,customer_id,title,priority) VALUES ($1,$2,$3,$4)',
+      [tenantA,customerA,`${testName}-invalid-task`,'urgent'],
+    )).rejects.toMatchObject({code:'23514'});
+    await expect(client.query(
+      'INSERT INTO customer_contacts(tenant_id,customer_id,email,is_primary) VALUES ($1,$2,$3,true)',
+      [tenantA,customerA,`${testName}-second-primary@example.invalid`],
+    )).rejects.toMatchObject({code:'23505'});
   });
 
   it('enforces customer-site and contract-service tenant boundaries',async()=>{
@@ -101,5 +118,7 @@ describePostgres('PostgreSQL CRM foundation constraints and tenant isolation',()
     await client.query(`SELECT set_config('app.tenant_id',$1,false)`,[tenantB]);
     expect((await client.query('SELECT id FROM customer_sites WHERE customer_id=$1',[customerA])).rows).toHaveLength(0);
     expect((await client.query('SELECT id FROM customer_contacts WHERE customer_id=$1',[customerA])).rows).toHaveLength(0);
+    expect((await client.query('SELECT id FROM customer_tasks WHERE customer_id=$1',[customerA])).rows).toHaveLength(0);
+    expect((await client.query('SELECT id FROM customer_history WHERE customer_id=$1',[customerA])).rows).toHaveLength(0);
   });
 });

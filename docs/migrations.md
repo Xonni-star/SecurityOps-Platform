@@ -234,3 +234,13 @@ Remaining gaps include any maintenance lifecycle beyond recording immutable
 watchbook evidence.
 Offline evidence and conflict handling remain governed by the existing sync
 receipts; this migration introduces no simulated evidence or second workflow.
+
+## Enterprise CRM cockpit
+
+Migration 053 is additive: it adds `customer_tasks.priority` with a `normal`
+default and check constraint, list/deadline/task/history indexes, and the
+`customer_tasks:read`/`customer_tasks:write` permissions with role grants.
+Existing customers, contacts, contracts, tasks, documents and history rows are
+not rewritten. The cockpit reads those existing tables directly; reminders are
+derived from live contract terms and deduplicated by `contractId:code`, so no
+duplicate reminder table or parallel record store is introduced.

@@ -34,6 +34,7 @@ const ids = {
   objectAssignment: "00000000-0000-4000-8000-000000000112",
   qualification: "00000000-0000-4000-8000-000000000113",
   authorUser: "00000000-0000-4000-8000-000000000114",
+  viewerUser: "00000000-0000-4000-8000-000000000118",
   fixtureSession: "00000000-0000-4000-8000-000000000115",
   ruleProfile: "00000000-0000-4000-8000-000000000116",
   operationalDevice: "00000000-0000-4000-8000-000000000117",
@@ -63,6 +64,13 @@ try {
     [ids.authorUser, ids.tenant, "e2e-author@example.invalid", hash],
   );
   await client.query(
+    `INSERT INTO users(id,tenant_id,email,password_hash,role,mfa_secret_ciphertext,mfa_secret_nonce,mfa_secret_tag,mfa_enrolled_at)
+      VALUES($1,$2,$3,$4,'viewer',NULL,NULL,NULL,NULL)
+      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
+        role='viewer',mfa_secret_ciphertext=NULL,mfa_secret_nonce=NULL,mfa_secret_tag=NULL,mfa_enrolled_at=NULL,updated_at=now()`,
+    [ids.viewerUser, ids.tenant, "e2e-viewer@example.invalid", hash],
+  );
+  await client.query(
     `INSERT INTO sessions(id,tenant_id,user_id,token_hash,csrf_token,expires_at)
       VALUES($1,$2,$3,'e2e-fixture-token','e2e-fixture-csrf',now() + interval '1 day')
       ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,user_id=EXCLUDED.user_id,
@@ -78,6 +86,11 @@ try {
     `INSERT INTO user_sites(tenant_id,user_id,site_id) VALUES($1,$2,$3),($1,$4,$3)
       ON CONFLICT (tenant_id,user_id,site_id) DO NOTHING`,
     [ids.tenant, ids.user, ids.site, ids.authorUser],
+  );
+  await client.query(
+    `INSERT INTO user_sites(tenant_id,user_id,site_id) VALUES($1,$2,$3)
+      ON CONFLICT (tenant_id,user_id,site_id) DO NOTHING`,
+    [ids.tenant, ids.viewerUser, ids.site],
   );
   await client.query(
     `INSERT INTO schedule_rule_profiles(id,tenant_id,name,version,parameters,created_by,created_session_id)

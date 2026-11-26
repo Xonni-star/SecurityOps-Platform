@@ -575,6 +575,31 @@
 .customer-management .employee-status.at_risk{background:#572731;color:#ff9caa}
 .customer-management .employee-status.archived,.customer-management .employee-status.terminated{background:#3c4654;color:#aab8c7}
 .customer-expiring{color:#f2c174}
+.customer-cockpit-panel{background:#102745;border:1px solid #1d3b5c;border-radius:6px;padding:12px;margin:12px 0}
+.customer-cockpit-panel h3{margin:0 0 8px;color:#eef5ff;font-size:12px}
+.customer-cockpit-panel ul{margin:0;display:grid;gap:6px}
+.customer-cockpit-panel li{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 8px;border-left:3px solid #e6b24a;background:#0b1d35;border-radius:3px}
+.customer-cockpit-panel li.critical{border-left-color:#ff8a8a}
+.customer-cockpit-panel li>a{color:#cfe6ff;text-decoration:none}
+.customer-reminder-severity{color:#f2c174;font-size:9px;font-weight:700;text-transform:uppercase}
+.customer-cockpit-panel li.critical .customer-reminder-severity{color:#ff9caa}
+.customer-cockpit-panel li small{color:#91a8c2;font-size:10px}
+.customer-action-board{margin:14px 0}
+.customer-action-board h2{margin:0 0 10px;color:#eef5ff;font-size:14px}
+.customer-action-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.customer-action-column{background:#102745;border:1px solid #1d3b5c;border-left:3px solid #7db4e4;border-radius:6px;padding:11px;min-width:0}
+.customer-action-column.bucket-A{border-left-color:#ff8a8a}
+.customer-action-column.bucket-B{border-left-color:#ffc46b}
+.customer-action-column h3{display:flex;justify-content:space-between;gap:8px;margin:0 0 8px;color:#eef5ff;font-size:11px}
+.customer-action-column h3 small{color:#91a8c2}
+.customer-action-column ul{margin:0;display:grid;gap:6px}
+.customer-action-column li{padding:7px 9px;background:#0b1d35;border-radius:4px;overflow-wrap:anywhere}
+.customer-action-column li>a{display:grid;gap:2px;color:#cfe6ff;text-decoration:none;font-size:11px}
+.customer-action-column li>a strong{font-size:11px}
+.customer-action-column li>a small,.customer-action-due{color:#91a8c2;font-size:10px}
+.customer-contact-actions,.customer-task-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.customer-task-edit{flex-basis:100%;margin-top:8px!important}
+@media(max-width:900px){.customer-action-columns{grid-template-columns:1fr}}
 .customer-detail-page .employee-detail-header{grid-template-columns:auto minmax(0,1fr) auto}
 .customer-detail-page .employee-detail-title{min-width:0}
 .customer-detail-page .employee-detail-title h1{overflow-wrap:anywhere}

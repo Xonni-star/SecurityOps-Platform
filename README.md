@@ -47,6 +47,28 @@ inaccessible or deleted records. Maintenance-order creation accepts an optional
 `Idempotency-Key` (UUID) so client retries return the stored response instead of
 creating duplicate orders or audit events. Payload/key mismatches return `409`.
 
+Customer management is centered on `/customers`. The cockpit derives its KPIs
+and the `A – Sofort handeln`, `B – Zeitnah bearbeiten`, `C – Kundeninformationen`
+buckets from tenant data. The customer list is filtered, sorted and paginated on
+the server (`GET /api/v1/customers` with `q`, status, risk, priority, account
+manager, contract status, `active`, `sort`, `dir`, `page`, `pageSize`); totals are
+returned in `X-Total-Count`/`X-Page-Count`. `GET /customers/export` produces a CSV
+of the same server-filtered selection with `customers:export`, and
+`POST /customers/bulk` archives/status-changes/reassigns up to 100 selected
+customers atomically. Customer files at `/customers/:id` expose only the sections
+authorized by `visible_sections`: contacts, objects, contracts, customer
+documents, tasks and history each have their own read permission, so
+`customers:read` alone still opens the file with safe fallback messages. Contract
+deadlines and reminders are derived from live contract terms without duplicate
+rows; task priorities use `customer_tasks:read`/`customer_tasks:write`.
+The object file's customer-link form searches the same server-side customer list
+by name or number, so recently created customers remain linkable in large tenants.
+
+When the isolated E2E fixture is enabled, a viewer account
+`e2e-viewer@example.invalid` with the same `E2E_PASSWORD` is created alongside
+the operator account so read-only file access and denied mutations can be tested
+without touching real users.
+
 Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
 written to an encrypted IndexedDB outbox when offline and sent with a stable
 `client_event_id`; the server enforces tenant-scoped uniqueness so retries are
