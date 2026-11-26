@@ -8,6 +8,8 @@ type Row=Record<string,unknown>;
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1).max(200);
 const deviceType=z.enum(['tag','reader']);
+const assignmentKeys=['employee_id','site_id','control_point_id'] as const;
+const nfcStatusText:Record<string,string>={active:'Aktiv',lost:'Verloren',blocked:'Gesperrt',replaced:'Ersetzt'};
 export const phase6Router=Router();
 phase6Router.use((req,res,next)=>/^\/nfc-devices/.test(req.path)
   ? requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next())
@@ -104,10 +106,19 @@ phase6Router.patch('/nfc-devices/:id',requirePermission('nfc_devices:write'),asy
       description:z.string().trim().max(2000).optional(),
       employee_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),control_point_id:uuid.nullable().optional(),
       notes:z.string().max(2000).optional(),reason:z.string().trim().max(2000).optional()}).strict().parse(req.body);
+    const assignmentRequested=assignmentKeys.some(key=>key in (req.body as Record<string,unknown>));
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
       if(current.archived_at)fail(409,'NFC-Gerät ist archiviert und kann nicht verändert werden');
+      // Zuordnungen dürfen nicht über den generischen Stammdaten-Endpunkt
+      // an bereits ersetzten, gesperrten oder verlorenen Geräten umgangen werden.
+      if(assignmentRequested){
+        if(current.replaced_at||current.status==='replaced')fail(409,'NFC-Gerät ist bereits ersetzt und darf nicht zugeordnet werden');
+        if(current.status!=='active'){
+          fail(409,`NFC-Gerät mit Status ${nfcStatusText[String(current.status)]??String(current.status)} kann nicht zugeordnet werden`);
+        }
+      }
       const assignment={employee_id:body.employee_id===undefined?current.employee_id:body.employee_id,site_id:body.site_id===undefined?current.site_id:body.site_id,control_point_id:body.control_point_id===undefined?current.control_point_id:body.control_point_id};
       const targets=Object.entries(assignment).filter(([,value])=>value);
       if(targets.length>1)fail(400,'Es ist nur ein NFC-Zuordnungsziel erlaubt');

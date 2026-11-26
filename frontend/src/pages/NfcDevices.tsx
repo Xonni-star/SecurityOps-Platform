@@ -4,7 +4,8 @@ import {api,hasPermission} from '../lib/api';
 import {formatDate,formatDateTime,formatNumber} from '../lib/format';
 import {commonText} from '../lib/text';
 import {
-  emptyNfcForm,nfcAssignmentLabel,nfcFormFromDevice,nfcMessage,nfcPayloadFromForm,nfcStatusClass,nfcStatusLabel,nfcStatusText,nfcTypeLabel,
+  emptyNfcForm,nfcAssignmentLabel,nfcCanBlock,nfcCanReactivate,nfcCanRecover,nfcCanReplace,nfcFormFromDevice,nfcIsAssignable,
+  nfcMasterDataPayloadFromForm,nfcMessage,nfcPayloadFromForm,nfcStatusClass,nfcStatusLabel,nfcStatusText,nfcTypeLabel,
   NfcDialog,NfcFormFields,NfcKpiCard,NfcReasonDialog,NfcRecoverDialog,NfcReplaceDialog,validateNfcForm,
   type NfcDevice,type NfcForm,type NfcOptions,type NfcOverview,
 } from './nfcParts';
@@ -115,12 +116,14 @@ export function NfcDevices(){
   };
 
   const saveForm=()=>{
-    const validation=validateNfcForm(form);
+    const showAssignment=dialog==='create'||Boolean(selected&&nfcIsAssignable(selected));
+    const validation=validateNfcForm(form,showAssignment);
     if(validation){setDialogError(validation);return;}
-    const payload=nfcPayloadFromForm(form);
     if(dialog==='create'){
+      const payload=nfcPayloadFromForm(form);
       void execute(async()=>{await api('/nfc-devices',{method:'POST',body:JSON.stringify(payload)});},'NFC-Gerät wurde registriert.');
     }else if(selected){
+      const payload=nfcMasterDataPayloadFromForm(form);
       void execute(async()=>{await api(`/nfc-devices/${selected.id}`,{method:'PATCH',body:JSON.stringify(payload)});},'NFC-Gerät wurde gespeichert.');
     }
   };
@@ -258,11 +261,11 @@ export function NfcDevices(){
             <td onClick={event=>event.stopPropagation()}>
               <button type="button" onClick={()=>navigate(`/nfc-devices/${device.id}`)}>Akte</button>
               {canWrite&&<button type="button" onClick={()=>openDialog('edit',device)}>Bearbeiten</button>}
-              {canSecurity&&!device.archived_at&&['active','lost'].includes(device.status)&&<button type="button" onClick={()=>openDialog('block',device)}>Sperren</button>}
-              {canSecurity&&device.status==='active'&&!device.archived_at&&<button type="button" onClick={()=>openDialog('lost',device)}>Verlust melden</button>}
-              {canSecurity&&(device.status==='lost'||device.status==='blocked'||device.status==='replaced')&&<button type="button" onClick={()=>openDialog('replace',device)}>Ersatz</button>}
-              {canSecurity&&(device.status==='lost'||device.archived_at)&&<button type="button" onClick={()=>openDialog('recover',device)}>Wieder in Betrieb</button>}
-              {canSecurity&&device.status==='blocked'&&!device.archived_at&&<button type="button" onClick={()=>openDialog('reactivate',device)}>Reaktivieren</button>}
+              {canSecurity&&nfcCanBlock(device)&&<button type="button" onClick={()=>openDialog('block',device)}>Sperren</button>}
+              {canSecurity&&nfcIsAssignable(device)&&<button type="button" onClick={()=>openDialog('lost',device)}>Verlust melden</button>}
+              {canSecurity&&nfcCanReplace(device)&&<button type="button" onClick={()=>openDialog('replace',device)}>Ersatz</button>}
+              {canSecurity&&nfcCanRecover(device)&&<button type="button" onClick={()=>openDialog('recover',device)}>Wieder in Betrieb</button>}
+              {canSecurity&&nfcCanReactivate(device)&&<button type="button" onClick={()=>openDialog('reactivate',device)}>Reaktivieren</button>}
               {canSecurity&&!device.archived_at&&<button type="button" onClick={()=>openDialog('archive',device)}>Archivieren</button>}
             </td>
           </tr>)}
@@ -277,7 +280,8 @@ export function NfcDevices(){
 
     {(dialog==='create'||dialog==='edit')&&<NfcDialog title={dialog==='create'?'NFC-Gerät registrieren':'NFC-Gerät bearbeiten'} onClose={()=>setDialog(null)} wide>
       <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveForm();}}>
-        <NfcFormFields value={form} onChange={setForm} options={options}/>
+        <NfcFormFields value={form} onChange={setForm} options={options}
+          showAssignment={dialog==='create'||Boolean(selected&&nfcIsAssignable(selected))}/>
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
         <div className="object-actions">
           <button type="submit" disabled={busy}>{busy?'Wird gespeichert …':commonText.save}</button>

@@ -4,7 +4,8 @@ import {api,csrf,hasPermission} from '../lib/api';
 import {formatDate,formatDateTime} from '../lib/format';
 import {auditEventLabel,commonText,historyDetailText} from '../lib/text';
 import {
-  emptyNfcForm,nfcAssignmentDetail,nfcAssignmentLabel,nfcFormFromDevice,nfcMessage,nfcPayloadFromForm,
+  emptyNfcForm,nfcAssignmentDetail,nfcAssignmentLabel,nfcCanBlock,nfcCanReactivate,nfcCanRecover,nfcCanReplace,
+  nfcFormFromDevice,nfcIsAssignable,nfcMasterDataPayloadFromForm,nfcMessage,
   nfcScanAuthenticationLabel,nfcScanOutcome,nfcStatusClass,nfcStatusLabel,nfcStatusText,nfcTypeLabel,NfcDialog,NfcFormFields,NfcReasonDialog,
   NfcAssignmentFields,NfcRecoverDialog,NfcReplaceDialog,NfcTimeline,validateNfcForm,
   type NfcDocument,type NfcFileData,type NfcForm,type NfcOptions,type NfcScanRecord,
@@ -128,9 +129,9 @@ export function NfcDeviceFile(){
   };
 
   const saveMaster=()=>{
-    const validation=validateNfcForm(form);
+    const validation=validateNfcForm(form,false);
     if(validation){setDialogError(validation);return;}
-    void run(async()=>{await api(`/nfc-devices/${device.id}`,{method:'PATCH',body:JSON.stringify(nfcPayloadFromForm(form))});},'Stammdaten wurden gespeichert.');
+    void run(async()=>{await api(`/nfc-devices/${device.id}`,{method:'PATCH',body:JSON.stringify(nfcMasterDataPayloadFromForm(form))});},'Stammdaten wurden gespeichert.');
   };
 
   const saveAssignment=()=>{
@@ -189,11 +190,11 @@ export function NfcDeviceFile(){
       </div>
       <div className="object-actions">
         {canWrite&&<button type="button" onClick={()=>open('edit')}>Stammdaten bearbeiten</button>}
-        {canSecurity&&!device.archived_at&&['active','lost'].includes(device.status)&&<button type="button" onClick={()=>open('block')}>Sperren</button>}
-        {canSecurity&&device.status==='active'&&!device.archived_at&&<button type="button" onClick={()=>open('lost')}>Verlust melden</button>}
-        {canSecurity&&(device.status==='lost'||device.status==='blocked'||device.status==='replaced')&&<button type="button" onClick={()=>open('replace')}>Ersatzgerät festlegen</button>}
-        {canSecurity&&(device.status==='lost'||device.archived_at)&&<button type="button" onClick={()=>open('recover')}>Wieder in Betrieb nehmen</button>}
-        {canSecurity&&device.status==='blocked'&&!device.archived_at&&<button type="button" onClick={()=>open('reactivate')}>Reaktivieren</button>}
+        {canSecurity&&nfcCanBlock(device)&&<button type="button" onClick={()=>open('block')}>Sperren</button>}
+        {canSecurity&&nfcIsAssignable(device)&&<button type="button" onClick={()=>open('lost')}>Verlust melden</button>}
+        {canSecurity&&nfcCanReplace(device)&&<button type="button" onClick={()=>open('replace')}>Ersatzgerät festlegen</button>}
+        {canSecurity&&nfcCanRecover(device)&&<button type="button" onClick={()=>open('recover')}>Wieder in Betrieb nehmen</button>}
+        {canSecurity&&nfcCanReactivate(device)&&<button type="button" onClick={()=>open('reactivate')}>Reaktivieren</button>}
         {canSecurity&&!device.archived_at&&<button type="button" onClick={()=>open('archive')}>Archivieren</button>}
       </div>
     </div>
@@ -242,13 +243,15 @@ export function NfcDeviceFile(){
     {section==='zuordnung'&&<div className="object-detail-content">
       <h3>Aktuelle Zuordnung</h3>
       <p>{nfcAssignmentLabel(device)}</p>
-      <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveAssignment();}}>
+      {nfcIsAssignable(device)?<form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveAssignment();}}>
         <NfcAssignmentFields value={assignment} onChange={(value:NfcForm)=>setAssignment({...assignment,...value})} options={options}/>
         <label>Änderungsgrund <input maxLength={2000} value={assignmentReason}
           onChange={event=>setAssignmentReason(event.target.value)} placeholder="Grund der Zuordnung"/></label>
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
         <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>Zuordnung speichern</button></div>
-      </form>
+      </form>:<p className="object-warning" role="status">
+        Nur aktive, nicht archivierte und nicht ersetzte Geräte können zugeordnet werden.
+      </p>}
       <h4>Zuordnungshistorie</h4>
       {data.assignment_history.length?<ul>{data.assignment_history.map(event=><li key={event.id}>
         <time>{formatDateTime(event.assigned_at)}</time>: {nfcAssignmentDetail(event.previous_assignment,options)} → {nfcAssignmentDetail(event.assignment,options)}
@@ -351,7 +354,7 @@ export function NfcDeviceFile(){
 
     {dialog==='edit'&&<NfcDialog title="NFC-Gerät bearbeiten" onClose={()=>setDialog(null)} wide>
       <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveMaster();}}>
-        <NfcFormFields value={form} onChange={setForm} options={options}/>
+        <NfcFormFields value={form} onChange={setForm} options={options} showAssignment={false}/>
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
         <div className="object-actions"><button type="submit" disabled={busy}>{commonText.save}</button>
           <button type="button" onClick={()=>setDialog(null)}>{commonText.cancel}</button></div>

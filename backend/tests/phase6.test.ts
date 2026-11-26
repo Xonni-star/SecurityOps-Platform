@@ -67,6 +67,26 @@ describe('NFC device management',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE nfc_devices'))).toBe(false);
   });
 
+  it.each([
+    ['gesperrten',{status:'blocked',replaced_at:null},'Gesperrt'],
+    ['verlorenen',{status:'lost',replaced_at:null},'Verloren'],
+    ['ersetzten',{status:'replaced',replaced_at:'2026-11-26T12:00:00Z'},'ersetzt'],
+  ])('verhindert Zuordnungsänderungen am %s Gerät über PATCH',async(_label,override,expected)=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('SELECT * FROM nfc_devices'))return result([{
+        id:'00000000-0000-0000-0000-000000000020',identifier:'TAG-001',device_type:'tag',status:'active',
+        archived_at:null,employee_id:null,site_id:null,control_point_id:null,...override,
+      }]);
+      return result([]);
+    });
+    const response=await request(app).patch('/api/v1/nfc-devices/00000000-0000-0000-0000-000000000020').set(csrf)
+      .send({employee_id:'00000000-0000-4000-8000-000000000021',reason:'Zuordnung'});
+    expect(response.status).toBe(409);
+    expect(response.body.error.toLowerCase()).toContain(String(expected).toLowerCase());
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE nfc_devices'))).toBe(false);
+  });
+
   it('protects devices with scan history from deletion',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([session]);

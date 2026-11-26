@@ -61,6 +61,27 @@ function assertNotArchived(device:Row):void{
   if(device.archived_at)fail(409,'NFC-Gerät ist archiviert und kann nicht verändert werden');
 }
 
+const nfcStatusText:Record<string,string>={
+  active:'Aktiv',lost:'Verloren',blocked:'Gesperrt',replaced:'Ersetzt',
+};
+
+function assertNotReplaced(device:Row):void{
+  if(device.status==='replaced'||device.replaced_at)fail(409,'NFC-Gerät ist bereits ersetzt und darf nicht wieder in Betrieb genommen werden');
+}
+
+function assertOperational(device:Row):void{
+  assertNotArchived(device);
+  assertNotReplaced(device);
+}
+
+function assertAssignable(device:Row):void{
+  assertNotArchived(device);
+  assertNotReplaced(device);
+  if(device.status!=='active'){
+    fail(409,`NFC-Gerät mit Status ${nfcStatusText[String(device.status)]??String(device.status)} kann nicht zugeordnet werden`);
+  }
+}
+
 async function assertControlPointAvailable(client:PoolClient,tenantId:string,controlPointId:string,excludeDeviceId?:string):Promise<void>{
   const occupied=(await client.query<Row>(`SELECT id FROM nfc_devices
     WHERE tenant_id=$1 AND control_point_id=$2 AND status='active' AND archived_at IS NULL AND id<>$3 LIMIT 1`,
@@ -129,7 +150,7 @@ nfcManagementRouter.get('/nfc-devices/filter-options',read,async(req,res,next)=>
         LEFT JOIN sites s ON s.tenant_id=n.tenant_id AND s.id=n.site_id
         LEFT JOIN control_points cp ON cp.tenant_id=n.tenant_id AND cp.id=n.control_point_id
         LEFT JOIN sites cp_site ON cp_site.tenant_id=n.tenant_id AND cp_site.id=cp.site_id
-        WHERE n.tenant_id=$1 AND n.archived_at IS NULL AND n.status<>'replaced' ORDER BY n.identifier`,[tenantId]),
+        WHERE n.tenant_id=$1 AND n.archived_at IS NULL AND n.replaced_at IS NULL AND n.status<>'replaced' ORDER BY n.identifier`,[tenantId]),
     ]);
     res.json({sites:sites.rows,control_points:controlPoints.rows,employees:employees.rows,devices:devices.rows});
   }catch(error){next(error);}
@@ -349,7 +370,7 @@ nfcManagementRouter.post('/nfc-devices/:id/assign',write,async(req,res,next)=>{
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
-      assertNotArchived(current);
+      assertAssignable(current);
       let target:Row|null=null;
       if(value)target=await targetInfo(client,tenantId,key,value);
       const previous=assignmentOf(current);
@@ -386,8 +407,8 @@ nfcManagementRouter.post('/nfc-devices/:id/report-lost',security,async(req,res,n
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
-      assertNotArchived(current);
-      if(current.status==='lost'||current.status==='replaced')fail(409,'NFC-Gerät ist bereits als verloren oder ersetzt erfasst');
+      assertOperational(current);
+      if(current.status==='lost')fail(409,'NFC-Gerät ist bereits als verloren erfasst');
       const updated=(await client.query<Row>(`UPDATE nfc_devices SET status='lost',lost_at=$1,event_reason=$2,reported_by=$3,notes=$4,updated_at=now()
         WHERE tenant_id=$5 AND id=$6 RETURNING *`,[body.lost_at,body.reason,req.user!.id,body.notes??current.notes,tenantId,id])).rows[0];
       await recordAudit(tenantId,req.user!.id,'nfc_device.lost.reported','nfc_device',id,
@@ -406,8 +427,12 @@ nfcManagementRouter.post('/nfc-devices/:id/block',security,async(req,res,next)=>
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
-      assertNotArchived(current);
-      if(!['active','lost'].includes(String(current.status)))fail(409,'NFC-Gerät kann in diesem Status nicht gesperrt werden');
+      assertOperational(current);
+      // Verlorene Geräte dürfen nicht über den Sperr-Endpunkt am
+      // Wiederauffinden-Protokoll (Kennungs- und Zuordnungsbestätigung)
+      // vorbeigehen. Sie werden ausschließlich über /recover in Quarantäne
+      // überführt und anschließend begründet reaktiviert.
+      if(current.status!=='active')fail(409,'Nur aktive NFC-Geräte können gesperrt werden; verlorene Geräte zuerst als wiedergefunden erfassen');
       const updated=(await client.query<Row>(`UPDATE nfc_devices SET status='blocked',blocked_at=now(),event_reason=$1,reported_by=$2,updated_at=now()
         WHERE tenant_id=$3 AND id=$4 RETURNING *`,[body.reason,req.user!.id,tenantId,id])).rows[0];
       await recordAudit(tenantId,req.user!.id,'nfc_device.blocked','nfc_device',id,
@@ -426,7 +451,7 @@ nfcManagementRouter.post('/nfc-devices/:id/reactivate',security,async(req,res,ne
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
-      assertNotArchived(current);
+      assertOperational(current);
       if(current.status!=='blocked')fail(409,'Nur gesperrte NFC-Geräte können reaktiviert werden');
       const updated=(await client.query<Row>(`UPDATE nfc_devices SET status='active',event_reason=$1,reported_by=$2,updated_at=now()
         WHERE tenant_id=$3 AND id=$4 RETURNING *`,[body.reason,req.user!.id,tenantId,id])).rows[0];
