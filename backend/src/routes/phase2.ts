@@ -6,6 +6,7 @@ import {publish} from '../services/realtime.js';
 import {queueNotificationEvent} from '../services/notifications.js';
 import {parseSyncConflictStrategy,runIdempotentMutation} from '../services/offline-sync.js';
 import {queueAlarmForwarding} from '../services/external-forwarding.js';
+import {recordAudit} from '../services/audit.js';
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i); const nonempty=z.string().trim().min(1);
 const priority=z.object({name:nonempty,code:z.enum(['critical','high','medium','low']),rank:z.number().int().positive(),color:z.string().regex(/^#[0-9a-f]{6}$/i)}).strict();
 export const phase2Router=Router();
@@ -24,11 +25,13 @@ phase2Router.get('/alarms/:id/history',requirePermission('alarms:read'),async(re
 phase2Router.get('/escalation-rules',requirePermission('escalation_rules:read'),async(req,res,next)=>{try{res.json((await query('SELECT * FROM escalation_rules WHERE tenant_id=$1 ORDER BY created_at',[req.user!.tenantId])).rows);}catch(e){next(e);}});
 phase2Router.post('/escalation-rules',requirePermission('escalation_rules:write'),async(req,res,next)=>{try{const b=z.object({name:nonempty,priority_id:uuid.nullable().optional(),delay_seconds:z.number().int().positive(),enabled:z.boolean().optional()}).parse(req.body);res.status(201).json((await query('INSERT INTO escalation_rules(tenant_id,name,priority_id,delay_seconds,enabled) VALUES($1,$2,$3,$4,$5) RETURNING *',[req.user!.tenantId,b.name,b.priority_id??null,b.delay_seconds,b.enabled??true])).rows[0]);}catch(e){next(e);}});
 phase2Router.get('/control-points',requirePermission('patrols:read'),async(req,res,next)=>{try{res.json((await query('SELECT * FROM control_points WHERE tenant_id=$1 ORDER BY site_id,sequence',[req.user!.tenantId])).rows);}catch(e){next(e);}});
-phase2Router.post('/control-points',requirePermission('patrols:write'),async(req,res,next)=>{try{const b=z.object({site_id:uuid,name:nonempty,nfc_uid:nonempty,sequence:z.number().int().positive()}).parse(req.body);res.status(201).json((await query('INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence) VALUES($1,$2,$3,$4,$5) RETURNING *',[req.user!.tenantId,b.site_id,b.name,b.nfc_uid,b.sequence])).rows[0]);}catch(e){next(e);}});
+phase2Router.post('/control-points',requirePermission('patrols:write'),async(req,res,next)=>{try{const b=z.object({site_id:uuid,name:nonempty,nfc_uid:nonempty,sequence:z.number().int().positive()}).parse(req.body);const existing=(await query('SELECT id FROM control_points WHERE tenant_id=$1 AND nfc_uid=$2',[req.user!.tenantId,b.nfc_uid])).rows[0];if(existing)throw Object.assign(new Error('Diese NFC-Kennung ist bereits einem Kontrollpunkt zugeordnet'),{status:409,code:'CONTROL_POINT_NFC_UID_DUPLICATE'});res.status(201).json((await query('INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence) VALUES($1,$2,$3,$4,$5) RETURNING *',[req.user!.tenantId,b.site_id,b.name,b.nfc_uid,b.sequence])).rows[0]);}catch(e){next(e);}});
 phase2Router.get('/patrol-routes',requirePermission('patrols:read'),async(req,res,next)=>{try{res.json((await query("SELECT r.*,json_agg(json_build_object('control_point_id',rp.control_point_id,'sequence',rp.sequence,'expected_offset_seconds',rp.expected_offset_seconds) ORDER BY rp.sequence) FILTER (WHERE rp.control_point_id IS NOT NULL) points FROM patrol_routes r LEFT JOIN patrol_route_points rp ON rp.route_id=r.id WHERE r.tenant_id=$1 GROUP BY r.id ORDER BY r.created_at DESC",[req.user!.tenantId])).rows);}catch(e){next(e);}});
 phase2Router.post('/patrol-routes',requirePermission('patrols:write'),async(req,res,next)=>{try{const b=z.object({site_id:uuid,name:nonempty,points:z.array(z.object({control_point_id:uuid,sequence:z.number().int().positive(),expected_offset_seconds:z.number().int().nonnegative()})).min(1)}).parse(req.body);const r=await query('INSERT INTO patrol_routes(tenant_id,site_id,name) VALUES($1,$2,$3) RETURNING *',[req.user!.tenantId,b.site_id,b.name]);for(const p of b.points)await query('INSERT INTO patrol_route_points(route_id,control_point_id,sequence,expected_offset_seconds) VALUES($1,$2,$3,$4)',[r.rows[0].id,p.control_point_id,p.sequence,p.expected_offset_seconds]);res.status(201).json(r.rows[0]);}catch(e){next(e);}});
-phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:write'),async(req,res,next)=>{try{
-  const input=z.object({nfc_uid:nonempty,employee_id:uuid,scanned_at:z.coerce.date().optional(),client_event_id:uuid.optional(),conflict_strategy:z.enum(['USE_LOCAL','USE_SERVER','RECORD_AS_EXCEPTION']).optional()}).strict().parse(req.body);
+phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:write'),async(req,res,next)=>{
+  let input!: {nfc_uid:string;employee_id:string;scanned_at?:Date;client_event_id?:string;conflict_strategy?:'USE_LOCAL'|'USE_SERVER'|'RECORD_AS_EXCEPTION'};
+  try{
+  input=z.object({nfc_uid:nonempty,employee_id:uuid,scanned_at:z.coerce.date().optional(),client_event_id:uuid.optional(),conflict_strategy:z.enum(['USE_LOCAL','USE_SERVER','RECORD_AS_EXCEPTION']).optional()}).strict().parse(req.body);
   const headerMutationId=req.get('Idempotency-Key');
   if(headerMutationId&&input.client_event_id&&headerMutationId!==input.client_event_id)return res.status(400).json({error:'Idempotency-Key und client_event_id müssen übereinstimmen'});
   const mutationId=headerMutationId?uuid.parse(headerMutationId):input.client_event_id;
@@ -39,10 +42,12 @@ phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:wri
     if(!route)throw Object.assign(new Error('Rundgangsroute nicht gefunden'),{status:404});
     const cp=(await run('SELECT id,site_id FROM control_points WHERE tenant_id=$1 AND nfc_uid=$2 AND site_id=$3',[req.user!.tenantId,input.nfc_uid,route.site_id])).rows[0];
     if(!cp)throw Object.assign(new Error('NFC-Kontrollpunkt ist für das Objekt dieser Route nicht registriert'),{status:404,code:'PATROL_SITE_MISMATCH'});
-    const tag=(await run(`SELECT id,status,control_point_id FROM nfc_devices
-      WHERE tenant_id=$1 AND identifier=$2 AND device_type='tag'`,[req.user!.tenantId,input.nfc_uid])).rows[0];
+    const tag=(await run(`SELECT id,status,archived_at,control_point_id,site_id FROM nfc_devices
+      WHERE tenant_id=$1 AND identifier=$2 AND device_type='tag' FOR UPDATE`,[req.user!.tenantId,input.nfc_uid])).rows[0];
     if(!tag)throw Object.assign(new Error('NFC-Tag ist nicht registriert'),{status:404,code:'NFC_TAG_UNREGISTERED'});
+    if(tag.archived_at)throw Object.assign(new Error('NFC-Tag ist archiviert'),{status:409,code:'NFC_TAG_ARCHIVED'});
     if(tag.status!=='active')throw Object.assign(new Error('NFC-Tag ist nicht aktiv'),{status:409,code:'NFC_TAG_NOT_ACTIVE'});
+    if(tag.site_id&&tag.site_id!==route.site_id)throw Object.assign(new Error('NFC-Tag gehört zu einem anderen Objekt'),{status:409,code:'NFC_TAG_SITE_MISMATCH'});
     if(tag.control_point_id!==cp.id)throw Object.assign(new Error('NFC-Tag ist einem anderen Kontrollpunkt zugeordnet'),{status:409,code:'NFC_TAG_ASSIGNMENT_MISMATCH'});
     const assignment=(await run(`SELECT id FROM patrol_assignments
       WHERE tenant_id=$1 AND route_id=$2 AND employee_id=$3
@@ -74,4 +79,15 @@ phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:wri
   };
   if(mutationId){const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId,action:'patrol.scan',payload:req.body,conflictStrategy:parseSyncConflictStrategy(input.conflict_strategy)},tx=>apply(tx)));return res.status(result.replayed?200:201).json(result.response);}
   res.status(201).json(await apply());
-}catch(e){next(e);}});
+  }catch(e){
+    // Ablehnungen werden unabhängig von der Scan-Transaktion revisionssicher
+    // festgehalten, damit die Geräteakte auch fehlgeschlagene Scans zeigt.
+    if(input){
+      const error=e as Error&{code?:string};
+      await recordAudit(req.user!.tenantId,req.user!.id,'patrol.scan.rejected','patrol_scan',undefined,{
+        nfc_uid:input.nfc_uid,route_id:String(req.params.routeId),employee_id:input.employee_id,
+        reason:error.message,code:error.code??null,server_received_at:new Date().toISOString(),
+      }).catch(()=>undefined);
+    }
+    next(e);
+  }});

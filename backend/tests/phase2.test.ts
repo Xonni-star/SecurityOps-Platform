@@ -74,4 +74,59 @@ describe('phase 2 NFC deviation',()=>{
     expect(response.status).toBe(409);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO patrol_scans'))).toBe(false);
   });
+
+  it('audits rejected scans with the NFC uid and machine-readable reason',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('FROM patrol_routes')?result([{id:'route-1',site_id:'site-1'}])
+      :sql.includes('FROM control_points')?result([{id:'point-1',site_id:'site-1'}])
+      :sql.includes('FROM nfc_devices')?result([])
+      :result([]));
+    const response=await request(app).post('/api/v1/patrol-routes/00000000-0000-0000-0000-000000000005/scans').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf').send({nfc_uid:'nfc-2',employee_id:'00000000-0000-0000-0000-000000000006'});
+    expect(response.status).toBe(404);
+    const audit=queryMock.mock.calls.find(([sql,values])=>String(sql).includes('INSERT INTO audit_events')
+      && String((values as unknown[])?.[2])==='patrol.scan.rejected');
+    expect(audit).toBeDefined();
+    expect((audit?.[1] as unknown[])?.[5]).toEqual(expect.objectContaining({
+      nfc_uid:'nfc-2',code:'NFC_TAG_UNREGISTERED',reason:expect.stringContaining('nicht registriert'),
+    }));
+  });
+
+  it('rejects tags assigned to another site for the same control point UID',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('FROM patrol_routes')?result([{id:'route-1',site_id:'site-1'}])
+      :sql.includes('FROM control_points')?result([{id:'point-1',site_id:'site-1'}])
+      :sql.includes('FROM nfc_devices')?result([{id:'tag-1',status:'active',control_point_id:'point-1',site_id:'site-2'}])
+      :result([]));
+    const response=await request(app).post('/api/v1/patrol-routes/00000000-0000-0000-0000-000000000005/scans').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf').send({nfc_uid:'nfc-2',employee_id:'00000000-0000-0000-0000-000000000006'});
+    expect(response.status).toBe(409);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO patrol_scans'))).toBe(false);
+  });
+
+  it('rejects archived tags before persisting a scan or counting it as successful',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('FROM patrol_routes')?result([{id:'route-1',site_id:'site-1'}])
+      :sql.includes('FROM control_points')?result([{id:'point-1',site_id:'site-1'}])
+      :sql.includes('FROM nfc_devices')?result([{id:'tag-1',status:'active',archived_at:'2026-11-26',control_point_id:'point-1'}])
+      :result([]));
+    const response=await request(app).post('/api/v1/patrol-routes/00000000-0000-0000-0000-000000000005/scans').set('Cookie',['securityops_session=s','securityops_csrf=csrf']).set('x-csrf-token','csrf').send({nfc_uid:'nfc-2',employee_id:'00000000-0000-0000-0000-000000000006'});
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('archiviert');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO patrol_scans'))).toBe(false);
+    const audit=queryMock.mock.calls.find(([sql,values])=>String(sql).includes('INSERT INTO audit_events')
+      && String((values as unknown[])?.[2])==='patrol.scan.rejected');
+    expect((audit?.[1] as unknown[])?.[5]).toEqual(expect.objectContaining({
+      nfc_uid:'nfc-2',code:'NFC_TAG_ARCHIVED',reason:expect.stringContaining('archiviert'),
+    }));
+  });
+
+  it('prevents duplicate active NFC UIDs on control points',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([{...user,session_id:'s',csrf_token:'csrf',expires_at:'2099-01-01'}])
+      :sql.includes('SELECT id FROM control_points')?result([{id:'point-1'}])
+      :result([]));
+    const response=await request(app).post('/api/v1/control-points').set('Cookie',['securityops_session=s','securityops_csrf=csrf'])
+      .set('x-csrf-token','csrf').send({site_id:'00000000-0000-0000-0000-000000000003',name:'Doppelter Punkt',nfc_uid:'nfc-2',sequence:1});
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('bereits');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO control_points'))).toBe(false);
+  });
 });

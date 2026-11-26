@@ -62,7 +62,10 @@ describe('login and protected navigation',()=>{
     render(<App/>);
     expect(await screen.findByRole('heading',{name:'Mitarbeiter'})).toBeTruthy();
     expect(document.querySelectorAll('.app-shell')).toHaveLength(1);
+    expect(document.querySelector('.app-shell')?.className).toContain('theme-dark');
     expect(document.querySelectorAll('.sidebar')).toHaveLength(1);
+    expect(document.querySelector('main')?.className).toContain('employee-page');
+    expect(document.querySelector('header')?.className).toContain('topbar-dark');
   });
 
   it('renders a direct employee detail route inside the same app shell',async()=>{
@@ -80,6 +83,7 @@ describe('login and protected navigation',()=>{
     render(<App/>);
     expect(await screen.findByRole('heading',{name:'Ava Worker'})).toBeTruthy();
     expect(document.querySelectorAll('.app-shell')).toHaveLength(1);
+    expect(document.querySelector('.app-shell')?.className).toContain('theme-dark');
     expect(document.querySelectorAll('.sidebar')).toHaveLength(1);
   });
 

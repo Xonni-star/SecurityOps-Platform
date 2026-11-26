@@ -67,5 +67,9 @@ describe('einheitliche deutsche Begriffe',()=>{
     expect(historyDetailText('customer_status','active')).toBe('Kundenstatus: Aktiv');
     expect(historyDetailText('is_primary',true)).toBe('Primärkontakt: Ja');
     expect(historyDetailText('reason',null)).toBe('Grund: Nicht verfügbar');
+    expect(historyDetailText('site_id','site-1')).toBe('Objekt: site-1');
+    expect(historyDetailText('location_id','location-1')).toBe('Standort / Bereich: location-1');
+    expect(historyDetailText('order_number','MAIN-1')).toBe('Auftragsnummer: MAIN-1');
+    expect(historyDetailText('changed_fields',['name'])).toBe('Geänderte Felder: Name');
   });
 });

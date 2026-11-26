@@ -7,7 +7,7 @@ const apiMock=vi.hoisted(()=>vi.fn());
 const permissionMock=vi.hoisted(()=>vi.fn(()=>true));
 vi.mock('../src/lib/api',()=>({api:apiMock,hasPermission:permissionMock,storedUser:()=>null,csrf:()=>'token'}));
 
-import {Resource} from '../src/pages/Resource';
+import {Devices} from '../src/pages/Devices';
 import {AlarmForwarding} from '../src/pages/AlarmForwarding';
 import {Handovers} from '../src/pages/Handovers';
 import {Qualifications} from '../src/pages/Qualifications';
@@ -15,20 +15,36 @@ import {Qualifications} from '../src/pages/Qualifications';
 beforeEach(()=>{cleanup();apiMock.mockReset();permissionMock.mockReset();permissionMock.mockReturnValue(true);});
 
 describe('strict backend contracts',()=>{
-  it('creates a device with an enum status and a real site UUID',async()=>{
+  it('creates a device with all master data fields and a real site UUID',async()=>{
+    const siteId='00000000-0000-4000-8000-000000000001';
     apiMock.mockImplementation(async(path:string,options?:RequestInit)=>{
-      if(path==='/sites')return [{id:'00000000-0000-4000-8000-000000000001',name:'Hauptobjekt'}];
-      if(path==='/devices'&&options?.method==='POST')return {};
-      if(path==='/devices')return [];
+      if(path==='/sites')return [{id:siteId,name:'Hauptobjekt'}];
+      if(path==='/employees')return [];
+      if(path==='/devices/filter-options')return {categories:['Zutritt'],manufacturers:['Secura']};
+      if(path==='/devices/overview')return {};
+      if(path.startsWith('/devices/inventory'))return {rows:[],total:0,page:1,pageSize:25,totalPages:1};
+      if(path.startsWith('/devices/locations/'))return [];
+      if(path==='/devices'&&options?.method==='POST')return {id:'new'};
       return {};
     });
-    render(<MemoryRouter><Resource name="devices" fields={['name','status','site_id']}/></MemoryRouter>);
-    await waitFor(()=>expect(screen.getByRole('option',{name:'Hauptobjekt'})).toBeTruthy());
-    fireEvent.change(screen.getByPlaceholderText('z. B. Handfunkgerät 01'),{target:{value:'Leser 1'}});
-    fireEvent.change(screen.getByLabelText('Status'),{target:{value:'online'}});
-    fireEvent.change(screen.getByLabelText('Objekt'),{target:{value:'00000000-0000-4000-8000-000000000001'}});
+    render(<MemoryRouter><Devices/></MemoryRouter>);
+    await waitFor(()=>expect(screen.getAllByRole('option',{name:'Hauptobjekt'}).length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button',{name:'Gerät anlegen'}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/devices',{method:'POST',body:JSON.stringify({name:'Leser 1',status:'online',site_id:'00000000-0000-4000-8000-000000000001'})}));
+    fireEvent.change(screen.getByLabelText(/Gerätebezeichnung/),{target:{value:'Leser 1'}});
+    fireEvent.change(screen.getByLabelText('Inventarnummer'),{target:{value:'INV-1'}});
+    fireEvent.change(screen.getAllByLabelText('Kategorie')[0],{target:{value:'Zutritt'}});
+    fireEvent.change(screen.getAllByLabelText('Hersteller')[0],{target:{value:'Secura'}});
+    fireEvent.change(screen.getByLabelText('Modell'),{target:{value:'Reader 3000'}});
+    fireEvent.change(screen.getByLabelText('Seriennummer'),{target:{value:'SN-1'}});
+    fireEvent.change(screen.getAllByLabelText('Objekt')[0],{target:{value:siteId}});
+    fireEvent.change(screen.getByLabelText('Nächste Prüfung'),{target:{value:'2027-01-01'}});
+    fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/devices',{method:'POST',body:JSON.stringify({
+      name:'Leser 1',status:'online',operational_status:'active',maintenance_interval_days:null,
+      asset_number:'INV-1',category:'Zutritt',manufacturer:'Secura',model:'Reader 3000',serial_number:'SN-1',
+      site_id:siteId,location_id:null,responsible_employee_id:null,installed_on:null,commissioned_on:null,
+      last_inspection_on:null,next_inspection_on:'2027-01-01',last_maintenance_on:null,next_maintenance_on:null,
+    })}));
   });
 
   it('blocks a webhook destination without an endpoint before the API call',async()=>{

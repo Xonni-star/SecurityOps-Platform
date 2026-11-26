@@ -8,6 +8,7 @@ export type StatusDomain =
   | 'incident'
   | 'device'
   | 'nfc'
+  | 'nfcDeviceType'
   | 'document'
   | 'documentCategory'
   | 'key'
@@ -124,12 +125,18 @@ const domainLabels: Record<StatusDomain, Record<string, string>> = {
     cancelled: 'Abgebrochen',
   },
   device: {
+    active: 'Aktiv',
     online: 'Online',
     offline: 'Offline',
     maintenance: 'In Wartung',
     operational: 'Betriebsbereit',
     fault: 'Störung',
     out_of_order: 'Außer Betrieb',
+    decommissioned: 'Stillgelegt',
+  },
+  nfcDeviceType: {
+    tag: 'NFC-Tag',
+    reader: 'Lesegerät',
   },
   nfc: {
     active: 'Aktiv',
@@ -138,6 +145,8 @@ const domainLabels: Record<StatusDomain, Record<string, string>> = {
     unassigned: 'Nicht zugewiesen',
     lost: 'Verloren',
     replaced: 'Ersetzt',
+    archived: 'Archiviert',
+    recovered: 'Wiedergefunden',
   },
   key: {
     available: 'Verfügbar',
