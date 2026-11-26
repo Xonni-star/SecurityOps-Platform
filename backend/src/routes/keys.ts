@@ -87,7 +87,9 @@ const listQuerySchema=z.object({
 type KeyFilters=z.infer<typeof listQuerySchema>;
 const pickerQuerySchema=listQuerySchema.extend({
   exclude_bundle_id:uuid.optional(),
-  limit:z.coerce.number().int().min(1).max(500).default(200),
+  // Opaque offset cursor. Pages are bounded; the result set itself is not.
+  cursor:z.string().regex(/^\d{1,9}$/).default('0'),
+  pageSize:z.coerce.number().int().min(1).max(200).default(100),
 });
 const exportQuerySchema=listQuerySchema.extend({
   full:z.enum(['true','false']).default('false').transform(value=>value==='true'),
@@ -162,16 +164,21 @@ keysRouter.get('/keys',requirePermission('keys:read',{allowedScopes:['tenant','s
   }catch(error){if(error instanceof z.ZodError)return badRequest(res);next(error);}
 });
 
-// Reusable server-side search for pickers. Unlike the paginated list this is
-// intentionally allowed to return up to 500 matching keys so bundle and
-// inventory selections keep working beyond the first 100 records.
+// Server-side search for pickers. Every page applies tenant/RBAC filters in SQL;
+// clients follow next_cursor until it is null instead of relying on a hard cap.
 keysRouter.get('/keys/picker',requirePermission('keys:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const filters=parseQuery(req,pickerQuerySchema);
-    const {sql,values}=keyListQuery(req,filters,['keys:read'],{limit:filters.limit,offset:0,excludeBundleId:filters.exclude_bundle_id});
+    const offset=Number(filters.cursor);
+    const {sql,values}=keyListQuery(req,filters,['keys:read'],{limit:filters.pageSize,offset,excludeBundleId:filters.exclude_bundle_id});
     const result=await query(sql,values);
-    setPageHeaders(res,result.rows[0]?.total_count??result.rows.length,1,filters.limit);
-    res.json(result.rows);
+    const total=result.rows[0]?.total_count??result.rows.length;
+    const nextOffset=offset+result.rows.length;
+    const nextCursor=result.rows.length>0&&nextOffset<total?String(nextOffset):null;
+    setPageHeaders(res,total,Math.floor(offset/filters.pageSize)+1,filters.pageSize);
+    res.set('X-Cursor',String(offset));
+    if(nextCursor)res.set('X-Next-Cursor',nextCursor);
+    res.json({items:result.rows,total,page_size:filters.pageSize,next_cursor:nextCursor});
   }catch(error){if(error instanceof z.ZodError)return badRequest(res);next(error);}
 });
 
@@ -208,6 +215,7 @@ keysRouter.get('/keys/dashboard',requirePermission('keys:read',{allowedScopes:['
 
 type ActionEntry={id:string;bucket:'A'|'B'|'C';code:string;label:string;key_id:string;key_code:string;site_id:string|null;site_name:string|null;subject_type:string;subject_id:string|null;due_at:string|null;url:string;target:string};
 type ActionBuckets={A:ActionEntry[];B:ActionEntry[];C:ActionEntry[]};
+// The database ranks and caps candidates per bucket; Node only maps the display rows.
 const actionDisplayLimits={A:50,B:50,C:50} as const;
 async function keyActions(req:Request):Promise<ActionBuckets&{totals:Record<'A'|'B'|'C',number>;generated_at:string}>{
   const tenantId=req.user!.tenantId;
@@ -299,12 +307,27 @@ async function keyActions(req:Request):Promise<ActionBuckets&{totals:Record<'A'|
       LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
       WHERE m.tenant_id=$1${keyScope} AND m.movement_type IN ('created','blocked','reactivated')
         AND m.created_at>=now()-INTERVAL '30 days'
+    ),
+    marked AS (
+      SELECT c.*,(c.code||':'||coalesce(c.subject_id::text,c.key_id::text)) dedupe_key FROM candidates c
+    ),
+    deduped AS (
+      SELECT DISTINCT ON (bucket,dedupe_key) bucket,severity,code,label,key_id,key_code,site_id,site_name,
+        subject_type,subject_id,due_at,sort_at,history,dedupe_key
+      FROM marked
+      ORDER BY bucket,dedupe_key,severity,due_at ASC NULLS LAST,sort_at DESC,key_id,code,subject_id
+    ),
+    ranked AS (
+      SELECT d.*,
+        ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY severity,due_at ASC NULLS LAST,sort_at DESC,key_id,code,subject_id) display_rank,
+        COUNT(*) OVER (PARTITION BY bucket)::int bucket_total
+      FROM deduped d
     )
-    SELECT * FROM candidates
-    ORDER BY bucket,severity,due_at ASC NULLS LAST,sort_at DESC,key_id,code,subject_id
-  `,values)).rows as Row[];
+    SELECT bucket,severity,code,label,key_id,key_code,site_id,site_name,subject_type,subject_id,due_at,sort_at,history,bucket_total
+    FROM ranked WHERE display_rank<=$${values.length+1}
+    ORDER BY bucket,display_rank
+  `,[...values,Math.max(...Object.values(actionDisplayLimits))])).rows as Row[];
   const buckets:ActionBuckets={A:[],B:[],C:[]};
-  const seen=new Set<string>();
   const totals:Record<'A'|'B'|'C',number>={A:0,B:0,C:0};
   for(const row of candidates){
     const bucket=row.bucket as 'A'|'B'|'C';
@@ -313,9 +336,9 @@ async function keyActions(req:Request):Promise<ActionBuckets&{totals:Record<'A'|
     const entry:ActionEntry={id:`${row.code}:${row.subject_id??row.key_id}`,bucket,code:row.code,label:row.label,
       key_id:row.key_id,key_code:row.key_code,site_id:row.site_id??null,site_name:row.site_name??null,
       subject_type:row.subject_type,subject_id:row.subject_id??null,due_at:row.due_at??null,url,target:url};
-    if(seen.has(entry.id))continue;
-    seen.add(entry.id);totals[bucket]+=1;
-    if(buckets[bucket].length<actionDisplayLimits[bucket])buckets[bucket].push(entry);
+    // bucket_total is computed before the display-rank filter, so totals stay complete.
+    totals[bucket]=Math.max(totals[bucket],Number(row.bucket_total)||0);
+    buckets[bucket].push(entry);
   }
   return {...buckets,totals,generated_at:new Date().toISOString()};
 }
@@ -333,32 +356,21 @@ const csvCell=(value:unknown)=>{
   return `"${safe.split('"').join('""')}"`;
 };
 keysRouter.get('/keys/export',requirePermission('keys:export',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  let exportQueried=false;
+  let exportAborted=false;
+  let exportCount=0;
+  let exportTotal=0;
+  let exportTruncated=false;
+  // A client disconnect can fire after all bytes were handed to the kernel, so
+  // res.writableFinished alone is not enough to distinguish abort from success.
+  const onClientClose=()=>{if(req.aborted||!req.complete||!res.writableFinished)exportAborted=true;};
+  const detachClientClose=()=>{res.off('close',onClientClose);req.off('aborted',onClientClose);};
+  req.once('aborted',onClientClose);
+  res.on('close',onClientClose);
   try{
     const filters=parseQuery(req,exportQuerySchema);
     const rawIds=typeof req.query.ids==='string'?req.query.ids.split(',').filter(Boolean):[];
     const ids=z.array(uuid).max(100).parse(rawIds);
-    const rows:Row[]=[];
-    let total=0;
-    if(ids.length){
-      const {sql,values}=keyListQuery(req,{...filters,page:1},['keys:export'],{limit:ids.length,offset:0,ids});
-      const result=await query(sql,values);
-      rows.push(...result.rows as Row[]);
-      total=result.rows[0]?.total_count??rows.length;
-    }else{
-      // The default export is deliberately capped; full=true pages through all
-      // matching rows until the server-reported total is reached.
-      const cap=filters.full?Number.MAX_SAFE_INTEGER:exportDefaultLimit;
-      for(let offset=0;offset<cap;offset+=exportBatchSize){
-        const batchLimit=Math.min(exportBatchSize,cap-offset);
-        const {sql,values}=keyListQuery(req,{...filters,page:1},['keys:export'],{limit:batchLimit,offset});
-        const result=await query(sql,values);
-        const batch=result.rows as Row[];
-        total=result.rows[0]?.total_count??batch.length;
-        rows.push(...batch);
-        if(batch.length<batchLimit||rows.length>=total)break;
-      }
-    }
-    const truncated=total>rows.length;
     const columns:[string,(row:Row)=>unknown][]=[
       ['Schlüsselnummer',row=>row.key_code],['Bezeichnung',row=>row.label],['Schlüsseltyp',row=>row.key_type],
       ['Status',row=>row.status],['Objekt',row=>row.site_name],['Standort',row=>row.location],['Gebäude',row=>row.building],
@@ -368,15 +380,63 @@ keysRouter.get('/keys/export',requirePermission('keys:export',{allowedScopes:['t
       ['Zurückgegeben am',row=>row.returned_at],['Bündel',row=>row.bundle_name],['Letzte Bewegung',row=>row.last_movement_at],
       ['Angelegt am',row=>row.created_at],
     ];
-    const notice=truncated?[csvCell(`# Hinweis: Export auf ${rows.length} von ${total} Treffern begrenzt. Für den vollständigen Export full=true verwenden.`)]:[];
-    const csv=[...notice,columns.map(([label])=>csvCell(label)).join(';'),...rows.map(row=>columns.map(([,get])=>csvCell(get(row))).join(';'))].join('\r\n');
-    await recordAudit(req.user!.tenantId,req.user!.id,'keys.exported','key',undefined,{count:rows.length,total,selected:ids.length>0,truncated,full:filters.full});
+    // The default export is still capped; full=true streams every matching row.
+    const cap=ids.length?ids.length:(filters.full?Number.MAX_SAFE_INTEGER:exportDefaultLimit);
+    const fetchBatch=async(offset:number,limit:number):Promise<Row[]>=>{
+      const {sql,values}=keyListQuery(req,{...filters,page:1},['keys:export'],
+        ids.length?{limit,offset,ids}:{limit,offset});
+      exportQueried=true;
+      const result=await query(sql,values);
+      exportTotal=result.rows[0]?.total_count??result.rows.length;
+      return result.rows as Row[];
+    };
+    const writeChunk=(chunk:string)=>new Promise<void>((resolve,reject)=>{
+      if(res.destroyed||exportAborted){exportAborted=true;return resolve();}
+      if(res.write(chunk))return resolve();
+      let settled=false;
+      const cleanup=()=>{res.off('drain',onDrain);res.off('close',onClose);res.off('error',onError);};
+      const onDrain=()=>{if(settled)return;settled=true;cleanup();resolve();};
+      const onClose=()=>{if(settled)return;settled=true;cleanup();if(req.aborted||!req.complete||!res.writableFinished)exportAborted=true;resolve();};
+      const onError=(error:Error)=>{if(settled)return;settled=true;cleanup();reject(error);};
+      res.once('drain',onDrain);res.once('close',onClose);res.once('error',onError);
+    });
+    const firstBatch=await fetchBatch(0,Math.min(exportBatchSize,cap));
+    exportTruncated=exportTotal>cap;
+    const planned=Math.min(cap,exportTotal);
     res.set('Content-Disposition','attachment; filename="schluessel.csv"');
-    res.set('X-Key-Export-Count',String(rows.length));
-    res.set('X-Key-Export-Total',String(total));
-    res.set('X-Key-Export-Truncated',String(truncated));
-    res.status(200).type('text/csv; charset=utf-8').send(`\ufeff${csv}`);
-  }catch(error){if(error instanceof z.ZodError)return badRequest(res);next(error);}
+    res.set('X-Key-Export-Count',String(planned));
+    res.set('X-Key-Export-Total',String(exportTotal));
+    res.set('X-Key-Export-Truncated',String(exportTruncated));
+    res.status(200).type('text/csv; charset=utf-8');
+    const notice=exportTruncated?csvCell(`# Hinweis: Export auf ${planned} von ${exportTotal} Treffern begrenzt. Für den vollständigen Export full=true verwenden.`):'';
+    const headerLines=[...(notice?[notice]:[]),columns.map(([label])=>csvCell(label)).join(';')].join('\r\n');
+    await writeChunk(`\ufeff${headerLines}\r\n`);
+    let batch=firstBatch;
+    for(let offset=0;offset<cap&&!exportAborted;offset+=exportBatchSize){
+      if(offset>0)batch=await fetchBatch(offset,Math.min(exportBatchSize,cap-offset));
+      if(!batch.length)break;
+      // One bounded batch at a time: no full CSV string or complete row array in memory.
+      await writeChunk(`${batch.map(row=>columns.map(([,get])=>csvCell(get(row))).join(';')).join('\r\n')}\r\n`);
+      exportCount+=batch.length;
+      if(offset+batch.length>=exportTotal)break;
+      if(batch.length<Math.min(exportBatchSize,cap-offset))break;
+    }
+    await recordAudit(req.user!.tenantId,req.user!.id,'keys.exported','key',undefined,
+      {count:exportCount,total:exportTotal,selected:ids.length>0,truncated:exportTruncated,full:filters.full,aborted:exportAborted});
+    detachClientClose();
+    if(!res.destroyed)res.end();
+  }catch(error){
+    detachClientClose();
+    if(error instanceof z.ZodError)return badRequest(res);
+    if(exportQueried){
+      try{await recordAudit(req.user!.tenantId,req.user!.id,'keys.exported','key',undefined,
+        {count:exportCount,total:exportTotal,selected:false,truncated:exportTruncated,full:false,error:true});}catch{}
+    }
+    // Headers may already be on the wire: close the response cleanly instead of
+    // throwing after a partial stream.
+    if(res.headersSent||exportAborted){if(!res.destroyed)res.end();return;}
+    next(error);
+  }
 });
 
 const createBody=z.object({

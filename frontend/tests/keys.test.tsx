@@ -65,11 +65,17 @@ const defaultApi=async(path:string)=>{
     const site=params.get('site_id');
     const bundle=params.get('bundle_id');
     const excluded=params.get('exclude_bundle_id');
-    const limit=Number(params.get('limit')??500);
-    return rows.filter(key=>(!q||`${key.key_code} ${key.label}`.toLowerCase().includes(q))
+    const status=params.get('status');
+    const cursor=Number(params.get('cursor')??0);
+    const pageSize=Number(params.get('pageSize')??100);
+    const filtered=rows.filter(key=>(!q||`${key.key_code} ${key.label}`.toLowerCase().includes(q))
       &&(!site||key.site_id===site)
       &&(!bundle||key.bundle_id===bundle)
-      &&(!excluded||key.bundle_id!==excluded)).slice(0,limit);
+      &&(!excluded||key.bundle_id!==excluded)
+      &&(!status||key.status===status));
+    const items=filtered.slice(cursor,cursor+pageSize);
+    const next=cursor+items.length<filtered.length?String(cursor+items.length):null;
+    return {items,total:filtered.length,next_cursor:next};
   }
   if(path==='/sites')return sites;
   if(path==='/employees')return employees;
@@ -339,22 +345,41 @@ describe('Schlüssel-Cockpit',()=>{
     expect(Array.isArray(body.results)).toBe(true);
   });
 
-  it('loads more than 100 keys through the server-side bundle picker',async()=>{
-    const many=Array.from({length:150},(_,index)=>({...rows[0],id:`00000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,key_code:`K-${1500+index}`,label:`Schlüssel ${index+1}`,bundle_id:null}));
+  it('loads further picker pages and keeps the selected key when filters change',async()=>{
+    const many=Array.from({length:220},(_,index)=>({...rows[0],id:`00000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,key_code:`K-${1500+index}`,label:`Schlüssel ${index+1}`,bundle_id:null}));
+    const pickerApi=async(path:string)=>{
+      const params=new URLSearchParams(path.split('?')[1]??'');
+      const cursor=Number(params.get('cursor')??0);
+      const pageSize=Number(params.get('pageSize')??100);
+      const q=(params.get('q')??'').toLowerCase();
+      const filtered=many.filter(key=>!q||`${key.key_code} ${key.label}`.toLowerCase().includes(q));
+      const items=filtered.slice(cursor,cursor+pageSize);
+      const next=cursor+items.length<filtered.length?String(cursor+items.length):null;
+      return {items,total:filtered.length,next_cursor:next};
+    };
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/keys/dashboard')return dashboard;
       if(path==='/keys/action-list')return actionList;
-      if(path.startsWith('/keys/picker?'))return many;
+      if(path.startsWith('/keys/picker?'))return pickerApi(path);
       return defaultApi(path);
     });
     renderKeys();
     await screen.findByRole('heading',{name:'Nachschicht',level:3});
     fireEvent.click(screen.getByRole('button',{name:'Schlüssel anzeigen'}));
-    const select=await screen.findByLabelText('Schlüssel für Bund');
-    await waitFor(()=>expect(within(select).getAllByRole('option')).toHaveLength(151));
-    fireEvent.change(within(select).getByRole('option',{name:/K-1649/}).closest('select')!,{target:{value:many[149].id}});
-    expect((select as HTMLSelectElement).value).toBe(many[149].id);
-    expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('/keys/picker?limit=500'));
+    const card=()=>screen.getByRole('heading',{name:'Nachschicht',level:3}).closest('article')!;
+    const select=await within(card()).findByLabelText('Schlüssel für Bund');
+    await waitFor(()=>expect(within(select).getAllByRole('option')).toHaveLength(101));
+    expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('/keys/picker?pageSize=100&cursor=0'));
+    fireEvent.click(within(card()).getByRole('button',{name:/Weitere Schlüssel laden/}));
+    await waitFor(()=>expect(within(select).getAllByRole('option')).toHaveLength(201));
+    fireEvent.click(within(card()).getByRole('button',{name:/Weitere Schlüssel laden/}));
+    await waitFor(()=>expect(within(select).getAllByRole('option')).toHaveLength(221));
+    const selected=many[219];
+    fireEvent.change(select,{target:{value:selected.id}});
+    expect((select as HTMLSelectElement).value).toBe(selected.id);
+    fireEvent.change(within(card()).getByLabelText('Schlüssel im Bund suchen'),{target:{value:'kein-treffer'}});
+    await waitFor(()=>expect((select as HTMLSelectElement).value).toBe(selected.id));
+    expect(within(select).getByRole('option',{name:/Schlüssel 220/})).toBeTruthy();
   });
 
   it('manages bundles: create, add a key, issue and return only checked keys',async()=>{
