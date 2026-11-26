@@ -106,7 +106,7 @@ export function nfcPayloadFromForm(form:NfcForm):Record<string,unknown>{
   return payload;
 }
 
-export function validateNfcForm(form:NfcForm):string{
+export function validateNfcForm(form:NfcForm,validateAssignment=true):string{
   if(!form.identifier.trim())return 'Bitte eine NFC-Kennung angeben.';
   if(form.identifier.trim().length>200)return 'Die NFC-Kennung ist zu lang.';
   if(!['tag','reader'].includes(form.device_type))return 'Bitte einen gültigen Gerätetyp auswählen.';
@@ -115,12 +115,12 @@ export function validateNfcForm(form:NfcForm):string{
   if(form.serial_number.length>200)return 'Die Seriennummer ist zu lang (maximal 200 Zeichen).';
   if(form.description.length>2000)return 'Die Beschreibung ist zu lang (maximal 2000 Zeichen).';
   if(form.notes.length>2000)return 'Die Notizen sind zu lang (maximal 2000 Zeichen).';
-  if(form.assignment_kind==='site'&&!form.site_id)return 'Bitte ein Objekt auswählen.';
-  if(form.assignment_kind==='control_point'){
+  if(validateAssignment&&form.assignment_kind==='site'&&!form.site_id)return 'Bitte ein Objekt auswählen.';
+  if(validateAssignment&&form.assignment_kind==='control_point'){
     if(form.device_type!=='tag')return 'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden.';
     if(!form.control_point_id)return 'Bitte einen Kontrollpunkt auswählen.';
   }
-  if(form.assignment_kind==='employee'&&!form.employee_id)return 'Bitte einen Mitarbeiter auswählen.';
+  if(validateAssignment&&form.assignment_kind==='employee'&&!form.employee_id)return 'Bitte einen Mitarbeiter auswählen.';
   return '';
 }
 
@@ -144,6 +144,33 @@ export function nfcTypeLabel(type:string):string{
 
 export function nfcStatusText(device:NfcDevice):string{
   return `${nfcStatusLabel(device.status)}${device.archived_at?' · Archiviert':''}`;
+}
+
+// Dieselbe fachliche Logik wie in den Backend-Workflows: nur aktive, nicht
+// archivierte und nicht ersetzte Geräte dürfen regulär zugeordnet werden.
+export function nfcIsAssignable(device:{status:string;archived_at?:string|null;replaced_at?:string|null}):boolean{
+  return device.status==='active'&&!device.archived_at&&!device.replaced_at;
+}
+
+export function nfcCanReplace(device:{status:string;archived_at?:string|null;replaced_at?:string|null}):boolean{
+  return ['lost','blocked'].includes(device.status)&&!device.archived_at&&!device.replaced_at;
+}
+
+export function nfcCanRecover(device:{status:string;archived_at?:string|null;replaced_at?:string|null}):boolean{
+  return !device.replaced_at&&device.status!=='replaced'&&(device.status==='lost'||Boolean(device.archived_at));
+}
+
+export function nfcCanBlock(device:{status:string;archived_at?:string|null;replaced_at?:string|null}):boolean{
+  return device.status==='active'&&!device.archived_at&&!device.replaced_at;
+}
+
+export function nfcCanReactivate(device:{status:string;archived_at?:string|null;replaced_at?:string|null}):boolean{
+  return device.status==='blocked'&&!device.archived_at&&!device.replaced_at;
+}
+
+export function nfcMasterDataPayloadFromForm(form:NfcForm):Record<string,unknown>{
+  const {employee_id:_employee,site_id:_site,control_point_id:_point,...payload}=nfcPayloadFromForm(form);
+  return payload;
 }
 
 /**
@@ -244,8 +271,8 @@ export function NfcAssignmentFields({value,onChange,options}:{
   </div>;
 }
 
-export function NfcFormFields({value,onChange,options}:{
-  value:NfcForm;onChange:(next:NfcForm)=>void;options:NfcOptions;
+export function NfcFormFields({value,onChange,options,showAssignment=true}:{
+  value:NfcForm;onChange:(next:NfcForm)=>void;options:NfcOptions;showAssignment?:boolean;
 }){
   return <>
     <div className="object-form-grid">
@@ -277,7 +304,7 @@ export function NfcFormFields({value,onChange,options}:{
           onChange={event=>onChange({...value,description:event.target.value})}/>
       </label>
     </div>
-    <NfcAssignmentFields value={value} onChange={onChange} options={options}/>
+    {showAssignment&&<NfcAssignmentFields value={value} onChange={onChange} options={options}/>}
     <label title="Interne Hinweise zum Gerät">Interne Notizen
       <textarea rows={3} maxLength={2000} value={value.notes}
         onChange={event=>onChange({...value,notes:event.target.value})}/>

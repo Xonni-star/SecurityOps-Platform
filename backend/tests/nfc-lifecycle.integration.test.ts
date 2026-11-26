@@ -193,6 +193,8 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     expect((await request(app!).get(`/api/v1/nfc-devices/${id}/file`).set(headersB)).status).toBe(404);
     expect((await request(app!).get(`/api/v1/nfc-devices/${id}/scan-history`).set(headersB)).status).toBe(404);
     expect((await request(app!).post(`/api/v1/nfc-devices/${id}/block`).set(headersB).send({reason:'Fremd'})).status).toBe(404);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/assign`).set(headersB).send({employee_id:employeeA})).status).toBe(404);
+    expect((await request(app!).patch(`/api/v1/nfc-devices/${id}`).set(headersB).send({employee_id:null})).status).toBe(404);
     const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[id]);
     expect(state.rows[0].status).toBe('active');
   });
@@ -209,6 +211,12 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
       expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/block`).set(headersC).send({reason:'Test'})).status).toBe(403);
       expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/replace`).set(headersC)
         .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Test',copy_assignment:false})).status).toBe(403);
+      expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/assign`).set(headersC)
+        .send({employee_id:employeeA})).status).toBe(403);
+      expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/archive`).set(headersC)
+        .send({reason:'Test'})).status).toBe(403);
+      expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/recover`).set(headersC)
+        .send({found_at:'2026-11-27',identifier_confirmation:device.body.identifier,assignment_confirmed:true,reason:'Test'})).status).toBe(403);
       const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[device.body.id]);
       expect(state.rows[0].status).toBe('active');
     }finally{
@@ -228,4 +236,74 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[device.body.id]);
     expect(state.rows[0].status).toBe('active');
   });
+
+  it('rejects assignments and indirect assignment changes for every non-active state',async()=>{
+    const blocked=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${blocked.body.id}/block`).set(headersA).send({reason:'Sperren'})).status).toBe(200);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${blocked.body.id}/assign`).set(headersA)
+      .send({employee_id:employeeA})).status).toBe(409);
+    expect((await request(app!).patch(`/api/v1/nfc-devices/${blocked.body.id}`).set(headersA)
+      .send({employee_id:employeeA,reason:'Umgehung'})).status).toBe(409);
+
+    const lost=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${lost.body.id}/report-lost`).set(headersA)
+      .send({lost_at:'2026-11-26',reason:'Verlust'})).status).toBe(200);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${lost.body.id}/assign`).set(headersA)
+      .send({employee_id:employeeA})).status).toBe(409);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${lost.body.id}/block`).set(headersA)
+      .send({reason:'Umgehung des Wiederauffindens'})).status).toBe(409);
+    expect((await request(app!).patch(`/api/v1/nfc-devices/${lost.body.id}`).set(headersA)
+      .send({employee_id:employeeA,reason:'Umgehung'})).status).toBe(409);
+
+    const old=await register(uid());
+    const replaced=await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/replace`).set(headersA)
+      .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:false});
+    expect(replaced.status).toBe(201);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/assign`).set(headersA)
+      .send({employee_id:employeeA})).status).toBe(409);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/replace`).set(headersA)
+      .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Nochmal',copy_assignment:false})).status).toBe(409);
+    expect((await request(app!).patch(`/api/v1/nfc-devices/${old.body.id}`).set(headersA)
+      .send({employee_id:employeeA,reason:'Umgehung'})).status).toBe(409);
+
+    const archived=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${archived.body.id}/archive`).set(headersA)
+      .send({reason:'Außer Betrieb'})).status).toBe(200);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${archived.body.id}/assign`).set(headersA)
+      .send({employee_id:employeeA})).status).toBe(409);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${archived.body.id}/replace`).set(headersA)
+      .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:false})).status).toBe(409);
+  },60_000);
+
+  it('keeps historical assignments and scans readable after a replacement',async()=>{
+    const point=await pool.query(`INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence)
+      VALUES($1,$2,'Austauschhistorie',$3,$4) RETURNING id`,[tenantA,siteA,uid(),Math.floor(Math.random()*900000)+100000]);
+    const old=await register(uid(),{employee_id:employeeA});
+    const id=old.body.id as string;
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/assign`).set(headersA)
+      .send({control_point_id:point.rows[0].id,reason:'Eingang'})).status).toBe(200);
+    await pool.query(`INSERT INTO patrol_scans(tenant_id,route_id,control_point_id,employee_id,scanned_at,nfc_device_id)
+      SELECT $1,$2,$3,$4,now() - (g || ' minutes')::interval,$5 FROM generate_series(1,3) g`,
+      [tenantA,routeA,point.rows[0].id,employeeA,id]);
+    const replaced=await request(app!).post(`/api/v1/nfc-devices/${id}/replace`).set(headersA)
+      .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:true});
+    expect(replaced.status).toBe(201);
+    const newId=replaced.body.device.id as string;
+    const file=await request(app!).get(`/api/v1/nfc-devices/${id}/file`).set(headersA);
+    expect(file.status).toBe(200);
+    expect(file.body.device.status).toBe('replaced');
+    expect(file.body.device.control_point_id).toBeNull();
+    expect(file.body.replacements).toEqual(expect.arrayContaining([expect.objectContaining({old_device_id:id,new_device_id:newId})]));
+    const history=await pool.query('SELECT assignment FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2 ORDER BY assigned_at DESC',[tenantA,id]);
+    expect(history.rows[0].assignment).toEqual({employee_id:null,site_id:null,control_point_id:null});
+    expect(JSON.stringify(history.rows[1].assignment)).toContain(point.rows[0].id);
+    const oldScans=await request(app!).get(`/api/v1/nfc-devices/${id}/scan-history`).set(headersA);
+    expect(oldScans.body.total).toBe(3);
+    const newScans=await request(app!).get(`/api/v1/nfc-devices/${newId}/scan-history`).set(headersA);
+    expect(newScans.status).toBe(200);
+    expect(newScans.body.total).toBe(0);
+    const audit=await pool.query("SELECT details FROM audit_events WHERE tenant_id=$1 AND event_type='nfc_device.replaced' AND entity_id=$2",[tenantA,id]);
+    expect(audit.rowCount).toBeGreaterThan(0);
+    expect(audit.rows[0].details).toEqual(expect.objectContaining({old_device_id:id,new_device_id:newId,copy_assignment:true}));
+  },60_000);
 });

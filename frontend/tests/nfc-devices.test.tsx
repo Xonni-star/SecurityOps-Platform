@@ -327,4 +327,39 @@ describe('NFC-Geräteakte',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Weiter →'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('page=2')));
   });
+
+  it('blendet die Ersatzaktion bei ersetzten und archivierten Geräten aus',async()=>{
+    mockApi({...fileData,device:{...device,status:'replaced',replaced_at:'2026-11-26T12:00:00Z'}});
+    renderFile();
+    expect((await screen.findAllByText(/Ersetzt/)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button',{name:'Ersatzgerät festlegen'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Wieder in Betrieb nehmen'})).toBeNull();
+    cleanup();
+
+    mockApi({...fileData,device:{...device,status:'blocked',archived_at:'2026-11-26T12:00:00Z'}});
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    expect(screen.queryByRole('button',{name:'Ersatzgerät festlegen'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Reaktivieren'})).toBeNull();
+  });
+
+  it('verhindert Zuordnungsänderungen an gesperrten Geräten auch über die Stammdaten',async()=>{
+    mockApi({...fileData,device:{...device,status:'blocked',blocked_at:'2026-11-26T12:00:00Z'}});
+    renderFile();
+    fireEvent.click(await screen.findByRole('tab',{name:'Zuordnung'}));
+    expect(screen.getByText(/Nur aktive, nicht archivierte und nicht ersetzte Geräte/)).toBeTruthy();
+    expect(screen.queryByRole('button',{name:'Zuordnung speichern'})).toBeNull();
+
+    fireEvent.click(screen.getByRole('button',{name:'Stammdaten bearbeiten'}));
+    const dialog=await screen.findByRole('dialog');
+    fireEvent.click(dialog.querySelector('button[type="submit"]') as HTMLButtonElement);
+    await waitFor(()=>{
+      const call=apiMock.mock.calls.find(([path,init])=>path===`/nfc-devices/${deviceId}`&&init?.method==='PATCH');
+      expect(call).toBeTruthy();
+      const body=JSON.parse(String(call?.[1]?.body));
+      expect(body).not.toHaveProperty('employee_id');
+      expect(body).not.toHaveProperty('site_id');
+      expect(body).not.toHaveProperty('control_point_id');
+    });
+  });
 });

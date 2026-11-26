@@ -74,11 +74,16 @@ for(const viewport of viewports){
     await page.setViewportSize(viewport);
     const errors=watchErrors(page);
     await login(page);
+    const headers=await csrfHeaders(page.request);
+    const created=await page.request.post(`${apiBase}/api/v1/nfc-devices`,{headers,data:{
+      identifier:`e2e-viewport-${suffix}-${viewport.width}`,device_type:'tag',manufacturer:'E2E Acme',
+    }});
+    expect(created.status()).toBe(201);
+    const viewportDevice=await created.json() as {id:string;identifier:string};
+    createdDeviceIds.push(viewportDevice.id);
 
     const inventory=await page.request.get(`${apiBase}/api/v1/nfc-devices/inventory?pageSize=1`);
     expect(inventory.status()).toBe(200);
-    const row=(await inventory.json()).rows?.[0] as {id:string;identifier:string}|undefined;
-    expect(row?.id).toBeTruthy();
 
     await page.goto('/nfc-devices');
     await expect(page.getByRole('heading',{name:'NFC-Geräteverwaltung'})).toBeVisible();
@@ -92,11 +97,11 @@ for(const viewport of viewports){
     await page.getByRole('button',{name:'Filter zurücksetzen'}).click();
     await expect(page.getByLabel('Archivierung')).toHaveValue('');
 
-    await page.goto(`/nfc-devices/${row!.id}`);
-    await expect(page.getByRole('heading',{name:row!.identifier})).toBeVisible();
+    await page.goto(`/nfc-devices/${viewportDevice.id}`);
+    await expect(page.getByRole('heading',{name:viewportDevice.identifier})).toBeVisible();
     await expect(page.getByRole('tab',{name:'Scan-Historie'})).toBeVisible();
     await page.reload();
-    await expect(page.getByRole('heading',{name:row!.identifier})).toBeVisible();
+    await expect(page.getByRole('heading',{name:viewportDevice.identifier})).toBeVisible();
 
     await page.getByRole('tab',{name:'Scan-Historie'}).click();
     await expect(page.getByRole('columnheader',{name:'NFC-Kennung'})).toBeVisible();
@@ -213,8 +218,14 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   expect(replacementId).toBeTruthy();
   createdDeviceIds.push(replacementId!);
 
-  // 11. Ersetztes Gerät darf nicht reaktiviert werden
+  // 11. Ersetztes Gerät bleibt dauerhaft außer Betrieb
+  await expect(page.getByRole('button',{name:'Ersatzgerät festlegen'})).toHaveCount(0);
   expect((await api(`/nfc-devices/${deviceId}/reactivate`,{reason:'E2E unzulässig'})).status()).toBe(409);
+  expect((await api(`/nfc-devices/${deviceId}/assign`,{employee_id:employeeId,reason:'E2E unzulässig'})).status()).toBe(409);
+  expect((await api(`/nfc-devices/${deviceId}`,{employee_id:employeeId,reason:'E2E Umgehung'},'PATCH')).status()).toBe(409);
+  expect((await api(`/nfc-devices/${deviceId}/replace`,{
+    identifier:`e2e-nfc-life-again-${suffix}`,device_type:'tag',manufacturer:'E2E Acme',reason:'E2E unzulässig',copy_assignment:false,
+  })).status()).toBe(409);
 
   // 12. Archivierung des Ersatzgeräts erhält die Historie
   await page.goto(`/nfc-devices/${replacementId}`);
@@ -222,6 +233,17 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   await page.getByRole('dialog').getByLabel(/Begründung/).fill('E2E Archivierung');
   await page.getByRole('dialog').getByRole('button',{name:'Archivieren'}).click();
   await expect(page.getByText('NFC-Gerät wurde archiviert.')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Ersatzgerät festlegen'})).toHaveCount(0);
+  expect((await api(`/nfc-devices/${replacementId}/assign`,{employee_id:employeeId,reason:'E2E unzulässig'})).status()).toBe(409);
+  expect((await api(`/nfc-devices/${replacementId}/replace`,{
+    identifier:`e2e-nfc-life-archived-${suffix}`,device_type:'tag',manufacturer:'E2E Acme',reason:'E2E unzulässig',copy_assignment:false,
+  })).status()).toBe(409);
+  const oldFile=await session.context.get(`${apiBase}/api/v1/nfc-devices/${deviceId}/file`);
+  expect(oldFile.status()).toBe(200);
+  const oldData=await oldFile.json() as {device:{status:string};assignment_history:unknown[];replacements:unknown[]};
+  expect(oldData.device.status).toBe('replaced');
+  expect(oldData.assignment_history.length).toBeGreaterThan(0);
+  expect(oldData.replacements.length).toBeGreaterThan(0);
 
   // 13. Rollenprüfung: Viewer ohne Mutation, Operator mit Zugriff
   const viewer=await loginApi(page.request,'e2e-viewer@example.invalid',password!);
