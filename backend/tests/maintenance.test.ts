@@ -58,6 +58,61 @@ describe('maintenance workflow routes',()=>{
     expect(audit?.[1]?.[2]).toBe('maintenance_order.created');
   });
 
+  it('replays a creation with an Idempotency-Key without duplicating the order or audit event',async()=>{
+    const key='00000000-0000-4000-8000-0000000000d1';
+    const payload={device_id:device,description:'Prüfung der Alarmanlage',priority_code:'high',due_on:'2026-12-01'};
+    let storedHash:string|null=null;
+    let receiptStored=false;
+    queryMock.mockImplementation(async(sql:string,values:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT id,site_id FROM devices'))return result([{id:device,site_id:site}]);
+      if(sql.includes('INSERT INTO sync_receipts')){
+        if(receiptStored)return result([],0);
+        receiptStored=true;storedHash=String(values[4]);
+        return result([{id:'receipt'}],1);
+      }
+      if(sql.includes('SELECT action,payload_hash,status,response FROM sync_receipts')){
+        if(!storedHash)return result([],0);
+        return result([{action:'maintenance.order.create',payload_hash:storedHash,status:'completed',response:order}],1);
+      }
+      if(sql.includes('nextval'))return result([{next:'42'}]);
+      if(sql.includes('INSERT INTO maintenance_orders'))return result([order],1);
+      if(sql.includes('INSERT INTO audit_events'))return result([],1);
+      return result([]);
+    });
+    const first=await request(app).post(`/api/v1/sites/${site}/maintenance-orders`)
+      .set('Cookie',csrf).set('x-csrf-token','csrf-value').set('Idempotency-Key',key).send(payload);
+    const replay=await request(app).post(`/api/v1/sites/${site}/maintenance-orders`)
+      .set('Cookie',csrf).set('x-csrf-token','csrf-value').set('Idempotency-Key',key).send(payload);
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual(expect.objectContaining({id:orderId,order_number:order.order_number}));
+    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('INSERT INTO maintenance_orders'))).toHaveLength(1);
+    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('INSERT INTO audit_events'))).toHaveLength(1);
+  });
+
+  it('rejects malformed idempotency keys and payload hash mismatches',async()=>{
+    const key='00000000-0000-4000-8000-0000000000d2';
+    const invalid=await request(app).post(`/api/v1/sites/${site}/maintenance-orders`)
+      .set('Cookie',csrf).set('x-csrf-token','csrf-value').set('Idempotency-Key','not-a-uuid')
+      .send({device_id:device,description:'Prüfung der Alarmanlage'});
+    expect(invalid.status).toBe(400);
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT id,site_id FROM devices'))return result([{id:device,site_id:site}]);
+      if(sql.includes('INSERT INTO sync_receipts'))return result([],0);
+      if(sql.includes('SELECT action,payload_hash,status,response FROM sync_receipts'))return result([{
+        action:'maintenance.order.create',payload_hash:'different-hash',status:'completed',response:order,
+      }],1);
+      return result([]);
+    });
+    const mismatch=await request(app).post(`/api/v1/sites/${site}/maintenance-orders`)
+      .set('Cookie',csrf).set('x-csrf-token','csrf-value').set('Idempotency-Key',key)
+      .send({device_id:device,description:'Prüfung der Alarmanlage'});
+    expect(mismatch.status).toBe(409);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO maintenance_orders'))).toBe(false);
+  });
+
   it('rejects a device that does not belong to the addressed site',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);

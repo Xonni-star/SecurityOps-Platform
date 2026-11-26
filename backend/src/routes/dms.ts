@@ -237,7 +237,7 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
     const content=decodeContent(body.content_base64);validateDmsUpload(content,body.content_type,env.DMS_MAX_BYTES,allowedTypes);
     const versionId=randomUUID();const objectKey=`${req.user!.tenantId}/${document.id}/${versionId}`;await dmsStorage.put(objectKey,content,body.content_type);
     try{
-      const row=await withTransaction(async tx=>{
+      await withTransaction(async tx=>{
         await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`${req.user!.tenantId}:${document.id}`]);
         const current=(await tx.query<{current:number|null}>('SELECT MAX(version_no) AS current FROM dms_versions WHERE tenant_id=$1 AND document_id=$2',[req.user!.tenantId,document.id])).rows[0]?.current;
         return (await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)

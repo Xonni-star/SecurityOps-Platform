@@ -1,12 +1,12 @@
 import {ChangeEvent,FormEvent,useEffect,useRef,useState} from 'react';
-import {Link,useNavigate,useParams} from 'react-router-dom';
+import {Link,useNavigate,useParams,useSearchParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {uuid} from '../lib/uuid';
 
 type Site={id:string;name:string;site_number?:string|null;status:string;security_classification:string;address?:string|null;alias?:string|null;site_type?:string|null;description?:string|null;street?:string|null;house_number?:string|null;postal_code?:string|null;city?:string|null;contact_person?:string|null;object_manager_employee_id?:string|null;operations_manager_employee_id?:string|null;required_staff_count?:number;updated_at?:string};
 type SiteOverview=Site&{customer_names:string[]|null;object_manager_name:string|null;operations_manager_name:string|null;assigned_employee_count:number|null;active_contract_count:number|null;expiring_contract_count:number|null;contract_statuses:string[]|null;open_hazard_count:number;critical_hazard_count:number;overdue_measure_count:number;open_task_count:number|null;overdue_task_count:number|null;open_shift_count:number|null;undercovered_shift_count:number|null;understaffed:boolean;available_document_count:number|null;valid_document_count:number|null;unapproved_document_count:number|null;expired_document_count:number|null;expiring_7d_document_count:number|null;expiring_30d_document_count:number|null;review_due_document_count:number|null;missing_requirement_count:number|null;open_maintenance_count:number|null;overdue_maintenance_count:number|null;last_activity:string|null};
 type OverviewMetrics={total_sites:number;active_sites:number;preparation_sites:number;restricted_sites:number;critical_sites:number;sites_with_critical_hazards:number;sites_with_open_tasks:number;sites_with_understaffing:number;open_hazards:number|null;overdue_measures:number|null;open_tasks:number|null;overdue_tasks:number|null;open_shifts:number|null;undercovered_shifts:number|null;expiring_contracts:number|null;sites_without_available_documents:number|null;valid_documents:number|null;expired_documents:number|null;documents_expiring_7d:number|null;documents_expiring_30d:number|null;documents_review_due:number|null;unapproved_documents:number|null;missing_required_documents:number|null;open_maintenance:number|null;overdue_maintenance:number|null};
-type PriorityAction={id:string;site_id?:string|null;site_name?:string|null;entity_id?:string|null;employee_id?:string|null;severity:'critical'|'high'|'medium';category:string;title:string;detail:string;due_on:string|null;tab:string;permission:string;target:string};
+type PriorityAction={id:string;site_id?:string|null;site_name?:string|null;entity_id?:string|null;employee_id?:string|null;severity:'critical'|'high'|'medium';priority?:'A'|'B'|'C';category:string;title:string;detail:string;due_on:string|null;tab:string;permission:string;target:string};
 type SiteOverviewResponse={sites:SiteOverview[];metrics:OverviewMetrics;priorityActions?:PriorityAction[]};
 type SiteColumn='site_number'|'name'|'site_type'|'customer_names'|'address'|'object_manager_name'|'operations_manager_name'|'security_classification'|'status'|'assigned_employee_count'|'active_contract_count'|'open_hazard_count'|'open_task_count'|'contract_statuses'|'understaffed'|'last_activity';
 type Customer={id:string;name:string;customer_number?:string|null};
@@ -39,7 +39,7 @@ type PersonnelChange={occurred_at:string;event_type:string;entity_id:string|null
 type EligibilityLink={type:'employee'|'qualification'|'instruction'|'absence';id:string;label:string};
 type EligibilityReason={code:string;message:string;link:EligibilityLink|null};
 type ShiftEligibility={shift_id:string;site_id:string;required_qualification_codes:string[];employees:{employee_id:string;employee_name:string;status:'eligible'|'restricted'|'ineligible';reasons:EligibilityReason[];matched_qualification_codes:string[];missing_qualification_codes:string[]}[]};
-type ChronicleLink={target:string;label:string;permission:string;entity_id?:string|null;entity_type?:string|null};
+type ChronicleLink={target:string;label:string;permission:string;entity_id?:string|null;entity_type?:string|null;record_available?:boolean;verification_type?:string|null;fallback_target?:string|null;evidence_id?:string|null;evidence_fallback_target?:string|null};
 type ChronicleEvent={id:string;site_id:string;occurred_at:string;event_kind:string;entity_type:string;entity_id:string;category:string;summary:string;details:Record<string,unknown>;actor_user_id:string|null;actor_email:string|null;actor_employee_name:string|null;source_table:string;link?:ChronicleLink|null};
 type ObjectDevice={id:string;name:string;status:string;site_id:string|null;last_seen_at:string|null;metadata:Record<string,unknown>;asset_number:string|null;category:string|null;manufacturer:string|null;model:string|null;serial_number:string|null;location_id:string|null;responsible_employee_id:string|null;operational_status:string;installed_on:string|null;commissioned_on:string|null;last_inspection_on:string|null;next_inspection_on:string|null;maintenance_interval_days:number|null;next_maintenance_on:string|null;last_maintenance_on:string|null;created_at:string;updated_at:string};
 type ObjectLocation={id:string;parent_id:string|null;name:string;code:string|null;location_type:string;security_level:string;description:string|null;hazard_notes:string|null;access_rules:string|null;responsible_employee_id:string|null;responsible_employee_name:string|null;sort_order:number};
@@ -81,11 +81,9 @@ const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',act
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
 const documentStatusLabels:Record<DocumentStatus,string>={gueltig:'Gültig',lauf_bald_ab:'Läuft bald ab',bald_pruefpflichtig:'Bald prüfpflichtig',abgelaufen:'Abgelaufen',fehlend:'Fehlt',nicht_freigegeben:'Nicht freigegeben',pruefung_ausstehend:'Prüfung ausstehend',noch_nicht_gueltig:'Noch nicht gültig'};
 const reviewStateLabels:Record<'none'|'pending'|'due_soon'|'overdue',string>={none:'Keine Prüffrist',pending:'Prüfung ausstehend',due_soon:'Prüfung bald fällig',overdue:'Prüfung überfällig'};
-const approvalLabels:Record<string,string>={approved:'Freigegeben',pending_approval:'Freigabe ausstehend',draft:'Entwurf',rejected:'Abgelehnt',archived:'Archiviert'};
 const instructionStatusLabels:Record<string,string>={draft:'Entwurf',pending_approval:'Freigabe ausstehend',approved:'Freigegeben',returned_for_revision:'Zur Überarbeitung',archived:'Archiviert'};
 const hazardStatusLabels:Record<string,string>={open:'Offen',mitigated:'Gemindert',accepted:'Akzeptiert',closed:'Geschlossen'};
 const measureStatusLabels:Record<string,string>={open:'Offen',in_progress:'In Bearbeitung',completed:'Abgeschlossen',cancelled:'Abgebrochen'};
-const maintenanceTypeLabels:Record<string,string>={inspection:'Prüfung',preventive:'Vorbeugend',corrective:'Korrigierend',repair:'Reparatur',other:'Sonstige'};
 const priorityLabels:Record<string,string>={critical:'Kritisch',high:'Hoch',medium:'Mittel',low:'Niedrig'};
 const eligibilityLabels:Record<'eligible'|'restricted'|'ineligible',string>={eligible:'Einsatzfähig',restricted:'Eingeschränkt einsatzfähig',ineligible:'Nicht einsatzfähig'};
 const hazardCategories:Record<string,string>={burglary:'Einbruch',theft:'Diebstahl',vandalism:'Vandalismus',fire:'Brand',robbery:'Raub',unauthorized_access:'Unbefugter Zutritt',sabotage:'Sabotage',conflict:'Konflikt',technical:'Technisch',environmental:'Umwelt',other:'Sonstige'};
@@ -137,21 +135,76 @@ function qualificationEvidence(qualification:EmployeeQualification){
   if(qualification.evidence_document_title)return `Nachweis: ${qualification.evidence_document_title}`;
   return 'Nachweisstatus nicht verfügbar';
 }
+function priorityOf(action:PriorityAction):'A'|'B'|'C'{
+  return action.priority??(action.severity==='critical'?'A':action.severity==='high'?'B':'C');
+}
+const priorityGroups=[['A','Sofort handeln'],['B','Zeitnah bearbeiten'],['C','Objektinformationen']] as const;
+
 function PriorityActionList({actions,title,showSite=false}:{actions:PriorityAction[];title:string;showSite?:boolean}){
   const visible=actions.filter(action=>hasPermission(action.permission));
-  if(visible.length===0)return null;
   return <section className="object-priority-actions" aria-label={title}>
     <h3>{title}</h3>
-    <ol>{visible.map(action=><li key={action.id} className={`object-priority-${action.severity}`}>
-      <Link to={action.target}>{action.title}</Link>
-      <span className="object-action-meta">{action.category} · {priorityLabels[action.severity]??action.severity}{showSite&&action.site_name?` · ${action.site_name}`:''}{action.due_on?` · fällig ${formatDue(action.due_on)}`:''}</span>
-      <span className="object-action-detail">{action.detail}</span>
-    </li>)}</ol>
+    <div className="object-priority-levels">{priorityGroups.map(([level,label])=>{
+      const group=visible.filter(action=>priorityOf(action)===level);
+      return <div key={level} className={`object-priority-level object-priority-level-${level}`} data-priority={level}>
+        <h4>{level} – {label}</h4>
+        {group.length===0?<p className="object-priority-empty">Keine Einträge.</p>:<ol>{group.map(action=><li key={action.id} className={`object-priority-${action.severity}`}>
+          <Link to={action.target}>{action.title}</Link>
+          <span className="object-action-meta">{action.category} · {priorityLabels[action.severity]??action.severity}{showSite&&action.site_name?` · ${action.site_name}`:''}{action.due_on?` · fällig ${formatDue(action.due_on)}`:''}</span>
+          <span className="object-action-detail">{action.detail}</span>
+        </li>)}</ol>}
+      </div>;
+    })}</div>
+  </section>;
+}
+
+type FocusRecord={param:string;label:string;id:string;title:string;meta:string[];description?:string|null};
+const focusParams=['maintenance_order','device','document','requirement','location','hazard','measure','instruction','assignment','key','key_bundle','period','shift','shift_assignment','entry','alarm','incident','handover','task','employee'] as const;
+
+function findFocusRecord(context:Context,params:URLSearchParams,section:string):FocusRecord|undefined|null{
+  const specs:Array<{param:string;tab:string;label:string;find:(id:string)=>any;describe:(item:any,id:string)=>Omit<FocusRecord,'param'|'label'|'id'>}>=[
+    {param:'maintenance_order',tab:'technik',label:'Wartungsauftrag',find:id=>context.maintenanceOrders?.find(item=>item.id===id),describe:item=>({title:item.order_number??'Wartungsauftrag',meta:[item.status_label??item.status,item.device_name??'Kein Gerät',item.due_on?`fällig ${formatDue(item.due_on)}`:'Kein Fälligkeitsdatum',item.responsible_employee_name??'Keine verantwortliche Person'],description:item.description})},
+    {param:'device',tab:'technik',label:'Gerät',find:id=>context.devices?.find(item=>item.id===id),describe:item=>({title:item.name??'Gerät',meta:[item.asset_number??'Keine Inventarnummer',item.category??'Ohne Kategorie',item.operational_status??item.status,item.location_id??'Kein Bereich'],description:item.metadata?JSON.stringify(item.metadata):null})},
+    {param:'document',tab:'dokumente',label:'Dokument',find:id=>context.documents?.find(item=>item.id===id),describe:item=>({title:item.title??'Dokument',meta:[item.status_label??item.computed_status??item.document_status,item.approval_status,item.document_type??'Ohne Typ',item.valid_until?`gültig bis ${formatDue(item.valid_until)}`:'Ohne Ablaufdatum',`${item.versions?.length??0} Version(en)`],description:item.description})},
+    {param:'requirement',tab:'dokumente',label:'Pflichtdokument',find:id=>context.documentRequirements?.find(item=>item.id===id),describe:item=>({title:item.document_type??'Pflichtdokument',meta:[item.required?'Pflicht':'Optional',item.status_label??(item.missing?'Fehlt oder nicht gültig':'Erfüllt'),item.responsible_employee_name??'Keine verantwortliche Person']})},
+    {param:'location',tab:'struktur',label:'Bereich',find:id=>context.locations.find(item=>item.id===id),describe:item=>({title:item.name??'Bereich',meta:[item.code??'Ohne Code',item.location_type,item.security_level,item.responsible_employee_name??'Keine verantwortliche Person'],description:item.description})},
+    {param:'hazard',tab:'gefaehrdungen',label:'Gefährdung',find:id=>context.hazards.find(item=>item.id===id),describe:item=>({title:item.title??'Gefährdung',meta:[hazardCategories[item.category]??item.category,`Risikoscore ${item.risk_score}`,hazardStatusLabels[item.status]??item.status,item.location_name??'Kein Bereich',item.due_on?`fällig ${formatDue(item.due_on)}`:'Kein Fälligkeitsdatum'],description:item.description})},
+    {param:'measure',tab:'gefaehrdungen',label:'Maßnahme',find:id=>context.hazards.flatMap(hazard=>hazard.measures??[]).find(item=>item.id===id),describe:(item,_id)=>({title:item.title??'Maßnahme',meta:[measureStatusLabels[item.status as keyof typeof measureStatusLabels]??item.status,item.responsible_employee_name??'Keine verantwortliche Person',item.due_on?`fällig ${formatDue(item.due_on)}`:'Kein Fälligkeitsdatum'],description:item.description})},
+    {param:'instruction',tab:'anweisungen',label:'Dienstanweisung',find:id=>context.instructions.find(item=>item.id===id),describe:item=>({title:item.title??'Dienstanweisung',meta:[instructionStatusLabels[item.status]??item.status,`Version ${item.version}`,`${item.acknowledgement_count} Kenntnisnahmen`,item.valid_until?`gültig bis ${formatDue(item.valid_until)}`:'Ohne Ablaufdatum']})},
+    {param:'assignment',tab:'personal',label:'Personalzuordnung',find:id=>(context.staffing??[]).find(item=>item.id===id)??(context.assignmentHistory??[]).find(item=>item.id===id),describe:item=>({title:item.employee_name??'Mitarbeiter',meta:[item.role??'Ohne Funktion',item.assignment_type,item.starts_on?`ab ${formatDue(item.starts_on)}`:'Ohne Beginn',item.ends_on?`bis ${formatDue(item.ends_on)}`:'offen'],description:item.notes})},
+    {param:'employee',tab:'personal',label:'Mitarbeiterprofil',find:id=>(context.staffing??[]).find(item=>item.employee_id===id)??(context.assignmentHistory??[]).find(item=>item.employee_id===id),describe:(item,id)=>({title:item.employee_name??'Mitarbeiter',meta:[id,item.role??'Ohne Funktion',item.assignment_type]})},
+    {param:'key',tab:'schluessel',label:'Schlüssel',find:id=>context.keys?.items.find(item=>item.id===id),describe:item=>({title:item.label??item.key_code??'Schlüssel',meta:[item.key_code,item.key_type,item.status,item.holder_employee_id??'Kein Inhaber']})},
+    {param:'key_bundle',tab:'schluessel',label:'Schlüsselbund',find:id=>context.keyBundles?.find(item=>item.id===id),describe:item=>({title:item.name??'Schlüsselbund',meta:[item.status,`${item.item_count} Schlüssel`,`${item.issued_count} ausgegeben`]})},
+    {param:'period',tab:'dienstplanung',label:'Dienstplan',find:id=>context.shifts?.find(item=>item.period_id===id),describe:(item,id)=>({title:item.period_name??'Dienstplan',meta:[id,item.period_status,item.role_code,`${formatDue(item.starts_at)} – ${formatDue(item.ends_at)}`]})},
+    {param:'shift',tab:'dienstplanung',label:'Schicht',find:id=>context.shifts?.find(item=>item.id===id),describe:item=>({title:item.role_code??'Schicht',meta:[item.period_name,item.period_status,`${formatDue(item.starts_at)} – ${formatDue(item.ends_at)}`,`${item.assigned_count} zugewiesen`]})},
+    {param:'shift_assignment',tab:'dienstplanung',label:'Schichtzuweisung',find:id=>context.shifts?.flatMap(item=>item.assignments??[]).find(item=>item.id===id),describe:item=>({title:item.employee_name??'Schichtzuweisung',meta:[item.employee_id,item.id]})},
+    {param:'entry',tab:'journal',label:'Wachbucheintrag',find:id=>context.journal?.find(item=>item.id===id),describe:item=>({title:item.category_name??'Wachbucheintrag',meta:[item.priority_name??'Ohne Priorität',item.status,`Version ${item.revision_no}`,new Date(item.created_at).toLocaleString('de-DE')],description:item.content})},
+    {param:'alarm',tab:'vorfaelle',label:'Alarm',find:id=>context.alarms?.find(item=>item.id===id),describe:item=>({title:item.type??'Alarm',meta:[item.severity,item.status,item.priority_name??'Ohne Priorität',new Date(item.triggered_at).toLocaleString('de-DE')],description:item.description})},
+    {param:'incident',tab:'vorfaelle',label:'Vorfall',find:id=>context.incidents?.find(item=>item.id===id),describe:item=>({title:item.description??'Vorfall',meta:[item.status,item.priority_name??'Ohne Priorität',`${item.assignees?.length??0} zugewiesen`,item.employee_name??'Kein Erstatter']})},
+    {param:'handover',tab:'uebersicht',label:'Übergabe',find:id=>context.handovers?.find(item=>item.id===id),describe:item=>({title:item.title??'Übergabe',meta:[item.status,`${item.confirmation_count}/${item.participant_count} Bestätigungen`,new Date(item.created_at).toLocaleString('de-DE')]})},
+    {param:'task',tab:'aufgaben',label:'Aufgabe',find:id=>context.customerTasks?.find(item=>item.id===id),describe:item=>({title:item.title??'Aufgabe',meta:[item.status,item.customer_name??'Kein Kunde',item.due_at?`fällig ${formatDue(item.due_at)}`:'Kein Fälligkeitsdatum',item.assigned_employee_name??'Nicht zugewiesen'],description:item.description})},
+  ];
+  for(const spec of specs){
+    const id=params.get(spec.param);
+    if(!id)continue;
+    if(spec.tab!==section)return undefined;
+    const item=spec.find(id);
+    if(!item)return null;
+    return {param:spec.param,label:spec.label,id,...spec.describe(item,id)};
+  }
+  return undefined;
+}
+
+function ObjectRecordFocus({focus,onClose}:{focus:FocusRecord;onClose:()=>void}){
+  return <section className="object-record-focus" aria-label="Geöffneter Datensatz">
+    <div><span className="object-record-focus-label">{focus.label}</span><h3>{focus.title}</h3><p>{focus.meta.join(' · ')}</p>{focus.description&&<p className="object-record-focus-description">{focus.description}</p>}</div>
+    <button type="button" onClick={onClose}>Fokus schließen</button>
   </section>;
 }
 
 export function Sites(){
   const navigate=useNavigate();
+  const [searchParams,setSearchParams]=useSearchParams();
   const {siteId,section}=useParams<{siteId?:string;section?:string}>();
   const resolvedSection=sectionAliases[section??'']??section;
   const active=tabs.some(([key])=>key===resolvedSection)?resolvedSection:'uebersicht';
@@ -216,6 +269,7 @@ export function Sites(){
   const [maintenanceClientEntryId,setMaintenanceClientEntryId]=useState(uuid());
   const [maintenanceOptionsLoaded,setMaintenanceOptionsLoaded]=useState(false);
   const [orderFormOpen,setOrderFormOpen]=useState(false);
+  const [orderClientId,setOrderClientId]=useState(uuid());
   const [orderForm,setOrderForm]=useState({device_id:'',maintenance_type:'inspection',description:'',priority_code:'medium',due_on:'',responsible_employee_id:'',status:'planned'});
   const [completingOrderId,setCompletingOrderId]=useState<string|null>(null);
   const [completionForm,setCompletionForm]=useState({performed_work:'',result:'',remarks:''});
@@ -450,8 +504,8 @@ export function Sites(){
   async function createMaintenanceOrder(event:FormEvent){
     event.preventDefault();if(!selected||!orderForm.device_id||!orderForm.description.trim())return;
     try{
-      await api(`/sites/${selected.site.id}/maintenance-orders`,{method:'POST',body:JSON.stringify({device_id:orderForm.device_id,maintenance_type:orderForm.maintenance_type,description:orderForm.description.trim(),priority_code:orderForm.priority_code,due_on:orderForm.due_on||null,status:orderForm.status,responsible_employee_id:orderForm.responsible_employee_id||null})});
-      setOrderForm({device_id:'',maintenance_type:'inspection',description:'',priority_code:'medium',due_on:'',responsible_employee_id:'',status:'planned'});setOrderFormOpen(false);await refreshContext();setError('');
+      await api(`/sites/${selected.site.id}/maintenance-orders`,{method:'POST',headers:{'Idempotency-Key':orderClientId},body:JSON.stringify({device_id:orderForm.device_id,maintenance_type:orderForm.maintenance_type,description:orderForm.description.trim(),priority_code:orderForm.priority_code,due_on:orderForm.due_on||null,status:orderForm.status,responsible_employee_id:orderForm.responsible_employee_id||null})});
+      setOrderForm({device_id:'',maintenance_type:'inspection',description:'',priority_code:'medium',due_on:'',responsible_employee_id:'',status:'planned'});setOrderClientId(uuid());setOrderFormOpen(false);await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
   async function updateMaintenanceOrder(order:MaintenanceOrder,status:'planned'|'open'|'in_progress'){
@@ -603,7 +657,6 @@ export function Sites(){
     if(key==='name')return;
     setVisibleColumns(current=>checked?[...current,key]:current.length>1?current.filter(column=>column!==key):current);
   };
-  const visibleSiteColumns=siteColumns.filter(column=>column.key==='name'||visibleColumns.includes(column.key));
   const customerOptions=Array.from(new Set(sites.flatMap(site=>site.customer_names??[]))).sort((a,b)=>a.localeCompare(b,'de'));
   const managerOptions=Array.from(new Map<string,string>(sites.flatMap(site=>{
     const managers:[string,string][]=[];
@@ -635,7 +688,7 @@ export function Sites(){
   const locationParentType=locationForm.location_type==='area'?'building':locationForm.location_type==='zone'?'area':null;
   useEffect(()=>{
     if(!selectedSiteId)return;
-    setMaintenanceClientEntryId(uuid());
+    setMaintenanceClientEntryId(uuid());setOrderClientId(uuid());
   },[selectedSiteId]);
   useEffect(()=>{
     if(active!=='technik'||!selectedSiteId)return;
@@ -699,10 +752,6 @@ export function Sites(){
     counts[bucket]=selected?.documentWarningCounts?.[bucket]??documents.filter(document=>document.expiry_bucket===bucket).length;
     return counts;
   },{} as Record<ExpiryBucket,number>);
-  const expiredDocuments=documents.filter(document=>document.computed_status==='abgelaufen');
-  const expiring7Documents=documents.filter(document=>document.expiry_bucket==='within_7_days');
-  const expiring30Documents=documents.filter(document=>document.expiry_bucket==='within_8_30_days');
-  const expiring60Documents=documents.filter(document=>document.expiry_bucket==='within_31_60_days');
   const activeDevices=selected?.devices?.filter(device=>device.operational_status==='active')??[];
   const faultyDevices=selected?.devices?.filter(device=>device.operational_status==='fault'||device.operational_status==='offline')??[];
   const maintenanceOrders=selected?.maintenanceOrders??[];
@@ -718,6 +767,13 @@ export function Sites(){
   const detailPriorityActions=selected?.priorityActions??[];
   const recentPersonnelChanges=selected?.recentPersonnelChanges??[];
   const chronicleEvents=chronicle?.events??[];
+  const focus=selected?findFocusRecord(selected,searchParams,active):undefined;
+  const recordFocusClass=(param:string,id:string|undefined)=>id&&searchParams.get(param)===id?'object-record-highlight':'';
+  const clearRecordFocus=()=>{
+    const next=new URLSearchParams(searchParams);
+    for(const param of focusParams)next.delete(param);
+    setSearchParams(next,{replace:true});
+  };
   const serverActivityItems=chronicleEvents.slice(0,8).map(event=>({id:`chronicle-${event.id}`,created_at:event.occurred_at,title:event.category,detail:`${event.event_kind} · ${event.summary}`,link:event.link}));
   return <section className="object-management">
     {error&&<p role="alert" className="error">{error}</p>}
@@ -743,27 +799,17 @@ export function Sites(){
         <button type="button" className={active==='uebersicht'?'active':''} aria-current={active==='uebersicht'?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/uebersicht`)}>Übersicht</button>
         {tabGroups.map(group=><div className="object-tab-group" key={group.label}><span>{group.label}</span>{tabs.filter(([key])=>group.keys.includes(key as never)).map(([key,label])=><button type="button" key={key} className={active===key?'active':''} aria-current={active===key?'page':undefined} onClick={()=>navigate(`/sites/${siteId}/${key}`)}>{label}</button>)}</div>)}
       </nav>
+      {focus!==undefined&&<ObjectRecordFocus focus={focus??{param:'record',label:'Datensatz',id:'unavailable',title:'Verknüpfter Datensatz nicht verfügbar',meta:['Der Datensatz wurde gelöscht oder ist für Ihren Berechtigungsumfang nicht freigegeben']}} onClose={clearRecordFocus}/>}
       {active==='uebersicht'&&<div className="object-detail-content">
-        <div className="object-alerts" aria-label="Operative Hinweise">
-          {criticalHazards.length>0&&<p role="status">Kritische Gefährdungen: {criticalHazards.length}</p>}
-          {overdueMeasures.length>0&&<p role="status">Überfällige Maßnahmen: {overdueMeasures.length}</p>}
-          {expiredInstructions.length>0&&<p role="status">Abgelaufene Dienstanweisungen: {expiredInstructions.length}</p>}
-          {documentStatusCounts.abgelaufen>0&&<p role="status">{documentStatusLabels.abgelaufen}: {documentStatusCounts.abgelaufen}</p>}
-          {documentBucketCounts.within_7_days>0&&<p role="status">Dokumente ≤ 7 Tage: {documentBucketCounts.within_7_days}</p>}
-          {documentBucketCounts.within_8_30_days>0&&<p role="status">Dokumente 8–30 Tage: {documentBucketCounts.within_8_30_days}</p>}
-          {documentBucketCounts.within_31_60_days>0&&<p role="status">Dokumente 31–60 Tage: {documentBucketCounts.within_31_60_days}</p>}
-          {documentStatusCounts.nicht_freigegeben>0&&<p role="status">{documentStatusLabels.nicht_freigegeben}: {documentStatusCounts.nicht_freigegeben}</p>}
-          {documentStatusCounts.pruefung_ausstehend>0&&<p role="status">{documentStatusLabels.pruefung_ausstehend}: {documentStatusCounts.pruefung_ausstehend}</p>}
-          {documentStatusCounts.noch_nicht_gueltig>0&&<p role="status">{documentStatusLabels.noch_nicht_gueltig}: {documentStatusCounts.noch_nicht_gueltig}</p>}
-          {documentStatusCounts.bald_pruefpflichtig>0&&<p role="status">{documentStatusLabels.bald_pruefpflichtig}: {documentStatusCounts.bald_pruefpflichtig}</p>}
-          {faultyDevices.length>0&&<p role="status">Technische Störungen oder Offline-Anlagen: {faultyDevices.length}</p>}
-          {overdueOrders.length>0&&<p role="status">Überfällige Wartungsaufträge: {overdueOrders.length} (in {openOrders.length} offenen Aufträgen enthalten)</p>}
-          {(personnelSummary?.expiring_qualification_count??0)>0&&<p role="status">Bald ablaufende Qualifikationen: {personnelSummary!.expiring_qualification_count}</p>}
-          {(personnelSummary?.invalid_qualification_count??0)>0&&<p role="status">Abgelaufene oder ungültige Qualifikationen: {personnelSummary!.invalid_qualification_count}</p>}
-          {(personnelSummary?.pending_acknowledgement_count??0)>0&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen: {personnelSummary!.pending_acknowledgement_count}</p>}
-          {personnelSummary===null&&selected.instructions.some(instruction=>isInstructionActive(instruction)&&instruction.requires_acknowledgement&&instruction.acknowledgement_count<currentStaff.length)&&<p role="status">Ausstehende Dienstanweisungs-Kenntnisnahmen vorhanden.</p>}
-        </div>
         <PriorityActionList actions={detailPriorityActions} title="Nächste Schritte nach Dringlichkeit"/>
+        <section className="object-info-metrics" aria-label="Objektinformationen">
+          <h3>C – Objektinformationen</h3>
+          <p>Kritische Gefährdungen: {criticalHazards.length} · Überfällige Maßnahmen: {overdueMeasures.length} · Abgelaufene Dienstanweisungen: {expiredInstructions.length}</p>
+          <p>{documentStatusLabels.abgelaufen}: {documentStatusCounts.abgelaufen} · Dokumente ≤ 7 Tage: {documentBucketCounts.within_7_days} · Dokumente 8–30 Tage: {documentBucketCounts.within_8_30_days} · Dokumente 31–60 Tage: {documentBucketCounts.within_31_60_days}</p>
+          <p>{documentStatusLabels.nicht_freigegeben}: {documentStatusCounts.nicht_freigegeben} · {documentStatusLabels.pruefung_ausstehend}: {documentStatusCounts.pruefung_ausstehend} · {documentStatusLabels.noch_nicht_gueltig}: {documentStatusCounts.noch_nicht_gueltig} · {documentStatusLabels.bald_pruefpflichtig}: {documentStatusCounts.bald_pruefpflichtig}</p>
+          <p>Technische Störungen oder Offline-Anlagen: {faultyDevices.length} · Überfällige Wartungsaufträge: {overdueOrders.length} (in {openOrders.length} offenen Aufträgen enthalten)</p>
+          <p>Bald ablaufende Qualifikationen: {personnelSummary?.expiring_qualification_count??0} · Abgelaufene oder ungültige Qualifikationen: {personnelSummary?.invalid_qualification_count??0} · Ausstehende Dienstanweisungs-Kenntnisnahmen: {personnelSummary?.pending_acknowledgement_count??0}</p>
+        </section>
         <div className="object-summary-grid">
           {([
             ['stammdaten','Objektstatus',<><strong>{statuses[selected.site.status]??selected.site.status}</strong><p>{classifications[selected.site.security_classification]??selected.site.security_classification}</p></>],
@@ -777,7 +823,7 @@ export function Sites(){
             ['dokumente','Dokumente',<>{selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:<p>{selected.documents.length} DMS-Dokumente</p>}<p>{documentStatusCounts.gueltig} gültig · {documentStatusCounts.abgelaufen} abgelaufen · {documentStatusCounts.nicht_freigegeben} nicht freigegeben</p><p>≤ 7 Tage: {documentBucketCounts.within_7_days} · 8–30: {documentBucketCounts.within_8_30_days} · 31–60: {documentBucketCounts.within_31_60_days} · über 60: {documentBucketCounts.beyond_60_days} · ohne Ablauf: {documentBucketCounts.no_expiry}</p>{selected.documentRequirements!=null&&<p>{selected.documentRequirements.filter(requirement=>requirement.missing).length} Pflichtdokumente fehlen</p>}</>],
             ['vorfaelle','Vorfälle & Alarme',<><p>{selected.incidents==null?'Einsätze nicht freigegeben':`${selected.incidents.length} Einsätze`}</p><p>{selected.alarms==null?'Alarme nicht freigegeben':`${selected.alarms.length} Alarme`}</p></>],
             ['dienstplanung','Anstehende Schichten',<>{selected.shifts==null?<p>Keine Berechtigung für die Dienstplanung.</p>:<p>{selected.shifts.filter(shift=>shift.starts_at>now.toISOString()).slice(0,2).map(shift=>`${shift.role_code} · ${new Date(shift.starts_at).toLocaleString('de-DE')}`).join(' / ')||'Keine zukünftigen Schichten'}</p>}</>],
-            ['uebersicht','Übergaben',<>{selected.handovers==null?<p>Keine Berechtigung für Übergaben.</p>:selected.handovers.length===0?<p>Keine Übergaben erfasst.</p>:selected.handovers.slice(0,3).map(handover=><p key={handover.id}>{handover.title} · {handover.confirmation_count}/{handover.participant_count} Bestätigungen</p>)}</>],
+            ['uebersicht','Übergaben',<>{selected.handovers==null?<p>Keine Berechtigung für Übergaben.</p>:selected.handovers.length===0?<p>Keine Übergaben erfasst.</p>:selected.handovers.slice(0,3).map(handover=><p key={handover.id} className={recordFocusClass('handover',handover.id)}>{handover.title} · {handover.confirmation_count}/{handover.participant_count} Bestätigungen</p>)}</>],
           ] as const).map(([section,title,content])=><article key={title} className="object-summary-card" role="button" tabIndex={0} onClick={()=>navigate(`/sites/${siteId}/${section}`)} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();navigate(`/sites/${siteId}/${section}`);}}} aria-label={`${title} öffnen`}><h3>{title}</h3>{content}</article>)}
         </div>
         {personnelSummary!==undefined&&<section className="object-personnel-overview">
@@ -797,7 +843,7 @@ export function Sites(){
             {recentPersonnelChanges===null?<p>Keine Berechtigung für die Personalhistorie.</p>:recentPersonnelChanges.length===0?<p>Keine aktuellen Personaländerungen erfasst.</p>:<ul>{recentPersonnelChanges.map(change=><li key={`${change.event_type}-${change.entity_id??'unbekannt'}-${change.occurred_at}`}><time>{new Date(change.occurred_at).toLocaleString('de-DE')}</time> · {change.event_type} · {change.employee_name??change.employee_id??'Mitarbeiter nicht ermittelbar'}{change.actor_email?` · ${change.actor_email}`:''}</li>)}</ul>}
           </>}
         </section>}
-        <section className="object-activity"><h3>Aktivitätschronik</h3>{chronicleLoading?<p role="status">Chronik wird geladen …</p>:chronicleError?<p role="alert" className="error">Chronik konnte nicht geladen werden: {chronicleError}</p>:serverActivityItems.length?<ol>{serverActivityItems.map(item=><li key={item.id}><time>{new Date(item.created_at).toLocaleString('de-DE')}</time><strong>{item.title}</strong><span>{item.detail}</span>{item.link&&hasPermission(item.link.permission)&&<Link to={item.link.target}>{item.link.label}</Link>}</li>)}</ol>:<p>Keine freigegebenen Ereignisse für dieses Objekt vorhanden.</p>}{hasPermission('handover:read')&&<button type="button" onClick={()=>navigate('/handovers')}>Übergaben öffnen</button>}</section>
+        <section className="object-activity"><h3>Aktivitätschronik</h3>{chronicleLoading?<p role="status">Chronik wird geladen …</p>:chronicleError?<p role="alert" className="error">Chronik konnte nicht geladen werden: {chronicleError}</p>:serverActivityItems.length?<ol>{serverActivityItems.map(item=><li key={item.id}><time>{new Date(item.created_at).toLocaleString('de-DE')}</time><strong>{item.title}</strong><span>{item.detail}</span>{item.link&&hasPermission(item.link.permission)&&<>{item.link.record_available===false&&<span className="object-chronicle-unavailable" role="status">Datensatz nicht mehr verfügbar · </span>}<Link to={item.link.target}>{item.link.label}</Link></>}</li>)}</ol>:<p>Keine freigegebenen Ereignisse für dieses Objekt vorhanden.</p>}{hasPermission('handover:read')&&<button type="button" onClick={()=>navigate('/handovers')}>Übergaben öffnen</button>}</section>
       </div>}
       {active==='stammdaten'&&<div className="object-detail-content">
         {writable?<form className="object-detail-form" onSubmit={saveDetails}><div className="form-grid">
@@ -841,7 +887,7 @@ export function Sites(){
         <button>{editingLocation?'Struktur speichern':'Struktur anlegen'}</button>
         {editingLocation&&<button type="button" onClick={()=>{setEditingLocation(null);setLocationForm(emptyLocation);}}>Abbrechen</button>}
       </form>}
-      <ul>{selected.locations.map(location=><li key={location.id}>{location.code||'–'} · {locationPath(location)} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editLocation(location)}>Bearbeiten</button>}</li>)}</ul>
+      <ul>{selected.locations.map(location=><li key={location.id} className={recordFocusClass('location',location.id)}>{location.code||'–'} · {locationPath(location)} ({location.location_type}, Sicherheitsstufe {location.security_level}) · Verantwortlich: {location.responsible_employee_name||'–'}{writable&&<button type="button" onClick={()=>editLocation(location)}>Bearbeiten</button>}</li>)}</ul>
       </div>}
       {active==='gefaehrdungen'&&<div className="object-detail-content">
       <h3>Gefährdungen</h3>
@@ -862,13 +908,13 @@ export function Sites(){
         {editingHazard&&<button type="button" onClick={()=>{setEditingHazard(null);setHazardForm(emptyHazard);}}>Abbrechen</button>}
       </form>}
       <table className="object-risk-matrix" aria-label="Risikomatrix"><caption>Erfasste Gefährdungen nach Eintritt und Auswirkung</caption><thead><tr><th scope="col">Eintritt / Auswirkung</th>{[1,2,3,4,5].map(impact=><th scope="col" key={impact}>{impact}</th>)}</tr></thead><tbody>{[5,4,3,2,1].map(likelihood=><tr key={likelihood}><th scope="row">{likelihood}</th>{[1,2,3,4,5].map(impact=>{const riskScore=likelihood*impact,count=selected.hazards.filter(hazard=>hazard.risk_score===riskScore).length;return <td className={riskScore>=15?'critical-risk':riskScore>=8?'high-risk':riskScore>=4?'medium-risk':'low-risk'} key={impact} aria-label={`${likelihood} mal ${impact}: ${count} Gefährdungen`}>{count}</td>;})}</tr>)}</tbody></table>
-      <ul>{selected.hazards.map(hazard=><li key={hazard.id}>
+      <ul>{selected.hazards.map(hazard=><li key={hazard.id} className={recordFocusClass('hazard',hazard.id)}>
         <strong>{hazard.title}</strong> · Risiko {hazard.risk_score} · {hazard.status}{hazard.location_name?` · ${hazard.location_name}`:''} · Verantwortlich: {hazard.responsible_employee_name||'–'}
         {hazard.protective_measures&&<p>Bestehende Schutzmaßnahmen: {hazard.protective_measures}</p>}
         {writable&&<button type="button" onClick={()=>editHazard(hazard)}>Gefährdung bearbeiten</button>}
         {writable&&<button type="button" onClick={()=>editHazardMeasure(hazard)}>Maßnahme hinzufügen</button>}
         <ul aria-label={`Maßnahmen ${hazard.title}`}>
-          {hazard.measures.map(measure=><li key={measure.id}>
+          {hazard.measures.map(measure=><li key={measure.id} className={recordFocusClass('measure',measure.id)}>
             {measure.title} · {measure.status}{measure.due_on?` · Fällig am ${measure.due_on}`:''}{measure.responsible_employee_name?` · Verantwortlich: ${measure.responsible_employee_name}`:''}
             {measure.description&&<p>{measure.description}</p>}
             {measure.completed_at&&<p>Abgeschlossen am {new Date(measure.completed_at).toLocaleString('de-DE')}</p>}
@@ -891,7 +937,7 @@ export function Sites(){
       <h3>Dienstanweisungen</h3>
       {writable&&<form onSubmit={createInstruction}><label>Titel<input placeholder="Titel" value={instructionForm.title} onChange={e=>setInstructionForm({...instructionForm,title:e.target.value})} required/></label><label>Inhalt<textarea placeholder="Inhalt" value={instructionForm.content} onChange={e=>setInstructionForm({...instructionForm,content:e.target.value})} required/></label><label>Geltungsbereich<select aria-label="Anweisungsbereich" value={instructionForm.location_id} onChange={e=>setInstructionForm({...instructionForm,location_id:e.target.value})}><option value="">Gesamtes Objekt</option>{selected.locations.map(location=><option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label>Version<input type="number" min="1" value={instructionForm.version} onChange={e=>setInstructionForm({...instructionForm,version:Number(e.target.value)})}/></label><label>Gültig ab<input type="date" value={instructionForm.valid_from} onChange={e=>setInstructionForm({...instructionForm,valid_from:e.target.value})}/></label><label>Gültig bis<input type="date" value={instructionForm.valid_until} onChange={e=>setInstructionForm({...instructionForm,valid_until:e.target.value})}/></label><select aria-label="Anweisungsstatus" value={instructionForm.status} onChange={e=>setInstructionForm({...instructionForm,status:e.target.value})}><option value="draft">Entwurf</option><option value="pending_approval">Freigabe ausstehend</option></select><label><input type="checkbox" checked={instructionForm.requires_acknowledgement} onChange={e=>setInstructionForm({...instructionForm,requires_acknowledgement:e.target.checked})}/> Kenntnisnahme erforderlich</label><button>Anweisung speichern</button></form>}
       {writable&&hasPermission('employees:read')&&selected.staffing!==null&&<label>Mitarbeiter für Kenntnisnahme<select aria-label="Mitarbeiter für Kenntnisnahme" value={ackEmployee} onChange={e=>setAckEmployee(e.target.value)}><option value="">Mitarbeiter auswählen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
-      <ul>{selected.instructions.map(instruction=><li key={instruction.id}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>
+      <ul>{selected.instructions.map(instruction=><li key={instruction.id} className={recordFocusClass('instruction',instruction.id)}><strong>{instruction.title} v{instruction.version}</strong> · {instruction.status} · {instruction.location_name||'Gesamtes Objekt'} · Kenntnisnahmen: {instruction.acknowledgement_count}<p>{instruction.content}</p>
         {instruction.status==='pending_approval'&&instruction.can_approve&&<><button type="button" onClick={()=>void approveInstruction(instruction.id)}>Freigabe erteilen</button><button type="button" onClick={()=>void returnInstructionForRevision(instruction.id)}>Zur Überarbeitung zurückgeben</button></>}
         {instruction.requires_acknowledgement&&hasPermission('employees:read')&&selected.staffing!==null&&<ul aria-label={`Kenntnisnahmestatus ${instruction.title} v${instruction.version}`}>
         {instruction.acknowledgements.map(acknowledgement=><li key={acknowledgement.employee_id}>{acknowledgement.employee_name}: Bestätigt am {new Date(acknowledgement.acknowledged_at).toLocaleString('de-DE')}</li>)}
@@ -902,7 +948,7 @@ export function Sites(){
       {active==='personal'&&<div className="object-detail-content">
       <h3>Personalzuordnungen</h3>
       {selected.staffing===null?<p>Keine Berechtigung für Personalzuordnungen.</p>:selected.staffing.length===0?<p>Keine aktuellen oder zukünftigen Personalzuordnungen vorhanden.</p>:<ul>{selected.staffing.map(assignment=>
-        <li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.employment_status??'Status unbekannt'}{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}{writable&&hasPermission('employees:write')&&!assignment.ends_on&&<button type="button" onClick={()=>void removeStaffingAssignment(assignment)}>Zuordnung beenden</button>}</li>
+        <li key={assignment.id} className={recordFocusClass('assignment',assignment.id)}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.employment_status??'Status unbekannt'}{assignment.primary_assignment?' · Hauptzuordnung':''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}{writable&&hasPermission('employees:write')&&!assignment.ends_on&&<button type="button" onClick={()=>void removeStaffingAssignment(assignment)}>Zuordnung beenden</button>}</li>
       )}</ul>}
       <p>Die verbindliche Einsatzfähigkeit wird dienst- und schichtbezogen aus Qualifikationen, Anweisungen, Abwesenheiten und Verfügbarkeiten im Backend geprüft (siehe Dienstplanung).</p>
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length>0&&<form onSubmit={createStaffingAssignment}>
@@ -918,18 +964,18 @@ export function Sites(){
       </form>}
       {writable&&hasPermission('employees:read')&&hasPermission('employees:write')&&assignableEmployees.length===0&&<p>Keine zusätzlichen Mitarbeitenden innerhalb des verfügbaren Berechtigungsumfangs auswählbar.</p>}
       <h3>Qualifikationen</h3>
-      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id} className={qualification.issue?.severity==='critical'||qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''}>
+      {selected.qualifications==null?<p>Keine Berechtigung für Personal- und Qualifikationsdaten.</p>:selected.qualifications.length===0?<p>Keine Qualifikationen für zugeordnete Mitarbeitende vorhanden.</p>:<ul>{selected.qualifications.map(qualification=><li key={qualification.id} className={`${qualification.issue?.severity==='critical'||qualification.computed_status==='expired'||qualification.computed_status==='revoked'?'object-warning':''} ${recordFocusClass('employee',qualification.employee_id)}`.trim()}>
         <strong>{qualification.employee_name}</strong> · {qualification.qualification_name??qualification.code} · {qualificationReason(qualification)}
         {qualification.valid_until?` · bis ${new Date(`${qualification.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' · ohne Ablaufdatum'}
         <span className="object-qualification-meta"> · {qualificationEvidence(qualification)}{qualification.last_checked_at?` · zuletzt geprüft ${new Date(qualification.last_checked_at).toLocaleDateString('de-DE')}`:''}</span>
         {hasPermission('qualifications:read')&&<Link to={qualification.employee_url??`/employees/${qualification.employee_id}/qualifikationen`}>Nachweis öffnen</Link>}
       </li>)}</ul>}
       <h3>Zuordnungshistorie</h3>
-      {selected.assignmentHistory==null?<p>Keine Berechtigung für die Zuordnungshistorie.</p>:selected.assignmentHistory.length===0?<p>Keine Zuordnungshistorie vorhanden.</p>:<ul>{selected.assignmentHistory.map(assignment=><li key={assignment.id}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
+      {selected.assignmentHistory==null?<p>Keine Berechtigung für die Zuordnungshistorie.</p>:selected.assignmentHistory.length===0?<p>Keine Zuordnungshistorie vorhanden.</p>:<ul>{selected.assignmentHistory.map(assignment=><li key={assignment.id} className={recordFocusClass('assignment',assignment.id)}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignment.assignment_type}{assignment.role?` · ${assignment.role}`:''} · {new Date(`${assignment.starts_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}{assignment.ends_on?` – ${new Date(`${assignment.ends_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:' – offen'}</li>)}</ul>}
       {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}
       </div>}
       {active==='dienstplanung'&&<div className="object-detail-content"><h3>Dienstplanung und Schichten</h3>
-      {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.map(assignment=>assignment.employee_name).join(', '):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}
+      {selected.shifts===null?<p>Keine Berechtigung für die Dienstplanung.</p>:selected.shifts.length===0?<p>Keine laufenden oder zukünftigen Schichten geplant.</p>:<ul>{selected.shifts.map(shift=><li key={shift.id} className={recordFocusClass('shift',shift.id)||recordFocusClass('period',shift.period_id)}><strong>{shift.role_code}</strong> · {shift.period_name} ({shift.period_status}) · {new Date(shift.starts_at).toLocaleString('de-DE')} – {new Date(shift.ends_at).toLocaleString('de-DE')} · {shift.assignments.length?shift.assignments.flatMap((assignment,index)=>[index>0?', ':null,<span key={assignment.id} className={recordFocusClass('shift_assignment',assignment.id)}>{assignment.employee_name}</span>]):shift.assigned_count?`${shift.assigned_count} zugewiesen`:'Noch nicht zugewiesen'}
         {selected.staffing!==null&&hasPermission('scheduling:write')&&hasPermission('employees:read')&&availableShiftEmployees(shift).length>0&&<form onSubmit={event=>void assignShiftEmployee(event,shift)}>
           <label>Mitarbeiter für {shift.role_code}<select aria-label={`Mitarbeiter für ${shift.role_code}`} required value={shiftAssignmentRequests[shift.id]?.employee_id??''} onChange={event=>setShiftAssignmentRequests(current=>({...current,[shift.id]:{employee_id:event.target.value,client_mutation_id:current[shift.id]?.employee_id===event.target.value?current[shift.id].client_mutation_id:uuid()}}))}><option value="">Mitarbeiter auswählen</option>{availableShiftEmployees(shift).map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
           <button disabled={!shiftAssignmentRequests[shift.id]?.employee_id}>Schicht besetzen</button>
@@ -960,7 +1006,7 @@ export function Sites(){
       </div>}
       {active==='schluessel'&&<div className="object-detail-content">
       <h3>Schlüsselbestand</h3>
-      {selected.keys===null?<p>Keine Berechtigung für Schlüssel.</p>:selected.keys.items.length===0?<p>Keine Schlüssel für dieses Objekt erfasst.</p>:<ul>{selected.keys.items.map(key=><li key={key.id}><strong>{key.label}</strong> · {key.key_code} · {key.key_type} · {key.status==='available'?'Verfügbar':key.status==='issued'?'Ausgegeben':key.status==='lost'?'Verloren':'Deaktiviert'}{key.status==='issued'?(key.holder_employee_id?' · an Mitarbeitende ausgegeben':' · an Benutzer ausgegeben'):''}
+      {selected.keys===null?<p>Keine Berechtigung für Schlüssel.</p>:selected.keys.items.length===0?<p>Keine Schlüssel für dieses Objekt erfasst.</p>:<ul>{selected.keys.items.map(key=><li key={key.id} className={recordFocusClass('key',key.id)}><strong>{key.label}</strong> · {key.key_code} · {key.key_type} · {key.status==='available'?'Verfügbar':key.status==='issued'?'Ausgegeben':key.status==='lost'?'Verloren':'Deaktiviert'}{key.status==='issued'?(key.holder_employee_id?' · an Mitarbeitende ausgegeben':' · an Benutzer ausgegeben'):''}
         {key.status==='available'&&hasPermission('keys:issue')&&hasPermission('employees:read')&&siteAssignedEmployees.length>0&&<button type="button" onClick={()=>{setKeyAction({keyId:key.id,action:'issue'});setKeyHolderEmployeeId('');setKeyActionReason('');}}>Ausgabe vorbereiten</button>}
         {key.status==='issued'&&hasPermission('keys:return')&&<button type="button" onClick={()=>{setKeyAction({keyId:key.id,action:'return'});setKeyActionReason('');}}>Rückgabe erfassen</button>}
         {keyAction?.keyId===key.id&&<form onSubmit={saveKeyAction}>
@@ -971,7 +1017,7 @@ export function Sites(){
         </form>}
       </li>)}</ul>}
       <h3>Schlüsselbunde</h3>
-      {selected.keyBundles===null?<p>Keine Berechtigung für Schlüsselbunde.</p>:selected.keyBundles.length===0?<p>Keine Schlüsselbunde für dieses Objekt vorhanden.</p>:<ul>{selected.keyBundles.map(bundle=><li key={bundle.id}><strong>{bundle.name}</strong> · {bundle.status} · {bundle.item_count} Schlüssel ({bundle.issued_count} ausgegeben)</li>)}</ul>}
+      {selected.keyBundles===null?<p>Keine Berechtigung für Schlüsselbunde.</p>:selected.keyBundles.length===0?<p>Keine Schlüsselbunde für dieses Objekt vorhanden.</p>:<ul>{selected.keyBundles.map(bundle=><li key={bundle.id} className={recordFocusClass('key_bundle',bundle.id)}><strong>{bundle.name}</strong> · {bundle.status} · {bundle.item_count} Schlüssel ({bundle.issued_count} ausgegeben)</li>)}</ul>}
       <h3>Letzte Schlüsselbewegungen</h3>
       {selected.keys===null?<p>Keine Berechtigung für die Schlüsselhistorie.</p>:selected.keys.recentMovements.length===0?<p>Keine Schlüsselbewegungen erfasst.</p>:<ul>{selected.keys.recentMovements.map(movement=><li key={movement.id}><strong>{movement.key_label}</strong> · {movement.movement_type} · {movement.from_status??'–'} → {movement.to_status} · {new Date(movement.created_at).toLocaleString('de-DE')}{movement.employee_name?` · ${movement.employee_name}`:''}</li>)}</ul>}
       </div>}
@@ -979,13 +1025,13 @@ export function Sites(){
       <h3>Objektdokumente</h3>
       {selected.documents==null?<p>Keine Berechtigung für DMS-Dokumente.</p>:selected.documents.length===0?<p>Keine DMS-Dokumente für dieses Objekt vorhanden.</p>:<ul>{selected.documents.map(document=>{
         const statusLabel=document.status_label??(document.computed_status?documentStatusLabels[document.computed_status]:document.document_status);
-        return <li key={document.id} className={['abgelaufen','nicht_freigegeben','fehlend'].includes(document.computed_status??'')?'object-warning':''}><strong>{document.title}</strong> · {statusLabel}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{document.days_until_expiry!=null?` · ${document.days_until_expiry} Tage bis Ablauf`:''}{document.review_state?` · ${reviewStateLabels[document.review_state]}`:''}{document.reviewed_at?` · geprüft am ${formatDue(document.reviewed_at)}`:''}{document.description&&<p>{document.description}</p>}
+        return <li key={document.id} className={`${['abgelaufen','nicht_freigegeben','fehlend'].includes(document.computed_status??'')?'object-warning':''} ${recordFocusClass('document',document.id)}`.trim()}><strong>{document.title}</strong> · {statusLabel}{document.document_number?` · Nr. ${document.document_number}`:''}{document.document_type?` · ${document.document_type}`:''} · {document.approval_status}{document.valid_until?` · gültig bis ${new Date(`${document.valid_until}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{document.days_until_expiry!=null?` · ${document.days_until_expiry} Tage bis Ablauf`:''}{document.review_state?` · ${reviewStateLabels[document.review_state]}`:''}{document.reviewed_at?` · geprüft am ${formatDue(document.reviewed_at)}`:''}{document.description&&<p>{document.description}</p>}
           <button type="button" onClick={()=>startDocumentEdit(document)}>Metadaten bearbeiten</button>
           {writable&&hasPermission('dms:write')&&<>{['draft','rejected'].includes(document.approval_status)&&<button type="button" onClick={()=>void runDocumentWorkflow(document,'request-review')}>Freigabe anfordern</button>}{['draft','pending_approval','rejected'].includes(document.approval_status)&&<button type="button" onClick={()=>void runDocumentWorkflow(document,'approve')}>Freigabe erteilen</button>}{['pending_approval','approved'].includes(document.approval_status)&&<button type="button" onClick={()=>void runDocumentWorkflow(document,'return-for-revision')}>Zur Überarbeitung zurückgeben</button>}</>}
           <ul>{document.versions.map(version=><li key={version.id}>Version {version.version_no} · {version.lifecycle_state} · {version.size_bytes} Bytes {version.lifecycle_state==='available'&&<button type="button" onClick={()=>void downloadDocument(document,version)}>Herunterladen</button>}</li>)}</ul></li>;
       })}</ul>}
       <h3>Pflichtdokumente</h3>
-      {selected.documentRequirements==null?<p>Keine Berechtigung für Dokumentanforderungen.</p>:selected.documentRequirements.length===0?<p>Keine Pflichtdokumenttypen hinterlegt.</p>:<ul>{selected.documentRequirements.map(requirement=><li key={requirement.id} className={requirement.missing?'object-warning':''}><strong>{requirement.document_type}</strong> · {requirement.required?'Pflicht':'Optional'} · {requirement.status_label??(requirement.missing?'Fehlt oder nicht gültig/freigegeben':'Erfüllt')}{requirement.days_until_expiry!=null?` · noch ${requirement.days_until_expiry} Tage`:''}{requirement.review_state&&requirement.review_state!=='none'?` · ${reviewStateLabels[requirement.review_state]}`:''}{requirement.responsible_employee_name?` · Verantwortlich: ${requirement.responsible_employee_name}`:''}{writable&&hasPermission('dms:write')&&<button type="button" onClick={()=>void removeDocumentRequirement(requirement)}>Anforderung entfernen</button>}</li>)}</ul>}
+      {selected.documentRequirements==null?<p>Keine Berechtigung für Dokumentanforderungen.</p>:selected.documentRequirements.length===0?<p>Keine Pflichtdokumenttypen hinterlegt.</p>:<ul>{selected.documentRequirements.map(requirement=><li key={requirement.id} className={`${requirement.missing?'object-warning':''} ${recordFocusClass('requirement',requirement.id)}`.trim()}><strong>{requirement.document_type}</strong> · {requirement.required?'Pflicht':'Optional'} · {requirement.status_label??(requirement.missing?'Fehlt oder nicht gültig/freigegeben':'Erfüllt')}{requirement.days_until_expiry!=null?` · noch ${requirement.days_until_expiry} Tage`:''}{requirement.review_state&&requirement.review_state!=='none'?` · ${reviewStateLabels[requirement.review_state]}`:''}{requirement.responsible_employee_name?` · Verantwortlich: ${requirement.responsible_employee_name}`:''}{writable&&hasPermission('dms:write')&&<button type="button" onClick={()=>void removeDocumentRequirement(requirement)}>Anforderung entfernen</button>}</li>)}</ul>}
       {selected.documentRequirements!==null&&writable&&hasPermission('dms:write')&&<form onSubmit={saveDocumentRequirement}>
         <label>Pflichtdokumenttyp<input required value={documentRequirementForm.document_type} onChange={event=>setDocumentRequirementForm({...documentRequirementForm,document_type:event.target.value})}/></label>
         {hasPermission('employees:read')&&<label>Verantwortlich<select value={documentRequirementForm.responsible_employee_id} onChange={event=>setDocumentRequirementForm({...documentRequirementForm,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{siteAssignedEmployees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
@@ -1019,22 +1065,22 @@ export function Sites(){
       </div>}
       {active==='vorfaelle'&&<div className="object-detail-content">
       <h3>Alarme am Objekt</h3>
-      {selected.alarms===null?<p>Keine Berechtigung für Alarme.</p>:selected.alarms.length===0?<p>Keine site- oder gerätebezogenen Alarme für dieses Objekt vorhanden.</p>:<ul>{selected.alarms.map(alarm=><li key={alarm.id}><strong>{alarm.priority_name??alarm.severity}</strong> · {alarm.type} · {alarm.status} · {new Date(alarm.triggered_at).toLocaleString('de-DE')}<p>{alarm.description}</p></li>)}</ul>}
+      {selected.alarms===null?<p>Keine Berechtigung für Alarme.</p>:selected.alarms.length===0?<p>Keine site- oder gerätebezogenen Alarme für dieses Objekt vorhanden.</p>:<ul>{selected.alarms.map(alarm=><li key={alarm.id} className={recordFocusClass('alarm',alarm.id)}><strong>{alarm.priority_name??alarm.severity}</strong> · {alarm.type} · {alarm.status} · {new Date(alarm.triggered_at).toLocaleString('de-DE')}<p>{alarm.description}</p></li>)}</ul>}
       {hasPermission('alarms:read')&&<button type="button" onClick={()=>navigate('/alarms')}>Alarmverwaltung öffnen</button>}
       <h3>Einsätze</h3>
-      {selected.incidents===null?<p>Keine Berechtigung für Einsätze.</p>:selected.incidents.length===0?<p>Keine Einsätze für dieses Objekt vorhanden.</p>:<ul>{selected.incidents.map(incident=><li key={incident.id}><strong>{incident.priority_name??'Einsatz'}</strong> · {incident.status} · {new Date(incident.created_at).toLocaleString('de-DE')} · {incident.assignees.length?incident.assignees.map(assignee=>assignee.name).join(', '):incident.assigned_count?`${incident.assigned_count} zugewiesen`:'Keine Zuweisung'}<p>{incident.description}</p></li>)}</ul>}
+      {selected.incidents===null?<p>Keine Berechtigung für Einsätze.</p>:selected.incidents.length===0?<p>Keine Einsätze für dieses Objekt vorhanden.</p>:<ul>{selected.incidents.map(incident=><li key={incident.id} className={recordFocusClass('incident',incident.id)}><strong>{incident.priority_name??'Einsatz'}</strong> · {incident.status} · {new Date(incident.created_at).toLocaleString('de-DE')} · {incident.assignees.length?incident.assignees.map(assignee=>assignee.name).join(', '):incident.assigned_count?`${incident.assigned_count} zugewiesen`:'Keine Zuweisung'}<p>{incident.description}</p></li>)}</ul>}
       {hasPermission('incidents:read')&&<button type="button" onClick={()=>navigate('/incidents')}>Einsatzverwaltung öffnen</button>}
       <h3>Objektbezogene Berichte und Nachweise</h3>
       {(hasPermission('customer_reports:export')||hasPermission('customer_portal:read'))?<><p>Die bestehende Berichtsfunktion kann Kontrollgänge, Wachbuch, Alarme oder Einsätze für dieses Objekt auswerten.</p><a href={`/customer-reports?site_id=${encodeURIComponent(selected.site.id)}`}>Berichte für dieses Objekt öffnen</a></>:<p>Keine Berechtigung für objektbezogene Berichte.</p>}
       </div>}
       {active==='aufgaben'&&<div className="object-detail-content">
       <h3>Kundenaufgaben und Wiedervorlagen</h3>
-      {selected.customerTasks===null?<p>Keine Berechtigung für Kundenaufgaben.</p>:selected.customerTasks.length===0?<p>Keine Kundenaufgaben für aktive Objektbeziehungen vorhanden.</p>:<ul>{selected.customerTasks.map(task=><li key={task.id}><strong>{task.title}</strong> · {task.customer_name} · {task.status} · {task.due_at?new Date(task.due_at).toLocaleString('de-DE'):'Ohne Frist'}{task.assigned_employee_name?` · ${task.assigned_employee_name}`:''}{task.description&&<p>{task.description}</p>}{task.status==='open'&&hasPermission('customers:write')&&<button type="button" onClick={()=>void completeCustomerTask(task)}>Als erledigt markieren</button>}</li>)}</ul>}
+      {selected.customerTasks===null?<p>Keine Berechtigung für Kundenaufgaben.</p>:selected.customerTasks.length===0?<p>Keine Kundenaufgaben für aktive Objektbeziehungen vorhanden.</p>:<ul>{selected.customerTasks.map(task=><li key={task.id} className={recordFocusClass('task',task.id)}><strong>{task.title}</strong> · {task.customer_name} · {task.status} · {task.due_at?new Date(task.due_at).toLocaleString('de-DE'):'Ohne Frist'}{task.assigned_employee_name?` · ${task.assigned_employee_name}`:''}{task.description&&<p>{task.description}</p>}{task.status==='open'&&hasPermission('customers:write')&&<button type="button" onClick={()=>void completeCustomerTask(task)}>Als erledigt markieren</button>}</li>)}</ul>}
       {selected.customers!==null&&hasPermission('customers:write')&&<form onSubmit={createCustomerTask}><label>Kunde<select required value={taskCustomerId} onChange={event=>setTaskCustomerId(event.target.value)}><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Aufgabe / Wiedervorlage<input required value={taskTitle} onChange={event=>setTaskTitle(event.target.value)}/></label><label>Fällig am<input type="datetime-local" value={taskDue} onChange={event=>setTaskDue(event.target.value)}/></label>{hasPermission('employees:read')&&<label>Verantwortlich<select value={taskAssignee} onChange={event=>setTaskAssignee(event.target.value)}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}<button>Aufgabe anlegen</button></form>}
       </div>}
       {active==='technik'&&<div className="object-detail-content">
       <h3>Technische Anlagen und Geräte</h3>
-      {selected.devices==null?<p>Keine Berechtigung für den technischen Gerätebestand.</p>:selected.devices.length===0?<p>Keine technischen Anlagen für dieses Objekt erfasst.</p>:<ul>{selected.devices.map(device=><li key={device.id}><strong>{device.name}</strong>{device.asset_number?` · Anlagen-Nr. ${device.asset_number}`:''}{device.category?` · ${device.category}`:''} · {device.operational_status==='active'?'Aktiv':device.operational_status==='maintenance'?'Wartung':device.operational_status==='fault'?'Störung':device.operational_status==='offline'?'Offline':'Stillgelegt'}{device.serial_number?` · SN ${device.serial_number}`:''}{device.next_maintenance_on?` · nächste Wartung ${new Date(`${device.next_maintenance_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{hasPermission('devices:write')&&<button type="button" onClick={()=>startDeviceEdit(device)}>Anlage bearbeiten</button>}</li>)}</ul>}
+      {selected.devices==null?<p>Keine Berechtigung für den technischen Gerätebestand.</p>:selected.devices.length===0?<p>Keine technischen Anlagen für dieses Objekt erfasst.</p>:<ul>{selected.devices.map(device=><li key={device.id} className={recordFocusClass('device',device.id)}><strong>{device.name}</strong>{device.asset_number?` · Anlagen-Nr. ${device.asset_number}`:''}{device.category?` · ${device.category}`:''} · {device.operational_status==='active'?'Aktiv':device.operational_status==='maintenance'?'Wartung':device.operational_status==='fault'?'Störung':device.operational_status==='offline'?'Offline':'Stillgelegt'}{device.serial_number?` · SN ${device.serial_number}`:''}{device.next_maintenance_on?` · nächste Wartung ${new Date(`${device.next_maintenance_on}T00:00:00Z`).toLocaleDateString('de-DE',{timeZone:'UTC'})}`:''}{hasPermission('devices:write')&&<button type="button" onClick={()=>startDeviceEdit(device)}>Anlage bearbeiten</button>}</li>)}</ul>}
       {hasPermission('devices:write')&&<button type="button" onClick={()=>startDeviceEdit()}>Anlage erfassen</button>}
       {deviceFormOpen&&<form onSubmit={saveDevice}>
         <h4>{editingDeviceId?'Anlage bearbeiten':'Neue Anlage erfassen'}</h4>
@@ -1066,7 +1112,7 @@ export function Sites(){
       </form>}
       <h3>Wartungsaufträge</h3>
       {selected.maintenanceOrders===null?<p>Keine Berechtigung für Wartungsaufträge.</p>:<>
-        {hasPermission('devices:write')&&<button type="button" onClick={()=>setOrderFormOpen(open=>!open)}>{orderFormOpen?'Auftragsformular schließen':'Wartungsauftrag erfassen'}</button>}
+        {hasPermission('devices:write')&&<button type="button" onClick={()=>{setOrderFormOpen(open=>!open);setOrderClientId(uuid());}}>{orderFormOpen?'Auftragsformular schließen':'Wartungsauftrag erfassen'}</button>}
         {orderFormOpen&&hasPermission('devices:write')&&<form onSubmit={createMaintenanceOrder}>
           <h4>Neuen Wartungsauftrag anlegen</h4>
           <label>Anlage<select required value={orderForm.device_id} onChange={event=>setOrderForm({...orderForm,device_id:event.target.value})}><option value="">Anlage auswählen</option>{(selected.devices??[]).map(device=><option key={device.id} value={device.id}>{device.name}{device.asset_number?` · ${device.asset_number}`:''}</option>)}</select></label>
@@ -1078,7 +1124,7 @@ export function Sites(){
           <label>Startstatus<select value={orderForm.status} onChange={event=>setOrderForm({...orderForm,status:event.target.value})}><option value="planned">Geplant</option><option value="open">Offen</option><option value="in_progress">In Bearbeitung</option></select></label>
           <button>Auftrag anlegen</button>
         </form>}
-        {maintenanceOrders.length===0?<p>Keine Wartungsaufträge für dieses Objekt vorhanden.</p>:<ul>{maintenanceOrders.map(order=><li key={order.id} className={order.overdue?'object-warning':''}>
+        {maintenanceOrders.length===0?<p>Keine Wartungsaufträge für dieses Objekt vorhanden.</p>:<ul>{maintenanceOrders.map(order=><li key={order.id} className={`${order.overdue?'object-warning':''} ${recordFocusClass('maintenance_order',order.id)}`.trim()}>
           <strong>{order.order_number}</strong> · {order.device_name??order.device_id}{order.asset_number?` · ${order.asset_number}`:''} · {order.status_label}{order.overdue?' · überfällig':''}{order.due_on?` · fällig am ${formatDue(order.due_on)}`:''}
           <p>{order.description}</p>
           {order.responsible_employee_name&&<p>Verantwortlich: {order.responsible_employee_name}</p>}
@@ -1108,7 +1154,7 @@ export function Sites(){
       </>}
       </div>}
       {active==='journal'&&<div className="object-detail-content">
-      <h3>Objektjournal</h3>{selected.journal===null?<p>Keine Berechtigung für das Wachbuch.</p>:<ul>{selected.journal.map(entry=><li key={entry.id}><strong>{entry.category_name}</strong> · {entry.priority_name} · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
+      <h3>Objektjournal</h3>{selected.journal===null?<p>Keine Berechtigung für das Wachbuch.</p>:<ul>{selected.journal.map(entry=><li key={entry.id} className={recordFocusClass('entry',entry.id)}><strong>{entry.category_name}</strong> · {entry.priority_name} · {entry.status} · Version {entry.revision_no} · {new Date(entry.created_at).toLocaleString('de-DE')}<p>{entry.content}</p></li>)}</ul>}
       <h3>Serverchronik mit Filtern</h3>
       <form onSubmit={event=>{event.preventDefault();if(selected)void loadChronicle(selected.site.id,chronicleFilter);}}>
         <label>Ereignistyp<select aria-label="Ereignistyp filtern" value={chronicleFilter.type} onChange={event=>setChronicleFilter({...chronicleFilter,type:event.target.value})}><option value="">Alle Typen</option>{chronicleCatalog.map(type=><option key={type} value={type}>{type}</option>)}</select></label>
@@ -1116,7 +1162,7 @@ export function Sites(){
         <label>Bis<input aria-label="Chronik bis" type="date" value={chronicleFilter.to} onChange={event=>setChronicleFilter({...chronicleFilter,to:event.target.value})}/></label>
         <button>Chronik filtern</button>
       </form>
-      {chronicleLoading?<p role="status">Chronik wird geladen …</p>:chronicleEvents.length===0?<p>Keine Ereignisse für die gewählten Filter vorhanden.</p>:<ol>{chronicleEvents.map(event=><li key={event.id}><time>{new Date(event.occurred_at).toLocaleString('de-DE')}</time><strong>{event.category}</strong><span>{event.event_kind} · {event.summary}</span>{event.actor_email&&<span> · {event.actor_email}</span>}{event.link&&hasPermission(event.link.permission)?<Link to={event.link.target} title={event.link.entity_id??undefined}>{event.link.label}</Link>:<span className="object-chronicle-no-link">Kein direkter Datensatzlink</span>}</li>)}</ol>}
+      {chronicleLoading?<p role="status">Chronik wird geladen …</p>:chronicleEvents.length===0?<p>Keine Ereignisse für die gewählten Filter vorhanden.</p>:<ol>{chronicleEvents.map(event=><li key={event.id}><time>{new Date(event.occurred_at).toLocaleString('de-DE')}</time><strong>{event.category}</strong><span>{event.event_kind} · {event.summary}</span>{event.actor_email&&<span> · {event.actor_email}</span>}{event.link&&hasPermission(event.link.permission)?<>{event.link.record_available===false&&<span className="object-chronicle-unavailable" role="status">Datensatz nicht mehr verfügbar · </span>}<Link to={event.link.target} title={event.link.entity_id??undefined}>{event.link.label}</Link></>:<span className="object-chronicle-no-link">Kein direkter Datensatzlink</span>}</li>)}</ol>}
       </div>}
     </article>:detailLoading?<p role="status">Objektakte wird geladen …</p>:detailError?<p className="object-empty">Die Objektakte konnte nicht geladen werden. Bitte Berechtigung und Verbindung prüfen.</p>:null):<>
       <div className="object-page-actions">{writable&&<button type="button" onClick={()=>startEdit()}>+ Objekt anlegen</button>}</div>

@@ -1,4 +1,4 @@
-import {Router,Request} from 'express';
+import {Router} from 'express';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {query,withTransaction} from '../db/pool.js';
@@ -109,11 +109,11 @@ watchbookRouter.get('/watchbook/integrity',requirePermission('watchbook:read'),a
     for(const entry of entries){
       const valid=verifyHash({site_id:entry.site_id,created_by:entry.created_by,created_session_id:entry.created_session_id,created_at:new Date(entry.created_at).toISOString()},entry.previous_entry_hash,entry.entry_content_hash,entry.entry_hash,entry.entry_hmac);
       if(!valid||entry.previous_entry_hash!==previousEntry)invalid.push(`entry:${entry.id}`); previousEntry=entry.entry_hash;
-      let previous=entry.entry_hash;let previousRevision:string|null=null;let expectedRevisionNo=1;
+      let previousRevision:string|null=null;let expectedRevisionNo=1;
       for(const revision of revisions.filter(item=>item.entry_id===entry.id)){
         const integrity=revision.revision_hash?verifyRevisionIntegrity({tenant_id:req.user!.tenantId,entry_id:revision.entry_id,revision_id:revision.id,revision_no:revision.revision_no,created_at:new Date(revision.created_at).toISOString(),canonical_payload:{category_id:revision.category_id,priority_id:revision.priority_id,content:revision.content,status:revision.status,authored_by:revision.authored_by,authored_session_id:revision.authored_session_id},previous_revision_hash:revision.previous_revision_hash??null},{canonical_payload_hash:revision.canonical_payload_hash,revision_hash:revision.revision_hash,hmac:revision.integrity_hmac,hmac_version:revision.hmac_version}):{valid:false,reason:'missing_hash',expected:null,actual:null};
         if(!integrity.valid||revision.revision_no!==expectedRevisionNo||revision.previous_revision_hash!==previousRevision)invalid.push(`revision:${revision.id}`);
-        expectedRevisionNo++;previousRevision=revision.revision_hash??null;previous=revision.chain_hash;
+        expectedRevisionNo++;previousRevision=revision.revision_hash??null;
       }
     }
     res.json({valid:invalid.length===0,checked_entries:entries.length,checked_revisions:revisions.length,invalid});

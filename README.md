@@ -1,6 +1,6 @@
 # SecurityOps Platform
 
-Tenant-isolated security operations platform. Phases 1-5 provide alarm operations, patrols, sensor/GPS telemetry, incident management, NSL communication, reporting and operational protection.
+Tenant-isolated security operations platform covering phases 1-9: alarm operations, patrols, sensor/GPS telemetry, incident management, NSL communication, reporting, DMS, CRM/object management, maintenance workflows and the mobile offline PWA.
 
 ## Run locally
 
@@ -39,6 +39,14 @@ Use `secret_ref` with deployment-managed JSON payloads for SFTP, S3, SMB,
 SMTP, SMS, and forwarding credentials. See `docs/backup-runbook.md` for
 formats, worker behavior, restore verification, and rollback.
 
+Object management is centered on `/sites`. The overview combines real backend
+metrics into `A – Sofort handeln`, `B – Zeitnah bearbeiten` and
+`C – Objektinformationen`; the object file links into existing employee, DMS,
+customer and watchbook sections with record-level focus and safe fallbacks for
+inaccessible or deleted records. Maintenance-order creation accepts an optional
+`Idempotency-Key` (UUID) so client retries return the stored response instead of
+creating duplicate orders or audit events. Payload/key mismatches return `409`.
+
 Phase 8 adds the installable `/mobile` PWA. Patrol scans and panic alarms are
 written to an encrypted IndexedDB outbox when offline and sent with a stable
 `client_event_id`; the server enforces tenant-scoped uniqueness so retries are
@@ -59,7 +67,7 @@ back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
 `DMS_BLOB_BACKUP_STATUS`, and `/api/v1/dms/backup/status` contract separately.
 
 ## Commands
-`npm run typecheck`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library.
+`npm run typecheck`, `npm run lint`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library. `npm run e2e` runs the real-browser Playwright suite; `npm run test:production-compose` validates the production Compose stack. PostgreSQL integration suites run when `POSTGRES_TEST_DATABASE_URL` points to a migrated disposable test database; CI applies the migrations and sets this variable. Current verification results are documented in [`docs/phase9-quality-report.md`](docs/phase9-quality-report.md).
 
 Playwright E2E requires PostgreSQL 16 plus the backend and frontend dev servers:
 

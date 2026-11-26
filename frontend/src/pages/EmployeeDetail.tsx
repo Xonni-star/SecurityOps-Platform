@@ -1,6 +1,6 @@
 import {FormEvent,useEffect,useState} from 'react';
-import {useNavigate,useParams} from 'react-router-dom';
-import {api,hasPermission} from '../lib/api';
+import {useNavigate,useParams,useSearchParams} from 'react-router-dom';
+import {api,csrf,hasPermission} from '../lib/api';
 
 type Employee={
   id:string;
@@ -53,6 +53,7 @@ const tabs=[
 
 export function EmployeeDetail(){
   const navigate=useNavigate();
+  const [searchParams,setSearchParams]=useSearchParams();
   const {employeeId,section}=useParams<{employeeId:string;section?:string}>();
   const [profile,setProfile]=useState<Profile|null>(null);
   const [form,setForm]=useState<Employee|null>(null);
@@ -88,6 +89,31 @@ export function EmployeeDetail(){
 
   const employee=profile.employee;
   const statusLabel=employee.employment_status==='active'?'Aktiv':employee.employment_status==='leave'?'Abwesenheit':employee.employment_status==='probation'?'Probezeit':employee.employment_status==='terminated'?'Ausgeschieden':'Archiviert';
+
+  const qualificationId=searchParams.get('qualification');
+  const documentId=searchParams.get('document');
+  const focusedQualification=qualificationId?profile.qualifications.find((item:any)=>item.id===qualificationId):undefined;
+  const focusedDocument=documentId?profile.documents.find((item:any)=>item.id===documentId):undefined;
+  const clearFocus=()=>{const next=new URLSearchParams(searchParams);next.delete('qualification');next.delete('document');setSearchParams(next,{replace:true});};
+  const downloadEvidence=async(document:any,version:any)=>{
+    try{
+      const response=await fetch(`/api/v1/dms/documents/${document.id}/versions/${version.id}/download`,{credentials:'include',headers:{'x-csrf-token':csrf()}});
+      if(!response.ok)throw new Error((await response.json()).error||'Download fehlgeschlagen');
+      const blob=await response.blob();const url=URL.createObjectURL(blob);const link=window.document.createElement('a');
+      link.href=url;link.download=`${document.title||'nachweis'}-v${version.version_no}`;link.click();URL.revokeObjectURL(url);
+    }catch(e){setError((e as Error).message);}
+  };
+  const focusPanel=(qualificationId||documentId)&&<section className="object-record-focus employee-record-focus" aria-label="Geöffneter Nachweis">
+    <div>
+      <span className="object-record-focus-label">Geöffneter Nachweis</span>
+      {focusedQualification?<>
+        <h3>{focusedQualification.catalog_name||focusedQualification.code||'Qualifikation'}</h3>
+        <p>{focusedQualification.code||'Ohne Katalogcode'} · {focusedQualification.status||'Status unbekannt'}{focusedQualification.valid_until?` · gültig bis ${focusedQualification.valid_until}`:' · unbefristet'}</p>
+      </>:qualificationId?<h3>Verknüpfte Qualifikation nicht mehr verfügbar</h3>:null}
+      {documentId&&<p>{focusedDocument?<>Nachweisdokument: <strong>{focusedDocument.title}</strong> · {focusedDocument.document_status||'Status unbekannt'}{focusedDocument.versions?.some((version:any)=>version.lifecycle_state==='available')&&hasPermission('dms:read')&&<button type="button" onClick={()=>void downloadEvidence(focusedDocument,focusedDocument.versions.find((version:any)=>version.lifecycle_state==='available'))}>Nachweis herunterladen</button>}</>:hasPermission('dms:read')?<a href={`/dms?document=${documentId}`}>Nachweis im Dokumentenmanagement prüfen</a>:'Verknüpfter Nachweis ist nicht verfügbar.'}</p>}
+    </div>
+    <button type="button" onClick={clearFocus}>Fokus schließen</button>
+  </section>;
 
   const renderOverview=()=><>
     <div className="employee-detail-kpis">
@@ -129,8 +155,8 @@ export function EmployeeDetail(){
     <button type="submit">Stammdaten speichern</button>
   </form>:<p>Keine Schreibberechtigung für Stammdaten.</p>;
 
-  const simpleTable=(title:string,headers:string[],rows:(string|null|undefined)[][])=>{
-    return <article className="employee-detail-table"><h3>{title}</h3><table><thead><tr>{headers.map(header=><th key={header}>{header}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index}>{row.map((value,column)=><td key={column}>{value||'–'}</td>)}</tr>)}</tbody></table>{rows.length===0&&<p className="employee-empty">Keine Daten erfasst.</p>}</article>;
+  const simpleTable=(title:string,headers:string[],rows:(string|null|undefined)[][],rowClass?:(row:(string|null|undefined)[],index:number)=>string)=>{
+    return <article className="employee-detail-table"><h3>{title}</h3><table><thead><tr>{headers.map(header=><th key={header}>{header}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index} className={rowClass?.(row,index)}>{row.map((value,column)=><td key={column}>{value||'–'}</td>)}</tr>)}</tbody></table>{rows.length===0&&<p className="employee-empty">Keine Daten erfasst.</p>}</article>;
   };
 
   return <section className="employee-detail-page">
@@ -144,6 +170,8 @@ export function EmployeeDetail(){
       {hasPermission('employees:write')&&<button type="button" onClick={()=>navigate(`/employees/${employeeId}/stammdaten`)}>Bearbeiten</button>}
     </div>
 
+    {focusPanel}
+
     <nav className="employee-tabs" aria-label="Mitarbeiterbereiche">
       {tabs.map(([key,label])=><button type="button" key={key} className={active===key?'active':''} onClick={()=>navigate(`/employees/${employeeId}/${key}`)}>{label}</button>)}
     </nav>
@@ -151,7 +179,7 @@ export function EmployeeDetail(){
     <div className="employee-detail-content">
       {active==='uebersicht'&&renderOverview()}
       {active==='stammdaten'&&renderStammdaten()}
-      {active==='qualifikationen'&&simpleTable('Qualifikationen',['Qualifikation','Gültig ab','Gültig bis','Status'],profile.qualifications.map((item:any)=>[item.catalog_name||item.code,item.valid_from,item.valid_until,item.status]))}
+      {active==='qualifikationen'&&simpleTable('Qualifikationen',['Qualifikation','Gültig ab','Gültig bis','Status'],profile.qualifications.map((item:any)=>[item.catalog_name||item.code,item.valid_from,item.valid_until,item.status]),(_row,index)=>profile.qualifications[index]?.id===qualificationId?'object-record-highlight':'')}
       {active==='vertraege'&&simpleTable('Verträge',['Vertragsart','Status','Beginn','Ende'],profile.contracts.map((item:any)=>[item.contract_type,item.status,item.starts_on,item.ends_on]))}
       {active==='dokumente'&&simpleTable('Dokumente',['Titel','Kategorie','Status','Erstellt'],profile.documents.map((item:any)=>[item.title,item.employee_document_category,item.document_status,item.created_at]))}
       {active==='dienstplanung'&&simpleTable('Verfügbarkeit',['Wochentag','Von','Bis','Verfügbar'],profile.availability.map((item:any)=>[String(item.weekday),item.starts_time,item.ends_time,item.available?'Ja':'Nein']))}

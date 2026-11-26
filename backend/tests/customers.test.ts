@@ -36,7 +36,7 @@ beforeEach(()=>{
 
 describe('customer management',()=>{
   it('lists only tenant customers with server-computed relationship counts',async()=>{
-    queryMock.mockImplementation(async(sql:string,values:unknown[])=>{
+    queryMock.mockImplementation(async(sql:string,_values:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([sessionUser]);
       if(sql.includes('FROM customers c'))return result([{id:customer,name:'Nordlicht GmbH',active_sites:2,active_contracts:1,active_contacts:3}]);
       return result([]);

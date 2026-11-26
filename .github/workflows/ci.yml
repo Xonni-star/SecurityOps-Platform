@@ -9,9 +9,36 @@ jobs:
         with: {node-version: 22, cache: npm}
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test -w backend
       - run: npm test -w frontend
       - run: npm run build
+  postgres-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm ci
+      - name: Start PostgreSQL
+        run: docker compose up -d db
+      - name: Wait for PostgreSQL
+        run: until docker compose exec -T db pg_isready -U securityops -d securityops >/dev/null; do sleep 2; done
+      - name: Create fresh migrated test database
+        env:
+          DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops_integration?sslmode=disable
+        run: |
+          docker compose exec -T db psql -U securityops -d postgres -v ON_ERROR_STOP=1 \
+            -c 'DROP DATABASE IF EXISTS securityops_integration WITH (FORCE);' \
+            -c 'CREATE DATABASE securityops_integration;'
+          npm run migrate -w backend
+      - name: Run PostgreSQL integration suites
+        env:
+          POSTGRES_TEST_DATABASE_URL: postgres://securityops:securityops@127.0.0.1:5432/securityops_integration?sslmode=disable
+        run: npm test -w backend -- --runInBand --testPathPattern='(rls|watchbook|crm-migration)\.integration\.test\.ts'
+      - name: Tear down PostgreSQL
+        if: always()
+        run: docker compose down -v
   production-compose:
     runs-on: ubuntu-latest
     steps:

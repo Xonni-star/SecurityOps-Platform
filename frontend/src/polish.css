@@ -188,10 +188,28 @@
 .object-priority-actions li>a{color:#cfe6ff!important;font-weight:700;overflow-wrap:anywhere}
 .object-action-meta{color:#8fa9c4;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
 .object-action-detail{color:#b6c9dd;font-size:12px;overflow-wrap:anywhere}
+.object-priority-empty{margin:0;color:#7590aa;font-size:11px}
+.object-info-metrics{margin:14px 0;padding:14px;background:#102744;border:1px solid #1e3c5b;border-radius:8px}
+.object-info-metrics h3{margin:0 0 8px;font-size:14px;color:#bad0e7}
+.object-info-metrics p{margin:4px 0;color:#b6c9dd;font-size:12px;overflow-wrap:anywhere}
 .object-qualification-meta{color:#8fa9c4;font-size:12px}
 .object-scope-hint{font-size:11px;color:#7f9ab5!important;margin-top:8px!important}
 .eligibility-reason-code{color:#8fb5d8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
 .object-chronicle-no-link{color:#66809a;font-size:11px}
+.object-chronicle-unavailable{color:#ffb4a8;font-size:11px}
+.object-priority-levels{display:grid;gap:12px}
+.object-priority-level{border-left:3px solid #44749d;padding-left:10px}
+.object-priority-level-A{border-left-color:#ff8a8a}
+.object-priority-level-B{border-left-color:#ffc46b}
+.object-priority-level-C{border-left-color:#7db4e4}
+.object-priority-level h4{margin:0 0 6px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#d1e4f7}
+.object-record-focus{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:12px 0;padding:14px;background:#143451;border:1px solid #3d709d;border-left:4px solid #7db4e4;border-radius:8px}
+.object-record-focus-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8fb5d8}
+.object-record-focus h3{margin:4px 0;font-size:16px;color:#e4f2ff}
+.object-record-focus p{margin:3px 0;color:#b6c9dd;font-size:12px}
+.object-record-focus-description{color:#d2e2f2!important;overflow-wrap:anywhere}
+.object-record-focus button{flex:none;padding:6px 10px;background:#1c4265;border:1px solid #3d709d;border-radius:5px;color:#dceeff;cursor:pointer}
+.object-record-highlight{outline:2px solid #7db4e4;outline-offset:2px;background:#173552!important;border-radius:5px}
 @media(max-width:1100px){
   .object-filterbar{grid-template-columns:repeat(3,minmax(0,1fr))}
   .object-filterbar>input{grid-column:span 2}

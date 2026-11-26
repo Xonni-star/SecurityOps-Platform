@@ -154,7 +154,7 @@ test('real API and browser flows manage the digital object file',async({page})=>
   const chronicleResponse=await page.request.get(`/api/v1/sites/${siteId}/chronicle?type=site.hazard.created&limit=100`);
   expect(chronicleResponse.status()).toBe(200);
   const chronicle=await chronicleResponse.json();
-  expect(chronicle.events.some((event:any)=>event.event_kind==='site.hazard.created'&&event.link?.label==='Gefährdung öffnen')).toBe(true);
+  expect(chronicle.events.some((event:any)=>event.event_kind==='site.hazard.created'&&event.link?.label==='Gefährdung öffnen'&&event.link?.target?.includes(`/sites/${siteId}/gefaehrdungen?hazard=`))).toBe(true);
   await page.getByRole('button',{name:'Journal'}).click();
   await expect(page.getByRole('heading',{name:'Serverchronik mit Filtern'})).toBeVisible();
   await page.getByLabel('Chronik von').fill(dateIn(-1));
@@ -162,6 +162,9 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await page.getByRole('button',{name:'Chronik filtern'}).click();
   expect((await filteredChronicle).status()).toBe(200);
   await expect(page.getByRole('heading',{name:'Serverchronik mit Filtern'})).toBeVisible();
+  await page.getByRole('link',{name:'Gefährdung öffnen'}).first().click();
+  await expect(page.getByRole('region',{name:'Geöffneter Datensatz'})).toBeVisible();
+  await expect(page).toHaveURL(/\/sites\/[^/]+\/gefaehrdungen\?hazard=/);
 
   await page.goto('/sites');
   const dashboard=page.getByRole('region',{name:'Dringende Aufgaben in allen Objekten'});
@@ -186,7 +189,7 @@ test('object overview exposes concrete qualification issues and binding shift el
   expect(context.personnelSummary.qualification_issue_count).toBeGreaterThan(0);
   expect(context.personnelSummary.qualification_issues.some((issue:any)=>issue.id===qualification.id)).toBe(true);
   expect(context.priorityActions.length).toBeGreaterThan(0);
-  expect(context.priorityActions.every((action:any)=>action.id&&action.title&&action.tab&&action.target)).toBe(true);
+  expect(context.priorityActions.every((action:any)=>action.id&&action.title&&action.tab&&action.target&&['A','B','C'].includes(action.priority))).toBe(true);
 
   const suffix=Date.now();
   const periodResponse=await page.request.post('/api/v1/scheduling/periods',{headers,data:{
@@ -213,12 +216,21 @@ test('object overview exposes concrete qualification issues and binding shift el
   await page.goto(`/sites/${siteId}/uebersicht`);
   const priorities=page.getByRole('region',{name:'Nächste Schritte nach Dringlichkeit'});
   await expect(priorities).toBeVisible();
+  await expect(priorities.getByText('A – Sofort handeln')).toBeVisible();
+  await expect(priorities.getByText('B – Zeitnah bearbeiten')).toBeVisible();
+  await expect(priorities.getByText('C – Objektinformationen')).toBeVisible();
+  await expect(page.getByRole('region',{name:'Objektinformationen'})).toBeVisible();
   await expect(priorities.getByRole('link').first()).toBeVisible();
   await expect(page.getByRole('heading',{name:'Personalüberblick'})).toBeVisible();
   await expect(page.getByText(/Läuft bald ab/)).toBeVisible();
   await expect(page.locator('.object-qualification-meta').getByText('Kein Nachweis verknüpft')).toBeVisible();
   await expect(page.getByText(/Allgemeine Personalübersicht/)).toBeVisible();
-  await expect(page.getByRole('link',{name:'Nachweis öffnen',exact:true}).first()).toHaveAttribute('href',`/employees/${employeeId}/qualifikationen`);
+  const evidenceLink=page.getByRole('link',{name:'Nachweis öffnen',exact:true}).first();
+  await expect(evidenceLink).toHaveAttribute('href',`/employees/${employeeId}/qualifikationen`);
+  await evidenceLink.click();
+  await expect(page).toHaveURL(/\/employees\/[^/]+\/qualifikationen$/);
+  await expect(page.getByRole('region',{name:'Geöffneter Nachweis'})).toHaveCount(0);
+  await page.goto(`/sites/${siteId}/uebersicht`);
 
   await page.getByRole('button',{name:'Dienstplanung'}).click();
   await expect(page.getByRole('heading',{name:'Dienstplanung und Schichten'})).toBeVisible();

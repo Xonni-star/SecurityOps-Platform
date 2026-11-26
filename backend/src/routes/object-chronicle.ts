@@ -7,8 +7,13 @@ import {createSitePermissionReader} from '../services/site-permissions.js';
 const uuid=z.string().uuid();
 const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
-type ChronicleLink={target:string;label:string;permission:string;entity_id?:string|null;entity_type?:string|null};
-type ChronicleRow={
+export type ChronicleLink={
+  target:string;label:string;permission:string;
+  entity_id?:string|null;entity_type?:string|null;
+  record_id?:string|null;record_available?:boolean;verification_type?:string|null;fallback_target?:string|null;
+  evidence_id?:string|null;evidence_fallback_target?:string|null;
+};
+export type ChronicleRow={
   event_kind:string;entity_type:string|null;entity_id:string|null;site_id:string|null;
   details:Record<string,unknown>|null;
 };
@@ -21,65 +26,202 @@ function detailId(details:Record<string,unknown>|null,key:string):string|null{
   return usableId(details?.[key]);
 }
 
+/** Recorded event types use singular and plural spellings; normalize once. */
+const canonicalTypes:Record<string,string>={
+  maintenance_orders:'maintenance_order',maintenance_order:'maintenance_order',
+  dms_documents:'dms_document',dms_document:'dms_document',
+  dms_document_requirements:'dms_document_requirement',dms_document_requirement:'dms_document_requirement',
+  devices:'device',device:'device',
+  object_locations:'object_location',object_location:'object_location',
+  object_hazards:'object_hazard',object_hazard:'object_hazard',
+  object_hazard_measures:'object_hazard_measure',object_hazard_measure:'object_hazard_measure',
+  site_instructions:'site_instruction',site_instruction:'site_instruction',
+  instruction_acknowledgements:'instruction_acknowledgement',instruction_acknowledgement:'instruction_acknowledgement',
+  employee_object_assignments:'employee_object_assignment',employee_object_assignment:'employee_object_assignment',
+  customer_sites:'customer_site',customer_site:'customer_site',
+  keys:'key',key:'key',key_bundles:'key_bundle',key_bundle:'key_bundle',
+  schedule_periods:'schedule_period',schedule_period:'schedule_period',
+  schedule_shifts:'schedule_shift',schedule_shift:'schedule_shift',
+  schedule_assignments:'schedule_assignment',schedule_assignment:'schedule_assignment',
+  watchbook_entries:'watchbook_entry',watchbook_entry:'watchbook_entry',
+  alarms:'alarm',alarm:'alarm',incidents:'incident',incident:'incident',
+  handover_records:'handover',handover:'handover',
+  employee_qualification:'qualification',employee_qualifications:'qualification',qualification:'qualification',
+  employees:'employee',employee:'employee',
+  customers:'customer',customer:'customer',
+  customer_tasks:'customer_task',customer_task:'customer_task',
+};
+
+function canonicalType(type:string|null|undefined):string|null{
+  if(!type)return null;
+  return canonicalTypes[type]??type;
+}
+
+type RecordSpec={table:string;siteScoped:boolean};
+/** Existing tables used only to verify that a linked record still exists in this tenant. */
+const recordTables:Record<string,RecordSpec>={
+  maintenance_order:{table:'maintenance_orders',siteScoped:true},
+  dms_document:{table:'dms_documents',siteScoped:true},
+  dms_document_requirement:{table:'dms_document_requirements',siteScoped:true},
+  device:{table:'devices',siteScoped:true},
+  object_location:{table:'object_locations',siteScoped:true},
+  object_hazard:{table:'object_hazards',siteScoped:true},
+  object_hazard_measure:{table:'object_hazard_measures',siteScoped:true},
+  site_instruction:{table:'site_instructions',siteScoped:true},
+  employee_object_assignment:{table:'employee_object_assignments',siteScoped:true},
+  customer_site:{table:'customer_sites',siteScoped:false},
+  key:{table:'keys',siteScoped:true},
+  key_bundle:{table:'key_bundles',siteScoped:true},
+  schedule_period:{table:'schedule_periods',siteScoped:true},
+  schedule_shift:{table:'schedule_shifts',siteScoped:true},
+  schedule_assignment:{table:'schedule_assignments',siteScoped:false},
+  watchbook_entry:{table:'watchbook_entries',siteScoped:true},
+  alarm:{table:'alarms',siteScoped:false},
+  incident:{table:'incidents',siteScoped:false},
+  handover:{table:'handover_records',siteScoped:true},
+  qualification:{table:'employee_qualifications',siteScoped:false},
+  employee:{table:'employees',siteScoped:false},
+  customer:{table:'customers',siteScoped:false},
+  customer_task:{table:'customer_tasks',siteScoped:false},
+};
+
+type SectionSpec={tab:string;label:string;permission:string;param:string};
+const sectionSpecs:Record<string,SectionSpec>={
+  maintenance_order:{tab:'technik',label:'Wartungsauftrag öffnen',permission:'devices:read',param:'maintenance_order'},
+  device:{tab:'technik',label:'Gerät öffnen',permission:'devices:read',param:'device'},
+  dms_document:{tab:'dokumente',label:'Dokument öffnen',permission:'dms:read',param:'document'},
+  dms_document_requirement:{tab:'dokumente',label:'Pflichtdokument öffnen',permission:'dms:read',param:'requirement'},
+  object_location:{tab:'struktur',label:'Bereich öffnen',permission:'sites:read',param:'location'},
+  object_hazard:{tab:'gefaehrdungen',label:'Gefährdung öffnen',permission:'sites:read',param:'hazard'},
+  object_hazard_measure:{tab:'gefaehrdungen',label:'Maßnahme öffnen',permission:'sites:read',param:'measure'},
+  site_instruction:{tab:'anweisungen',label:'Dienstanweisung öffnen',permission:'watchbook:read',param:'instruction'},
+  instruction_acknowledgement:{tab:'anweisungen',label:'Dienstanweisung öffnen',permission:'watchbook:read',param:'instruction'},
+  employee_object_assignment:{tab:'personal',label:'Personalzuordnung öffnen',permission:'employees:read',param:'assignment'},
+  key:{tab:'schluessel',label:'Schlüssel öffnen',permission:'keys:read',param:'key'},
+  key_bundle:{tab:'schluessel',label:'Schlüsselbund öffnen',permission:'keys:read',param:'key_bundle'},
+  schedule_period:{tab:'dienstplanung',label:'Dienstplan öffnen',permission:'scheduling:read',param:'period'},
+  schedule_shift:{tab:'dienstplanung',label:'Schicht öffnen',permission:'scheduling:read',param:'shift'},
+  schedule_assignment:{tab:'dienstplanung',label:'Schichtzuweisung öffnen',permission:'scheduling:read',param:'shift_assignment'},
+  watchbook_entry:{tab:'journal',label:'Wachbucheintrag öffnen',permission:'watchbook:read',param:'entry'},
+  alarm:{tab:'vorfaelle',label:'Alarm öffnen',permission:'alarms:read',param:'alarm'},
+  incident:{tab:'vorfaelle',label:'Vorfall öffnen',permission:'incidents:read',param:'incident'},
+  handover:{tab:'uebersicht',label:'Übergabe öffnen',permission:'handover:read',param:'handover'},
+  customer_task:{tab:'aufgaben',label:'Aufgabe öffnen',permission:'customers:read',param:'task'},
+  employee:{tab:'personal',label:'Mitarbeiterprofil öffnen',permission:'employees:read',param:'employee'},
+};
+
+function sectionTarget(siteId:string,spec:SectionSpec,id:string):string{
+  return `/sites/${siteId}/${spec.tab}?${spec.param}=${id}`;
+}
+
 /**
- * Derives an existing frontend route from the real event data. Never invents
- * a target: if the event carries no usable id there is no link, and the
- * frontend shows a plain text hint instead.
+ * Derives the concrete record target from real event data. The route verifies
+ * that the record still exists in the tenant before exposing this link; if no
+ * usable id exists there is no record link and the UI shows a plain hint.
  */
-function deriveChronicleLink(row:ChronicleRow):ChronicleLink|null{
-  const site=row.site_id;
+export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
+  const type=canonicalType(row.entity_type);
+  const id=usableId(row.entity_id);
   const details=row.details;
   const employeeId=detailId(details,'employee_id');
   const documentId=detailId(details,'document_id');
   const customerId=detailId(details,'customer_id');
-  const siteTab=(section:string,label:string,permission:string):ChronicleLink|null=>
-    site?{target:`/sites/${site}/${section}`,label,permission}:null;
-  switch(row.entity_type){
-    case 'maintenance_order':case 'maintenance_orders':return siteTab('technik','Wartungsauftrag öffnen','devices:read');
-    case 'dms_document':case 'dms_documents':return siteTab('dokumente','Dokument öffnen','dms:read');
-    case 'dms_document_requirement':case 'dms_document_requirements':return siteTab('dokumente','Pflichtdokument öffnen','dms:read');
-    case 'device':case 'devices':return siteTab('technik','Gerät öffnen','devices:read');
-    case 'object_location':case 'object_locations':return siteTab('struktur','Bereich öffnen','sites:read');
-    case 'object_hazard':case 'object_hazards':case 'object_hazard_measure':case 'object_hazard_measures':return siteTab('gefaehrdungen','Gefährdung öffnen','sites:read');
-    case 'site_instruction':case 'site_instructions':return siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
-    case 'instruction_acknowledgement':case 'instruction_acknowledgements':return employeeId
-      ?{target:`/employees/${employeeId}`,label:'Kenntnisnahme öffnen',permission:'employees:read'}
-      :siteTab('anweisungen','Dienstanweisung öffnen','watchbook:read');
-    case 'employee_object_assignment':case 'employee_object_assignments':return employeeId
-      ?{target:`/employees/${employeeId}`,label:'Mitarbeiterprofil öffnen',permission:'employees:read'}
-      :siteTab('personal','Personalübersicht öffnen','employees:read');
-    case 'customer_site':case 'customer_sites':return customerId
-      ?{target:`/customers/${customerId}`,label:'Kunde öffnen',permission:'customers:read'}
-      :siteTab('kunden','Kunden & Verträge öffnen','customers:read');
-    case 'key':case 'key_bundle':return siteTab('schluessel','Schlüssel öffnen','keys:read');
-    case 'schedule_period':case 'schedule_shift':case 'schedule_assignment':return siteTab('dienstplanung','Dienstplanung öffnen','scheduling:read');
-    case 'watchbook_entry':return {target:'/watchbook',label:'Wachbucheintrag öffnen',permission:'watchbook:read'};
-    case 'alarm':return {target:'/alarms',label:'Alarm öffnen',permission:'alarms:read'};
-    case 'incident':return {target:'/incidents',label:'Vorfall öffnen',permission:'incidents:read'};
-    case 'handover':return {target:'/handovers',label:'Übergabe öffnen',permission:'handover:read'};
+  const site=row.site_id;
+
+  if(type==='qualification'){
+    if(employeeId){
+      const target=`/employees/${employeeId}/qualifikationen${id?`?qualification=${id}${documentId?`&document=${documentId}`:''}`:''}`;
+      return {target,label:'Qualifikationsnachweis öffnen',permission:'qualifications:read',
+        entity_id:id,entity_type:row.entity_type??type,record_id:id,verification_type:'qualification',
+        fallback_target:`/employees/${employeeId}/qualifikationen`,
+        evidence_id:documentId,
+        evidence_fallback_target:`/employees/${employeeId}/qualifikationen${id?`?qualification=${id}`:''}`};
+    }
+    return site?{target:`/sites/${site}/personal`,label:'Qualifikationen öffnen',permission:'qualifications:read'}:null;
   }
-  if(row.event_kind.startsWith('qualification'))return employeeId
-    ?{target:`/employees/${employeeId}/qualifikationen`,label:'Qualifikationsnachweis öffnen',permission:'qualifications:read'}
-    :{target:'/qualifications',label:'Qualifikationen öffnen',permission:'qualifications:read'};
-  if(row.event_kind.startsWith('employee'))return employeeId
-    ?{target:`/employees/${employeeId}`,label:'Mitarbeiterprofil öffnen',permission:'employees:read'}
-    :siteTab('personal','Personalübersicht öffnen','employees:read');
-  if(documentId)return siteTab('dokumente','Dokument öffnen','dms:read');
+  if(type==='employee'&&employeeId&&site){
+    const spec=sectionSpecs.employee!;
+    return {target:sectionTarget(site,spec,employeeId),label:spec.label,permission:spec.permission,
+      entity_id:id,entity_type:row.entity_type??type,record_id:employeeId,verification_type:'employee',
+      fallback_target:`/sites/${site}/personal`};
+  }
+  if(type==='customer'&&customerId){
+    return {target:`/customers/${customerId}`,label:'Kunde öffnen',permission:'customers:read',
+      entity_id:id,entity_type:row.entity_type??type,record_id:customerId,verification_type:'customer',
+      fallback_target:'/customers'};
+  }
+  if(type==='customer_site'&&customerId){
+    return {target:`/customers/${customerId}${site?`?site=${site}`:''}`,label:'Kunde öffnen',permission:'customers:read',
+      entity_id:id,entity_type:row.entity_type??type,record_id:customerId,verification_type:'customer',
+      fallback_target:'/customers'};
+  }
+  const spec=type?sectionSpecs[type]:null;
+  if(spec&&id&&site){
+    return {target:sectionTarget(site,spec,id),label:spec.label,permission:spec.permission,
+      entity_id:id,entity_type:row.entity_type??type,record_id:id,
+      verification_type:type==='instruction_acknowledgement'?'site_instruction':type,
+      fallback_target:`/sites/${site}/${spec.tab}`};
+  }
+  // Events without a concrete record still link to the responsible module area.
+  if(spec&&site)return {target:`/sites/${site}/${spec.tab}`,label:spec.label,permission:spec.permission};
+  if(documentId&&site)return {target:`/sites/${site}/dokumente?document=${documentId}`,label:'Dokument öffnen',permission:'dms:read',record_id:documentId,verification_type:'dms_document'};
   return null;
 }
 
 /**
- * Section links stay section-level, but entity-specific links carry the real
- * record id so the UI can label the target precisely and omit broken links.
+ * Tenant-scoped existence and permission verification for every record link in
+ * one query. A record that was deleted meanwhile falls back to its module
+ * section and is labelled as unavailable instead of leading to a broken view.
  */
-export function chronicleLink(row:ChronicleRow):ChronicleLink|null{
-  const link=deriveChronicleLink(row);
-  if(!link)return null;
-  const entityId=usableId(row.entity_id);
-  if(entityId&&(link.target.includes('/employees/')||link.target.includes('/customers/'))){
-    return {...link,entity_id:entityId,entity_type:row.entity_type};
+export async function resolveChronicleLinks(
+  rows:ChronicleRow[],
+  tenantId:string,
+  siteId:string,
+  canRead:(permission:string,siteId:string)=>Promise<boolean>,
+):Promise<Array<ChronicleLink|null>>{
+  const links=rows.map(chronicleLink);
+  const candidates=new Map<string,Set<string>>();
+  for(const link of links){
+    const type=canonicalType(link?.verification_type??link?.entity_type);
+    const id=link?.record_id;
+    if(type&&id&&recordTables[type]){
+      if(!candidates.has(type))candidates.set(type,new Set());
+      candidates.get(type)!.add(id);
+    }
+    if(link?.evidence_id&&recordTables.dms_document){
+      if(!candidates.has('dms_document'))candidates.set('dms_document',new Set());
+      candidates.get('dms_document')!.add(link.evidence_id);
+    }
   }
-  return link;
+  const available=new Set<string>();
+  const params:unknown[]=[tenantId,siteId];
+  let parameterIndex=3;
+  const unions:string[]=[];
+  for(const [type,spec] of Object.entries(recordTables)){
+    const ids=[...(candidates.get(type)??[])];
+    if(ids.length===0)continue;
+    const placeholders=ids.map(()=>`$${parameterIndex++}`).join(',');
+    params.push(...ids);
+    unions.push(`SELECT '${type}'::text AS type,id::text AS id FROM ${spec.table}
+      WHERE tenant_id=$1 ${spec.siteScoped?'AND site_id=$2 ':''}AND id IN (${placeholders})`);
+  }
+  if(unions.length>0){
+    const result=await query<{type:string;id:string}>(unions.join(' UNION ALL '),params);
+    for(const row of result.rows)available.add(`${row.type}:${row.id}`);
+  }
+  return Promise.all(links.map(async link=>{
+    if(!link||!await canRead(link.permission,siteId))return null;
+    const type=canonicalType(link.verification_type??link.entity_type);
+    const id=link.record_id;
+    if(type&&id&&recordTables[type]&&!available.has(`${type}:${id}`)){
+      return {...link,target:link.fallback_target??link.target.split('?')[0],record_available:false,
+        label:`${link.label} (Datensatz nicht mehr verfügbar)`,evidence_id:null};
+    }
+    if(link.evidence_id&&!available.has(`dms_document:${link.evidence_id}`)){
+      return {...link,target:link.evidence_fallback_target??link.target,evidence_id:null};
+    }
+    return link;
+  }));
 }
 
 function category(eventKind:string){
@@ -197,10 +339,11 @@ objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('
       [req.user!.tenantId,siteId,patterns.length?patterns:null,filters.from?`${filters.from}T00:00:00Z`:null,
         filters.to?`${filters.to}T00:00:00Z`:null,filters.limit??100,types.length?types:null],
     )).rows;
-    res.json({site_id:siteId,events:rows.map(row=>({
+    const links=await resolveChronicleLinks(rows as ChronicleRow[],req.user!.tenantId,siteId,canRead);
+    res.json({site_id:siteId,events:rows.map((row,index)=>({
       ...row,
       category:category(String(row.event_kind)),
-      link:chronicleLink(row as ChronicleRow),
+      link:links[index],
     }))});
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid chronicle filter'});next(error);}
 });
