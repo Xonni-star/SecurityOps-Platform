@@ -38,19 +38,19 @@ function permissionScope(req:Request,code:string):PermissionScope|null{
 function keyPermission(req:Request,code:string,siteId:string|null){
   const scope=permissionScope(req,code);
   if(!scope||!canAccessResource(authorization(req),scope,{tenantId:req.user!.tenantId,siteId})){
-    throw Object.assign(new Error('Insufficient permissions for this key scope'),{status:403});
+    throw Object.assign(new Error('Unzureichende Berechtigungen für diesen Schlüsselbereich'),{status:403});
   }
 }
 function keyPermissionAny(req:Request,codes:string[],siteId:string|null){
   for(const code of codes){
     try{keyPermission(req,code,siteId);return code;}catch{/* try the alias */}
   }
-  throw Object.assign(new Error('Insufficient permissions for this key scope'),{status:403});
+  throw Object.assign(new Error('Unzureichende Berechtigungen für diesen Schlüsselbereich'),{status:403});
 }
 function requireAnyPermission(...codes:string[]){
   return (req:Request,res:import('express').Response,next:import('express').NextFunction)=>{
     const context=authorization(req);
-    return codes.some(code=>canUsePermission(context,code,['tenant','site','system']))?next():res.status(403).json({error:'Insufficient permissions'});
+    return codes.some(code=>canUsePermission(context,code,['tenant','site','system']))?next():res.status(403).json({error:'Unzureichende Berechtigungen'});
   };
 }
 function operator(req:Request){return req.user!.role==='admin'||req.user!.role==='operator'||req.user!.isSystemAdmin===true;}
@@ -63,17 +63,17 @@ function parseQuery<S extends z.ZodObject<z.ZodRawShape>>(req:Request,schema:S):
   for(const key of Object.keys(schema.shape)){const value=req.query[key];if(typeof value==='string'&&value.trim()!=='')raw[key]=value;}
   return schema.parse(raw) as z.infer<S>;
 }
-function badRequest(res:import('express').Response){return res.status(400).json({error:'Invalid key request'});}
+function badRequest(res:import('express').Response){return res.status(400).json({error:'Ungültige Schlüsselanfrage'});}
 async function documentForReceipt(client:Client,tenantId:string,siteId:string|null,documentId:string|null|undefined){
   if(!documentId)return null;
   const document=(await client.query('SELECT id,site_id FROM dms_documents WHERE tenant_id=$1 AND id=$2',[tenantId,documentId])).rows[0];
-  if(!document||document.site_id!==siteId)throw Object.assign(new Error('Receipt document must belong to the same tenant and site'),{status:409,code:'KEY_RECEIPT_SITE_MISMATCH'});
+  if(!document||document.site_id!==siteId)throw Object.assign(new Error('Belegdokument muss zum selben Mandanten und Objekt gehören'),{status:409,code:'KEY_RECEIPT_SITE_MISMATCH'});
   return documentId;
 }
 async function holderForIssue(client:Client,tenantId:string,holderUserId:string|null|undefined,holderEmployeeId:string|null|undefined){
-  if(!holderIsValid(holderUserId,holderEmployeeId))throw Object.assign(new Error('Exactly one valid holder is required'),{status:400});
-  if(holderUserId&&!(await client.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[tenantId,holderUserId])).rowCount)throw Object.assign(new Error('Holder user not found'),{status:404});
-  if(holderEmployeeId&&!(await client.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,holderEmployeeId])).rowCount)throw Object.assign(new Error('Holder employee not found'),{status:404});
+  if(!holderIsValid(holderUserId,holderEmployeeId))throw Object.assign(new Error('Genau ein gültiger Halter ist erforderlich'),{status:400});
+  if(holderUserId&&!(await client.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[tenantId,holderUserId])).rowCount)throw Object.assign(new Error('Halterbenutzer nicht gefunden'),{status:404});
+  if(holderEmployeeId&&!(await client.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,holderEmployeeId])).rowCount)throw Object.assign(new Error('Haltermitarbeiter nicht gefunden'),{status:404});
   return {holderUserId:holderUserId??null,holderEmployeeId:holderEmployeeId??null};
 }
 
@@ -450,7 +450,7 @@ keysRouter.post('/keys',requireAnyPermission('keys:write','keys:create'),async(r
     const body=createBody.parse(req.body);
     keyPermissionAny(req,['keys:write','keys:create'],body.site_id??null);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.create',payload:req.body},async tx=>{
-      if(body.responsible_employee_id&&!(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rowCount)throw Object.assign(new Error('Responsible employee not found'),{status:404});
+      if(body.responsible_employee_id&&!(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rowCount)throw Object.assign(new Error('Verantwortlicher Mitarbeiter nicht gefunden'),{status:404});
       const row=(await tx.query(`INSERT INTO keys(tenant_id,site_id,key_code,label,key_type,serial_number,manufacturer,location,building,area,access_point,description,remarks,responsible_employee_id,created_by,created_session_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
         [req.user!.tenantId,body.site_id??null,body.key_code,body.label,body.key_type,body.serial_number??null,body.manufacturer??null,body.location??null,
@@ -476,17 +476,17 @@ keysRouter.post('/keys/inventory-checks',requirePermission('keys:inventory:write
     if(body.site_id)keyPermission(req,'keys:inventory:write',body.site_id);
     if(body.bundle_id){
       const bundle=(await query('SELECT site_id FROM key_bundles WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.bundle_id])).rows[0] as Row|undefined;
-      if(!bundle)return res.status(404).json({error:'Key bundle not found'});
+      if(!bundle)return res.status(404).json({error:'Schlüsselbund nicht gefunden'});
       keyPermission(req,'keys:inventory:write',bundle.site_id??null);
     }
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.inventory.check',payload:req.body},async tx=>{
       const keys=(await tx.query('SELECT id,site_id FROM keys WHERE tenant_id=$1 AND id=ANY($2::uuid[])',[req.user!.tenantId,body.results.map(item=>item.key_id)])).rows as Row[];
-      if(keys.length!==new Set(body.results.map(item=>item.key_id)).size)throw Object.assign(new Error('Every checked key must belong to the tenant'),{status:404});
-      if(body.site_id&&keys.some(key=>key.site_id!==body.site_id))throw Object.assign(new Error('Checked keys must belong to the given site'),{status:400});
+      if(keys.length!==new Set(body.results.map(item=>item.key_id)).size)throw Object.assign(new Error('Jeder geprüfte Schlüssel muss zum Mandanten gehören'),{status:404});
+      if(body.site_id&&keys.some(key=>key.site_id!==body.site_id))throw Object.assign(new Error('Geprüfte Schlüssel müssen zum angegebenen Objekt gehören'),{status:400});
       if(body.bundle_id){
         const members=(await tx.query('SELECT key_id FROM key_bundle_items WHERE tenant_id=$1 AND bundle_id=$2',[req.user!.tenantId,body.bundle_id])).rows as Row[];
         const memberIds=new Set(members.map(row=>row.key_id));
-        if(body.results.some(item=>!memberIds.has(item.key_id)))throw Object.assign(new Error('Checked keys must belong to the given bundle'),{status:400});
+        if(body.results.some(item=>!memberIds.has(item.key_id)))throw Object.assign(new Error('Geprüfte Schlüssel müssen zum angegebenen Schlüsselbund gehören'),{status:400});
       }
       const check=(await tx.query(`INSERT INTO key_inventory_checks(tenant_id,site_id,bundle_id,checked_at,checker_name,notes,created_by)
         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -529,7 +529,7 @@ keysRouter.get('/keys/inventory-checks',requirePermission('keys:inventory:read',
 
 async function readKey(client:QueryLike,req:Request,codes:string[]){
   const key=(await client.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-  if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+  if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
   keyPermissionAny(req,codes,key.site_id??null);
   return key;
 }
@@ -583,9 +583,9 @@ keysRouter.patch('/keys/:id',requirePermission('keys:update',{allowedScopes:['te
     const body=updateBody.parse(req.body);
     const result=await withTransaction(async client=>{
       const key=(await client.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+      if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
       keyPermission(req,'keys:update',key.site_id??null);
-      if(body.responsible_employee_id&&!(await client.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rowCount)throw Object.assign(new Error('Responsible employee not found'),{status:404});
+      if(body.responsible_employee_id&&!(await client.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rowCount)throw Object.assign(new Error('Verantwortlicher Mitarbeiter nicht gefunden'),{status:404});
       const fields=['label','key_type','site_id','serial_number','manufacturer','location','building','area','access_point','description','remarks','responsible_employee_id'] as const;
       const changes=fields.filter(field=>body[field]!==undefined);
       if(!changes.length)return key;
@@ -608,10 +608,10 @@ keysRouter.post('/keys/:id/issue',requirePermission('keys:issue',{allowedScopes:
     const body=issueBody.parse(req.body);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.issue',payload:req.body},async tx=>{
       const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+      if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
       keyPermission(req,'keys:issue',key.site_id??null);
-      if((await tx.query('SELECT 1 FROM key_bundle_items WHERE tenant_id=$1 AND key_id=$2',[req.user!.tenantId,key.id])).rowCount)throw Object.assign(new Error('Bundled keys must be managed through their bundle'),{status:409,code:'KEY_BUNDLE_MANAGED'});
-      if(key.status!=='available'||key.holder_user_id||key.holder_employee_id)throw Object.assign(new Error('Key is not available for issue'),{status:409,code:'KEY_ALREADY_ISSUED'});
+      if((await tx.query('SELECT 1 FROM key_bundle_items WHERE tenant_id=$1 AND key_id=$2',[req.user!.tenantId,key.id])).rowCount)throw Object.assign(new Error('Gebündelte Schlüssel müssen über ihren Schlüsselbund verwaltet werden'),{status:409,code:'KEY_BUNDLE_MANAGED'});
+      if(key.status!=='available'||key.holder_user_id||key.holder_employee_id)throw Object.assign(new Error('Schlüssel ist nicht zur Ausgabe verfügbar'),{status:409,code:'KEY_ALREADY_ISSUED'});
       const holder=await holderForIssue(tx,req.user!.tenantId,body.holder_user_id,body.holder_employee_id);
       const documentId=await documentForReceipt(tx,req.user!.tenantId,key.site_id??null,body.receipt_document_id);
       const next=transitionKeyStatus(key.status,'issued');
@@ -641,10 +641,10 @@ keysRouter.post('/keys/:id/return',requirePermission('keys:return',{allowedScope
     const body=returnBody.parse(req.body);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.return',payload:req.body},async tx=>{
       const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+      if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
       keyPermission(req,'keys:return',key.site_id??null);
-      if(!canReturnKey({actorUserId:req.user!.id,holderUserId:key.holder_user_id,operator:operator(req)}))throw Object.assign(new Error('Only the valid holder or an operator may return this key'),{status:403});
-      if(['blocked','deactivated','lost'].includes(key.status))throw Object.assign(new Error('Blocked, lost or deactivated keys cannot be returned as available'),{status:409,code:'KEY_INVALID_STATUS_TRANSITION'});
+      if(!canReturnKey({actorUserId:req.user!.id,holderUserId:key.holder_user_id,operator:operator(req)}))throw Object.assign(new Error('Nur der gültige Halter oder ein Operateur darf diesen Schlüssel zurückgeben'),{status:403});
+      if(['blocked','deactivated','lost'].includes(key.status))throw Object.assign(new Error('Gesperrte, verlorene oder deaktivierte Schlüssel können nicht als verfügbar zurückgegeben werden'),{status:409,code:'KEY_INVALID_STATUS_TRANSITION'});
       const next=transitionKeyStatus(key.status,'returned');
       const documentId=await documentForReceipt(tx,req.user!.tenantId,key.site_id??null,body.receipt_document_id);
       const updated=(await tx.query(`UPDATE keys SET status=$3,holder_user_id=NULL,holder_employee_id=NULL,due_at=NULL,
@@ -673,9 +673,9 @@ const lossReportBody=z.object({
   incident_priority_id:uuid.nullable().optional(),client_mutation_id:uuid,
 }).strict();
 async function createIncident(tx:Client,req:Request,body:z.infer<typeof lossReportBody>,siteId:string|null){
-  if(!body.incident_priority_id)throw Object.assign(new Error('A valid incident priority is required'),{status:400});
+  if(!body.incident_priority_id)throw Object.assign(new Error('Eine gültige Vorfallspriorität ist erforderlich'),{status:400});
   const priority=(await tx.query('SELECT id FROM alarm_priorities WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.incident_priority_id])).rows[0];
-  if(!priority)throw Object.assign(new Error('Incident priority not found'),{status:404});
+  if(!priority)throw Object.assign(new Error('Vorfallpriorität nicht gefunden'),{status:404});
   const description=`Schlüsselverlust: ${body.description??'Schlüsselverlust gemeldet'}`;
   const incident=(await tx.query(`INSERT INTO incidents(tenant_id,site_id,priority_id,description,created_by)
     VALUES($1,$2,$3,$4,$5) RETURNING *`,[req.user!.tenantId,siteId,body.incident_priority_id,description,req.user!.id])).rows[0];
@@ -687,12 +687,12 @@ keysRouter.post('/keys/:id/report-loss',requireAnyPermission('keys:report_loss',
     const body=lossReportBody.parse(req.body);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.loss.report',payload:req.body},async tx=>{
       const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+      if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
       keyPermissionAny(req,['keys:report_loss','keys:manage'],key.site_id??null);
-      if(body.last_holder_user_id&&!(await tx.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.last_holder_user_id])).rowCount)throw Object.assign(new Error('Last holder user not found'),{status:404});
-      if(body.last_holder_employee_id&&!(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.last_holder_employee_id])).rowCount)throw Object.assign(new Error('Last holder employee not found'),{status:404});
+      if(body.last_holder_user_id&&!(await tx.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.last_holder_user_id])).rowCount)throw Object.assign(new Error('Letzter Halterbenutzer nicht gefunden'),{status:404});
+      if(body.last_holder_employee_id&&!(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.last_holder_employee_id])).rowCount)throw Object.assign(new Error('Letzter Haltermitarbeiter nicht gefunden'),{status:404});
       let incidentId:string|null=body.incident_id??null;
-      if(incidentId&&!(await tx.query('SELECT id FROM incidents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,incidentId])).rowCount)throw Object.assign(new Error('Incident not found'),{status:404});
+      if(incidentId&&!(await tx.query('SELECT id FROM incidents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,incidentId])).rowCount)throw Object.assign(new Error('Vorfall nicht gefunden'),{status:404});
       if(body.create_incident)incidentId=await createIncident(tx,req,body,body.site_id??key.site_id??null);
       const technicalBlock=/technisch|technical|block|sperr/i.test(body.immediate_measures??'');
       const blockMovement=technicalBlock&&key.status!=='blocked'?await blockKeyInTransaction(tx,req,key,'Verlustmeldung: technische Sperrung'):null;
@@ -724,7 +724,7 @@ keysRouter.patch('/keys/:id/loss-reports/:reportId',requireAnyPermission('keys:r
     const body=lossUpdateBody.parse(req.body);
     const updated=await withTransaction(async client=>{
       const report=(await client.query('SELECT * FROM key_loss_reports WHERE tenant_id=$1 AND id=$2 AND key_id=$3 FOR UPDATE',[req.user!.tenantId,String(req.params.reportId),String(req.params.id)])).rows[0] as Row|undefined;
-      if(!report)throw Object.assign(new Error('Loss report not found'),{status:404});
+      if(!report)throw Object.assign(new Error('Verlustmeldung nicht gefunden'),{status:404});
       const key=(await client.query('SELECT site_id FROM keys WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
       keyPermissionAny(req,['keys:report_loss','keys:manage'],key?.site_id??null);
       const fields=['status','immediate_measures','follow_up','notes','risk_assessment'] as const;
@@ -757,7 +757,7 @@ for(const [path,type] of [['block','blocked'],['reactivate','reactivated']] as c
       const syncAction:SyncMutationAction=type==='blocked'?'keys.block':'keys.reactivate';
       const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:syncAction,payload:req.body},async tx=>{
         const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-        if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+        if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
         keyPermission(req,'keys:manage',key.site_id??null);
         const reason=[body.reason,body.immediate_measures].filter(Boolean).join(' · ')||null;
         let movement:Row;
@@ -853,7 +853,7 @@ async function legacyMovement(req:Request,type:'lost'|'deactivated'){
   const syncAction:SyncMutationAction=type==='lost'?'keys.lost':'keys.deactivate';
   return withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:(req.body.client_mutation_id as string),action:syncAction,payload:req.body},async tx=>{
     const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-    if(!key)throw Object.assign(new Error('Key not found'),{status:404});
+    if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
     keyPermission(req,'keys:manage',key.site_id??null);
     const next=transitionKeyStatus(key.status,type);
     const movement=(await tx.query(`INSERT INTO key_movements(tenant_id,key_id,movement_type,from_status,to_status,holder_user_id,holder_employee_id,actor_user_id,session_id,device_id,reason)
@@ -927,7 +927,7 @@ keysRouter.post('/key-bundles',requirePermission('keys:bundle_write',{allowedSco
 
 async function loadBundle(client:QueryLike,req:Request){
   const bundle=(await client.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-  if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+  if(!bundle)throw Object.assign(new Error('Schlüsselbund nicht gefunden'),{status:404});
   bundlePermission(req,'keys:bundle_read',bundle.site_id??null);
   return bundle;
 }
@@ -981,13 +981,13 @@ keysRouter.post('/key-bundles/:id/items',requirePermission('keys:bundle_write',{
     const body=bundleItemBody.parse(req.body);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle.item',payload:req.body},async tx=>{
       const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+      if(!bundle)throw Object.assign(new Error('Schlüsselbund nicht gefunden'),{status:404});
       bundlePermission(req,'keys:bundle_write',bundle.site_id??null);
-      if(bundle.status!=='available')throw Object.assign(new Error('Only available bundles can be changed'),{status:409});
+      if(bundle.status!=='available')throw Object.assign(new Error('Nur verfügbare Schlüsselbünde können geändert werden'),{status:409});
       const key=(await tx.query('SELECT * FROM keys WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,body.key_id])).rows[0] as Row|undefined;
-      if(!key)throw Object.assign(new Error('Key not found'),{status:404});
-      if(key.status!=='available')throw Object.assign(new Error('Only available keys can be added'),{status:409});
-      if(bundle.site_id&&key.site_id!==bundle.site_id)throw Object.assign(new Error('Key and bundle must use the same site'),{status:400});
+      if(!key)throw Object.assign(new Error('Schlüssel nicht gefunden'),{status:404});
+      if(key.status!=='available')throw Object.assign(new Error('Nur verfügbare Schlüssel können hinzugefügt werden'),{status:409});
+      if(bundle.site_id&&key.site_id!==bundle.site_id)throw Object.assign(new Error('Schlüssel und Schlüsselbund müssen dasselbe Objekt verwenden'),{status:400});
       await tx.query('INSERT INTO key_bundle_items(tenant_id,bundle_id,key_id,added_by) VALUES($1,$2,$3,$4)',[req.user!.tenantId,bundle.id,key.id,req.user!.id]);
       const movement=(await tx.query(`INSERT INTO key_bundle_movements(tenant_id,bundle_id,movement_type,from_status,to_status,actor_user_id,session_id,reason)
         VALUES($1,$2,'item_added',$3,$3,$4,$5,$6) RETURNING *`,[req.user!.tenantId,bundle.id,bundle.status,req.user!.id,session(req),`key_id=${key.id}`])).rows[0];
@@ -1002,12 +1002,12 @@ keysRouter.delete('/key-bundles/:id/items/:keyId',requirePermission('keys:bundle
   try{
     const result=await withTransaction(async client=>{
       const bundle=(await client.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+      if(!bundle)throw Object.assign(new Error('Schlüsselbund nicht gefunden'),{status:404});
       bundlePermission(req,'keys:bundle_write',bundle.site_id??null);
-      if(bundle.status!=='available')throw Object.assign(new Error('Only available bundles can be changed'),{status:409});
+      if(bundle.status!=='available')throw Object.assign(new Error('Nur verfügbare Schlüsselbünde können geändert werden'),{status:409});
       const key=(await client.query('SELECT id,status FROM keys WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,String(req.params.keyId)])).rows[0] as Row|undefined;
-      if(!key||!(await client.query('SELECT 1 FROM key_bundle_items WHERE tenant_id=$1 AND bundle_id=$2 AND key_id=$3',[req.user!.tenantId,bundle.id,String(req.params.keyId)])).rowCount)throw Object.assign(new Error('Bundle key not found'),{status:404});
-      if(key.status!=='available')throw Object.assign(new Error('Only available keys can be removed'),{status:409});
+      if(!key||!(await client.query('SELECT 1 FROM key_bundle_items WHERE tenant_id=$1 AND bundle_id=$2 AND key_id=$3',[req.user!.tenantId,bundle.id,String(req.params.keyId)])).rowCount)throw Object.assign(new Error('Schlüssel im Schlüsselbund nicht gefunden'),{status:404});
+      if(key.status!=='available')throw Object.assign(new Error('Nur verfügbare Schlüssel können entfernt werden'),{status:409});
       await client.query('DELETE FROM key_bundle_items WHERE tenant_id=$1 AND bundle_id=$2 AND key_id=$3',[req.user!.tenantId,bundle.id,key.id]);
       const movement=(await client.query(`INSERT INTO key_bundle_movements(tenant_id,bundle_id,movement_type,from_status,to_status,returned_key_ids,actor_user_id,session_id,reason)
         VALUES($1,$2,'item_removed',$3,$3,ARRAY[$4::uuid],$5,$6,$7) RETURNING *`,
@@ -1025,10 +1025,10 @@ keysRouter.post('/key-bundles/:id/deactivate',requirePermission('keys:bundle_dea
     const body=bundleDeactivateBody.parse(req.body);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'keys.bundle.deactivate',payload:req.body},async tx=>{
       const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,String(req.params.id)])).rows[0] as Row|undefined;
-      if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+      if(!bundle)throw Object.assign(new Error('Schlüsselbund nicht gefunden'),{status:404});
       bundlePermission(req,'keys:bundle_deactivate',bundle.site_id??null);
-      if(bundle.status==='deactivated')throw Object.assign(new Error('Bundle is already deactivated'),{status:409});
-      if(bundle.holder_user_id||bundle.holder_employee_id)throw Object.assign(new Error('An issued bundle cannot be deactivated'),{status:409});
+      if(bundle.status==='deactivated')throw Object.assign(new Error('Der Schlüsselbund ist bereits deaktiviert'),{status:409});
+      if(bundle.holder_user_id||bundle.holder_employee_id)throw Object.assign(new Error('Ein ausgegebener Schlüsselbund kann nicht deaktiviert werden'),{status:409});
       const updated=(await tx.query(`UPDATE key_bundles SET status='deactivated',holder_user_id=NULL,holder_employee_id=NULL,updated_at=now()
         WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,bundle.id])).rows[0];
       const movement=(await tx.query(`INSERT INTO key_bundle_movements(tenant_id,bundle_id,movement_type,from_status,to_status,actor_user_id,session_id,reason)
@@ -1043,24 +1043,24 @@ keysRouter.post('/key-bundles/:id/deactivate',requirePermission('keys:bundle_dea
 async function bundleMovement(req:Request,bundleId:string,type:'issue'|'return',body:z.infer<typeof bundleHolderBody>|z.infer<typeof bundleReturnBody>){
   return withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:`keys.bundle.${type}` as SyncMutationAction,payload:req.body},async tx=>{
     const bundle=(await tx.query('SELECT * FROM key_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[req.user!.tenantId,bundleId])).rows[0] as Row|undefined;
-    if(!bundle)throw Object.assign(new Error('Key bundle not found'),{status:404});
+    if(!bundle)throw Object.assign(new Error('Schlüsselbund nicht gefunden'),{status:404});
     bundlePermission(req,type==='issue'?'keys:bundle_issue':'keys:bundle_return',bundle.site_id??null);
-    if(type==='return'&&!canReturnKey({actorUserId:req.user!.id,holderUserId:bundle.holder_user_id,operator:operator(req)}))throw Object.assign(new Error('Only the valid bundle holder or an operator may return it'),{status:403});
+    if(type==='return'&&!canReturnKey({actorUserId:req.user!.id,holderUserId:bundle.holder_user_id,operator:operator(req)}))throw Object.assign(new Error('Nur der gültige Halter des Schlüsselbunds oder ein Operateur darf ihn zurückgeben'),{status:403});
     const items=(await tx.query(`SELECT k.* FROM key_bundle_items i JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
       WHERE i.tenant_id=$1 AND i.bundle_id=$2 ORDER BY k.id FOR UPDATE`,[req.user!.tenantId,bundle.id])).rows as Row[];
-    if(!items.length)throw Object.assign(new Error('A key bundle must contain at least one key'),{status:409});
+    if(!items.length)throw Object.assign(new Error('Ein Schlüsselbund muss mindestens einen Schlüssel enthalten'),{status:409});
     let selected=items;
     let holderUserId:null|string=null;let holderEmployeeId:null|string=null;
     if(type==='issue'){
       const holder=body as z.infer<typeof bundleHolderBody>;
-      if(bundle.status!=='available')throw Object.assign(new Error('Only available bundles can be issued'),{status:409});
+      if(bundle.status!=='available')throw Object.assign(new Error('Nur verfügbare Schlüsselbünde können ausgegeben werden'),{status:409});
       const holderIds=await holderForIssue(tx,req.user!.tenantId,holder.holder_user_id,holder.holder_employee_id);
       holderUserId=holderIds.holderUserId;holderEmployeeId=holderIds.holderEmployeeId;
-      if(items.some(item=>item.status!=='available'))throw Object.assign(new Error('Every key in the bundle must be available'),{status:409});
+      if(items.some(item=>item.status!=='available'))throw Object.assign(new Error('Jeder Schlüssel im Schlüsselbund muss verfügbar sein'),{status:409});
     }else{
       const requested=(body as z.infer<typeof bundleReturnBody>).key_ids;
       selected=validateBundleReturn(items as Parameters<typeof validateBundleReturn>[0],requested,{actorUserId:req.user!.id,operator:operator(req)});
-      if(bundle.status==='available')throw Object.assign(new Error('Bundle is not issued'),{status:409});
+      if(bundle.status==='available')throw Object.assign(new Error('Der Schlüsselbund ist nicht ausgegeben'),{status:409});
     }
     for(const item of selected){
       const next=type==='issue'?'issued':'available';

@@ -53,7 +53,7 @@ export async function queueNotificationEvent(tenantId:string,eventType:string,ev
      WHERE s.tenant_id=$1 AND s.event_type=$5 AND s.enabled=true
        AND (s.user_id=u.id OR s.role=u.role) AND s.channel IN ('email','sms')
      ON CONFLICT(event_key,channel,recipient) DO NOTHING`,
-    [tenantId,eventKey,'SecurityOps notification',body,eventType],
+    [tenantId,eventKey,'SecurityOps-Benachrichtigung',body,eventType],
    );
   });
   publish(tenantId,'notification.created',{eventType,title,body},'notifications:read');

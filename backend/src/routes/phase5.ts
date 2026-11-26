@@ -7,6 +7,7 @@ import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
 import {checkSmsStatus,checkSmtpStatus,checkTimeScanStatus} from '../services/provider-status.js';
 import {resolveSecret} from '../services/secrets.js';
+import {pdfReport} from '../services/pdf.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -22,7 +23,7 @@ async function audit(req:Request,eventType:string,entityType?:string,entityId?:s
 function range(req:Request){
   const from=typeof req.query.from==='string'?new Date(req.query.from):new Date(Date.now()-30*86400000);
   const to=typeof req.query.to==='string'?new Date(req.query.to):new Date();
-  if(Number.isNaN(from.valueOf())||Number.isNaN(to.valueOf())||from>to)throw Object.assign(new Error('Invalid date range'),{status:400});
+  if(Number.isNaN(from.valueOf())||Number.isNaN(to.valueOf())||from>to)throw Object.assign(new Error('Ungültiger Zeitraum'),{status:400});
   return {from,to};
 }
 
@@ -32,21 +33,30 @@ async function reportRows(kind:string,tenantId:string,from:Date,to:Date,siteId?:
     case 'employees':return (await query(`SELECT id,employee_number,name,email,title,department,position,employment_status,employment_type,hire_date,termination_date,weekly_hours,created_at FROM employees WHERE tenant_id=$1 AND created_at BETWEEN $2 AND $3 ORDER BY name`,[tenantId,from,to])).rows;
     case 'sites':return (await query(`SELECT id,name,address,created_at FROM sites WHERE ${scope} ORDER BY name`,[tenantId,from,to])).rows;
     case 'patrols':return (await query(`SELECT ps.id,ps.route_id,r.name route_name,ps.control_point_id,cp.name control_point_name,ps.employee_id,e.name employee_name,ps.scanned_at,ps.deviation
-      FROM patrol_scans ps JOIN patrol_routes r ON r.id=ps.route_id JOIN control_points cp ON cp.id=ps.control_point_id
-      JOIN employees e ON e.id=ps.employee_id WHERE ps.tenant_id=$1 AND ps.scanned_at BETWEEN $2 AND $3
+      FROM patrol_scans ps
+      JOIN patrol_routes r ON r.tenant_id=ps.tenant_id AND r.id=ps.route_id
+      JOIN control_points cp ON cp.tenant_id=ps.tenant_id AND cp.id=ps.control_point_id
+      JOIN employees e ON e.tenant_id=ps.tenant_id AND e.id=ps.employee_id
+      WHERE ps.tenant_id=$1 AND ps.scanned_at BETWEEN $2 AND $3
       AND ($4::uuid IS NULL OR r.site_id=$4) AND ($5::uuid IS NULL OR ps.employee_id=$5) ORDER BY ps.scanned_at DESC`,[tenantId,from,to,siteId??null,employeeId??null])).rows;
     case 'alarms':return (await query(`SELECT a.id,a.type,a.status,a.source,a.description,a.triggered_at,a.acknowledged_at,a.resolved_at,p.code priority,s.name site_name,e.name employee_name
-      FROM alarms a LEFT JOIN alarm_priorities p ON p.id=a.priority_id LEFT JOIN sites s ON s.id=a.site_id LEFT JOIN employees e ON e.id=a.employee_id
+      FROM alarms a
+      LEFT JOIN alarm_priorities p ON p.tenant_id=a.tenant_id AND p.id=a.priority_id
+      LEFT JOIN sites s ON s.tenant_id=a.tenant_id AND s.id=a.site_id
+      LEFT JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=a.employee_id
       WHERE a.tenant_id=$1 AND a.triggered_at BETWEEN $2 AND $3 AND ($4::uuid IS NULL OR a.site_id=$4) AND ($5::uuid IS NULL OR a.employee_id=$5)
       ORDER BY a.triggered_at DESC`,[tenantId,from,to,siteId??null,employeeId??null])).rows;
     case 'incidents':return (await query(`SELECT i.id,i.description,i.status,i.created_at,i.updated_at,p.code priority,s.name site_name,e.name employee_name
-      FROM incidents i LEFT JOIN alarm_priorities p ON p.id=i.priority_id LEFT JOIN sites s ON s.id=i.site_id LEFT JOIN employees e ON e.id=i.employee_id
+      FROM incidents i
+      LEFT JOIN alarm_priorities p ON p.tenant_id=i.tenant_id AND p.id=i.priority_id
+      LEFT JOIN sites s ON s.tenant_id=i.tenant_id AND s.id=i.site_id
+      LEFT JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
       WHERE i.tenant_id=$1 AND i.created_at BETWEEN $2 AND $3 AND ($4::uuid IS NULL OR i.site_id=$4) AND ($5::uuid IS NULL OR i.employee_id=$5)
       ORDER BY i.created_at DESC`,[tenantId,from,to,siteId??null,employeeId??null])).rows;
     case 'work-time':return (await query(`SELECT w.id,w.external_id,w.started_at,w.ended_at,w.minutes,w.status,e.name employee_name
-      FROM work_time_entries w LEFT JOIN employees e ON e.id=w.employee_id WHERE w.tenant_id=$1 AND w.started_at BETWEEN $2 AND $3
+      FROM work_time_entries w LEFT JOIN employees e ON e.tenant_id=w.tenant_id AND e.id=w.employee_id WHERE w.tenant_id=$1 AND w.started_at BETWEEN $2 AND $3
       AND ($4::uuid IS NULL OR w.employee_id=$4) ORDER BY w.started_at DESC`,[tenantId,from,to,employeeId??null])).rows;
-    default:throw Object.assign(new Error('Unknown report'),{status:400});
+    default:throw Object.assign(new Error('Unbekannter Bericht'),{status:400});
   }
 }
 
@@ -83,28 +93,16 @@ phase5Router.get('/admin/provider-status',requirePermission('providers:read'),as
 
 phase5Router.get('/reports/:kind',requirePermission('reports:read'),async(req,res,next)=>{
   try{
-    const kind=String(req.params.kind);const {from,to}=range(req);const rows=await reportRows(kind,req.user!.tenantId,from,to,typeof req.query.site_id==='string'?req.query.site_id:undefined,typeof req.query.employee_id==='string'?req.query.employee_id:undefined) as Record<string,unknown>[];
+    const kind=String(req.params.kind);const {from,to}=range(req);
+    const filters=z.object({site_id:uuid.optional(),employee_id:uuid.optional()}).safeParse(req.query);
+    if(!filters.success)return res.status(400).json({error:'Ungültiger Berichtsfilter'});
+    const rows=await reportRows(kind,req.user!.tenantId,from,to,filters.data.site_id,filters.data.employee_id) as Record<string,unknown>[];
     const format=req.query.format==='pdf'?'pdf':req.query.format==='json'?'json':'csv';await audit(req,'report.exported',kind,undefined,{format,count:rows.length});
     if(format==='json')return res.json(rows);
     const output=csv(rows);
-    if(format==='csv')return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-report.csv"`).send(output);
-    const text=(`${kind} report\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`).replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
-    const pdf=`%PDF-1.4
-1 0 obj<< /Type /Catalog /Pages 2 0 R>>endobj
-2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1>>endobj
-3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R>>>>>>endobj
-4 0 obj<< /Length ${text.length+35}>>stream
-BT /F1 9 Tf 36 756 Td (${text}) Tj ET
-endstream endobj
-5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica>>endobj
-xref
-0 6
-0000000000 65535 f 
-trailer<< /Size 6 /Root 1 0 R>>
-startxref
-0
-%%EOF`;
-    return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-report.pdf"`).send(Buffer.from(pdf));
+    if(format==='csv')return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-bericht.csv"`).send(output);
+    const text=(`${kind}-Bericht\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`).replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
+    return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-bericht.pdf"`).send(pdfReport(text));
   }catch(error){next(error);}
 });
 
@@ -125,8 +123,8 @@ phase5Router.get('/timescan/runs',requirePermission('timescan:read'),async(req,r
 phase5Router.post('/timescan/sync',requirePermission('timescan:write'),async(req,res,next)=>{
   try{
     const {from,to}=range(req);const config=(await query('SELECT * FROM timescan_connections WHERE tenant_id=$1 AND enabled=true',[req.user!.tenantId])).rows[0];
-    if(!config)return res.status(409).json({error:'TimeScan is not configured'});
-    let secret:string|undefined;try{secret=await resolveSecret(config.secret_ref);}catch{return res.status(502).json({error:'Referenced TimeScan secret is unavailable'});}if(!secret)return res.status(502).json({error:'Referenced TimeScan secret is unavailable'});
+    if(!config)return res.status(409).json({error:'TimeScan ist nicht konfiguriert'});
+    let secret:string|undefined;try{secret=await resolveSecret(config.secret_ref);}catch{return res.status(502).json({error:'Referenziertes TimeScan-Geheimnis ist nicht verfügbar'});}if(!secret)return res.status(502).json({error:'Referenziertes TimeScan-Geheimnis ist nicht verfügbar'});
     const run=(await query(`INSERT INTO timescan_sync_runs(tenant_id,status) VALUES($1,'running') RETURNING id`,[req.user!.tenantId])).rows[0];
     try{
       const entries=await createTimeScanAdapter(config.base_url,config.account_ref,secret).listWorkTimes(from,to);
@@ -142,7 +140,7 @@ phase5Router.post('/timescan/sync',requirePermission('timescan:write'),async(req
       await query('UPDATE timescan_connections SET last_sync_at=now() WHERE tenant_id=$1',[req.user!.tenantId]);
       await audit(req,'timescan.sync_completed','timescan',run.id,{imported});res.json({run_id:run.id,status:'completed',imported_count:imported});
     }catch(error){
-      await query(`UPDATE timescan_sync_runs SET status='failed',error_message=$1,completed_at=now() WHERE id=$2`,[error instanceof Error?error.message:'TimeScan sync failed',run.id]);throw error;
+      await query(`UPDATE timescan_sync_runs SET status='failed',error_message=$1,completed_at=now() WHERE id=$2`,[error instanceof Error?error.message:'TimeScan-Synchronisierung fehlgeschlagen',run.id]);throw error;
     }
   }catch(error){next(error);}
 });
@@ -157,11 +155,11 @@ phase5Router.get('/retention',requirePermission('privacy:write'),async(req,res,n
   try{res.json((await query('SELECT * FROM retention_policies WHERE tenant_id=$1 ORDER BY data_type',[req.user!.tenantId])).rows);}catch(error){next(error);}
 });
 phase5Router.patch('/retention/:dataType',requirePermission('privacy:write'),async(req,res,next)=>{
-  try{const body=z.object({retention_days:z.number().int().min(30),purpose:nonempty,enabled:z.boolean().optional()}).strict().parse(req.body);const dataType=String(req.params.dataType);const row=(await query(`UPDATE retention_policies SET retention_days=$1,purpose=$2,enabled=COALESCE($3,enabled),updated_at=now() WHERE tenant_id=$4 AND data_type=$5 RETURNING *`,[body.retention_days,body.purpose,body.enabled??null,req.user!.tenantId,dataType])).rows[0];if(!row)return res.status(404).json({error:'Retention policy not found'});await audit(req,'retention.updated','retention',String(row.id),{retention_days:body.retention_days});res.json(row);}catch(error){next(error);}
+  try{const body=z.object({retention_days:z.number().int().min(30),purpose:nonempty,enabled:z.boolean().optional()}).strict().parse(req.body);const dataType=String(req.params.dataType);const row=(await query(`UPDATE retention_policies SET retention_days=$1,purpose=$2,enabled=COALESCE($3,enabled),updated_at=now() WHERE tenant_id=$4 AND data_type=$5 RETURNING *`,[body.retention_days,body.purpose,body.enabled??null,req.user!.tenantId,dataType])).rows[0];if(!row)return res.status(404).json({error:'Aufbewahrungsrichtlinie nicht gefunden'});await audit(req,'retention.updated','retention',String(row.id),{retention_days:body.retention_days});res.json(row);}catch(error){next(error);}
 });
 phase5Router.post('/privacy/export',requirePermission('privacy:write'),async(req,res,next)=>{
   try{
-    const body=z.object({user_id:uuid}).strict().parse(req.body);const user=(await query('SELECT id,email,role,created_at FROM users WHERE id=$1 AND tenant_id=$2',[body.user_id,req.user!.tenantId])).rows[0];if(!user)return res.status(404).json({error:'User not found'});
+    const body=z.object({user_id:uuid}).strict().parse(req.body);const user=(await query('SELECT id,email,role,created_at FROM users WHERE id=$1 AND tenant_id=$2',[body.user_id,req.user!.tenantId])).rows[0];if(!user)return res.status(404).json({error:'Benutzer nicht gefunden'});
     const [messages,notifications,auditEvents]=await Promise.all([
       query('SELECT id,body,read_at,created_at FROM direct_messages WHERE tenant_id=$1 AND (sender_user_id=$2 OR recipient_user_id=$2)',[req.user!.tenantId,body.user_id]),
       query('SELECT id,event_type,title,body,read_at,created_at FROM notifications WHERE tenant_id=$1 AND user_id=$2',[req.user!.tenantId,body.user_id]),
@@ -172,7 +170,7 @@ phase5Router.post('/privacy/export',requirePermission('privacy:write'),async(req
 });
 phase5Router.post('/privacy/delete',requirePermission('privacy:write'),async(req,res,next)=>{
   try{
-    const body=z.object({user_id:uuid,confirm:z.literal(true)}).strict().parse(req.body);const user=(await query('SELECT id FROM users WHERE id=$1 AND tenant_id=$2',[body.user_id,req.user!.tenantId])).rows[0];if(!user)return res.status(404).json({error:'User not found'});
+    const body=z.object({user_id:uuid,confirm:z.literal(true)}).strict().parse(req.body);const user=(await query('SELECT id FROM users WHERE id=$1 AND tenant_id=$2',[body.user_id,req.user!.tenantId])).rows[0];if(!user)return res.status(404).json({error:'Benutzer nicht gefunden'});
     await query('DELETE FROM direct_messages WHERE tenant_id=$1 AND (sender_user_id=$2 OR recipient_user_id=$2)',[req.user!.tenantId,body.user_id]);
     await query(`UPDATE users SET email=$1,password_hash=$2,updated_at=now() WHERE id=$3 AND tenant_id=$4`,[`deleted-${body.user_id}@invalid.local`,'DELETED',body.user_id,req.user!.tenantId]);
     await audit(req,'privacy.deleted','user',body.user_id,{anonymized:true});res.json({anonymized:true,user_id:body.user_id});

@@ -127,7 +127,7 @@ test('real API and browser flows manage the digital object file',async({page})=>
   const hazardResponse=page.waitForResponse(response=>response.url().includes(`/sites/${siteId}/hazards`)&&response.request().method()==='POST');
   await page.getByRole('button',{name:'Gefährdung erfassen'}).click();
   expect((await hazardResponse).status()).toBe(201);
-  const hazardItem=page.getByRole('listitem').filter({hasText:new RegExp(`E2E Gefährdung ${suffix} · Risiko 12`)});
+  const hazardItem=page.getByRole('listitem').filter({hasText:new RegExp(`E2E Gefährdung ${suffix} · Risikowert 12`)});
   await expect(hazardItem).toBeVisible();
   await hazardItem.getByRole('button',{name:'Maßnahme hinzufügen'}).click();
   await page.getByLabel('Maßnahmentitel').fill(`E2E Maßnahme ${suffix}`);
@@ -136,7 +136,7 @@ test('real API and browser flows manage the digital object file',async({page})=>
   const measureResponse=page.waitForResponse(response=>response.url().includes('/measures')&&response.request().method()==='POST');
   await page.getByRole('button',{name:'Maßnahme erfassen'}).click();
   expect((await measureResponse).status()).toBe(201);
-  await expect(hazardItem.getByText(`E2E Maßnahme ${suffix} · in_progress`)).toBeVisible();
+  await expect(hazardItem.getByText(`E2E Maßnahme ${suffix} · In Bearbeitung`)).toBeVisible();
 
   await page.getByRole('button',{name:'Dienstanweisungen'}).click();
   await expect(page).toHaveURL(new RegExp(`/sites/${siteId}/anweisungen$`));
@@ -147,14 +147,14 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await page.getByLabel('Inhalt').fill('Dokumentierter Ablauf für den E2E-Test.');
   await page.getByLabel('Anweisungsbereich').selectOption({label:`Zone ${suffix}`});
   await page.getByLabel('Anweisungsstatus').selectOption('pending_approval');
-  await page.getByLabel('Kenntnisnahme erforderlich').check();
+  await page.getByLabel('Bestätigung erforderlich').check();
   const instructionResponse=page.waitForResponse(response=>response.url().includes(`/sites/${siteId}/instructions`)&&response.request().method()==='POST',{timeout:10000});
-  await page.getByRole('button',{name:'Anweisung speichern'}).click();
+  await page.getByRole('button',{name:'Dienstanweisung speichern'}).click();
   expect((await instructionResponse).status()).toBe(201);
-  const instructionItem=page.getByRole('listitem').filter({hasText:`E2E Anweisung ${suffix} v1`});
+  const instructionItem=page.getByRole('listitem').filter({hasText:`E2E Anweisung ${suffix} · Fassung 1`});
   await expect(instructionItem).toBeVisible();
   await expect(instructionItem.getByRole('button',{name:'Freigabe erteilen'})).toHaveCount(0);
-  await expect(instructionItem.getByText(/Kenntnisnahmen: 0/)).toBeVisible();
+  await expect(instructionItem.getByText(/Bestätigungen: 0/)).toBeVisible();
 
   const chronicleResponse=await page.request.get(`/api/v1/sites/${siteId}/chronicle?type=site.hazard.created&limit=100`);
   expect(chronicleResponse.status()).toBe(200);
@@ -243,8 +243,9 @@ test('object overview exposes concrete qualification issues and binding shift el
   await expect(shiftItem).toBeVisible();
   await expect(shiftItem.getByText('Verbindliche Einsatzprüfung für diese Schicht')).toBeVisible();
   await expect(shiftItem.getByText('Nicht einsatzfähig')).toBeVisible();
-  await expect(shiftItem.getByText(/qualification_expir/)).toBeVisible();
-  await expect(shiftItem.getByRole('link',{name:'Nachweis Qualifikation erste_hilfe'})).toHaveAttribute('href',`/employees/${employeeId}/qualifikationen`);
+  await expect(shiftItem.getByText('Qualifikation abgelaufen')).toBeVisible();
+  await expect(shiftItem.getByText(/Qualifikationsnachweis erste_hilfe ist zum Einsatzzeitpunkt abgelaufen/)).toBeVisible();
+  await expect(shiftItem.locator('a[href$="/qualifikationen"]')).toHaveAttribute('href',`/employees/${employeeId}/qualifikationen`);
 });
 
 test('approvals, acknowledgements, DMS evidence and maintenance lifecycle persist',async({page,playwright})=>{
@@ -264,15 +265,15 @@ test('approvals, acknowledgements, DMS evidence and maintenance lifecycle persis
 
     await page.goto(`/sites/${siteId}/anweisungen`);
     await expect(page.getByRole('heading',{name:'Dienstanweisungen'})).toBeVisible();
-    const instructionItem=page.getByRole('listitem').filter({hasText:`${instructionTitle} v1`});
+    const instructionItem=page.getByRole('listitem').filter({hasText:`${instructionTitle} · Fassung 1`});
     await expect(instructionItem.getByRole('button',{name:'Freigabe erteilen'})).toBeVisible();
     const approvalResponse=page.waitForResponse(response=>response.url().includes(`/instructions/${instruction.id}/approve`)&&response.request().method()==='POST');
     await instructionItem.getByRole('button',{name:'Freigabe erteilen'}).click();
     expect((await approvalResponse).status()).toBe(200);
-    await expect(instructionItem).toContainText('approved');
-    await page.getByLabel('Mitarbeiter für Kenntnisnahme').selectOption(employeeId);
+    await expect(instructionItem).toContainText('Freigegeben');
+    await page.getByLabel('Mitarbeiter für Bestätigung').selectOption(employeeId);
     const ackResponse=page.waitForResponse(response=>response.url().includes(`/instructions/${instruction.id}/acknowledgements`)&&response.request().method()==='POST');
-    await instructionItem.getByRole('button',{name:'Kenntnisnahme erfassen'}).click();
+    await instructionItem.getByRole('button',{name:'Bestätigung erfassen'}).click();
     expect([200,201]).toContain((await ackResponse).status());
     await expect(instructionItem.getByText(/E2E Streife: Bestätigt am/)).toBeVisible();
 
@@ -293,11 +294,11 @@ test('approvals, acknowledgements, DMS evidence and maintenance lifecycle persis
     await page.goto(`/sites/${siteId}/dokumente`);
     await expect(page.getByRole('heading',{name:'Objektdokumente'})).toBeVisible();
     const documentItem=page.getByRole('listitem').filter({hasText:documentTitle});
-    await expect(documentItem).toContainText('pending_approval');
+    await expect(documentItem).toContainText('Freigabe ausstehend');
     const documentApproval=page.waitForResponse(response=>response.url().includes(`/dms/documents/${document.id}/approve`)&&response.request().method()==='POST');
     await documentItem.getByRole('button',{name:'Freigabe erteilen'}).click();
     expect((await documentApproval).status()).toBe(200);
-    await expect(documentItem).toContainText('approved');
+    await expect(documentItem).toContainText('Freigegeben');
     await expect(documentItem).toContainText('Gültig');
     const objectContext:any=await (await page.request.get(`/api/v1/sites/${siteId}/object-context`)).json();
     expect(objectContext.documents.find((entry:any)=>entry.id===document.id)?.computed_status).toBe('gueltig');

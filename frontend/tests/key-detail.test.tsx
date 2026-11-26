@@ -96,18 +96,18 @@ describe('Schlüsselakte',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Übersicht'}));
     expect(await screen.findByText('Keine Berechtigung für Verlustmeldungen.')).toBeTruthy();
     expect(screen.getAllByText(/K-1001/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button',{name:'QR/Etikett'}));
-    expect(screen.getByText('Keine Berechtigung für QR/Etikett.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'QR-Code & Etikett'}));
+    expect(screen.getByText('Keine Berechtigung für QR-Code & Etikett.')).toBeTruthy();
   });
 
   it('renders enriched chronological history with actor, status, reason and reference',async()=>{
     renderDetail('historie');
     expect(await screen.findByText(/Ausgeführt von Mia Guard/)).toBeTruthy();
     expect(screen.getByText(/Halter: Mia Guard/)).toBeTruthy();
-    expect(screen.getByText(/Status: available → issued/)).toBeTruthy();
+    expect(screen.getByText(/Status: Verfügbar → Ausgegeben/)).toBeTruthy();
     expect(screen.getByText(/Grund: Schichtwechsel/)).toBeTruthy();
-    expect(screen.getByText(/Vorfall: INC-1/)).toBeTruthy();
-    expect(screen.getByText(/Beleg: REC-1/)).toBeTruthy();
+    expect(screen.getByText(/Vorfall verknüpft/)).toBeTruthy();
+    expect(screen.getByText(/Beleg hinterlegt/)).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining(`/keys/${keyId}/history?page=1&pageSize=10`),expect.anything());
   });
 
@@ -196,11 +196,11 @@ describe('Schlüsselakte',()=>{
       return path===`/keys/${keyId}`?profile:defaultApi(path);
     };
     renderDetail('qr',profile,'?ref=valid-ref',verifyApi);
-    expect(await screen.findByText(/QR-Verweis gültig bis/)).toBeTruthy();
+    expect(await screen.findByText(/QR-Code gültig bis/)).toBeTruthy();
     expect(apiMock).toHaveBeenCalledWith(`/keys/${keyId}/qr/verify?ref=valid-ref`);
     cleanup();
     renderDetail('qr',profile,'?ref=bad-ref',verifyApi);
-    expect(await screen.findByText('QR-Verweis ungültig oder abgelaufen.')).toBeTruthy();
+    expect(await screen.findByText('Der QR-Code ist ungültig oder abgelaufen. Bitte prüfen Sie den Code.')).toBeTruthy();
   });
 
   it('offers employees returned with employment_status as holders',()=>{

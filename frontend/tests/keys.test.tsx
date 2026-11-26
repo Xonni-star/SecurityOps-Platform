@@ -32,7 +32,7 @@ const rows=[
 const dashboard={total:25,available:10,issued:9,overdue:3,lost:2,blocked:1,critical_count:4,deactivated:0,without_site:1,without_holder:2,partial_bundles:1,due_today:1,due_7_days:2,due_30_days:4,recent_movements:[{id:'m-1',key_id:keyId,key_code:'K-1001',key_label:'Haupteingang',movement_type:'created',created_at:'2026-11-25T10:00:00Z'}]};
 const actionList={
   A:[{id:'a-1',bucket:'A' as const,code:'overdue',label:'Rückgabe überfällig',key_id:rows[1].id,key_code:'K-1002',subject_type:'due',subject_id:rows[1].id,due_at:'2026-11-20T00:00:00Z',url:`/keys/${rows[1].id}/historie`,target:`/keys/${rows[1].id}/historie`,site_name:'Objekt Nord'}],
-  B:[{id:'b-1',bucket:'B' as const,code:'bundle_partial',label:'Bund teils ausgegeben',key_id:keyId,key_code:'K-1001',subject_type:'bundle',subject_id:bundleId,due_at:null,url:`/keys/${keyId}`,target:`/keys/${keyId}`,site_name:null}],
+  B:[{id:'b-1',bucket:'B' as const,code:'bundle_partial',label:'Schlüsselbund teils ausgegeben',key_id:keyId,key_code:'K-1001',subject_type:'bundle',subject_id:bundleId,due_at:null,url:`/keys/${keyId}`,target:`/keys/${keyId}`,site_name:null}],
   C:[{id:'c-1',bucket:'C' as const,code:'no_holder',label:'Kein Halter zugeordnet',key_id:keyId,key_code:'K-1001',subject_type:'holder',subject_id:keyId,due_at:null,url:`/keys/${keyId}`,target:`/keys/${keyId}`,site_name:null}],
   totals:{A:1,B:1,C:1},
   generated_at:'2026-11-26T00:00:00.000Z',
@@ -157,7 +157,7 @@ describe('Schlüssel-Cockpit',()=>{
     renderKeys();
     expect(await screen.findByRole('heading',{name:'Handlungsübersicht'})).toBeTruthy();
     expect(screen.getByRole('link',{name:/Rückgabe überfällig/}).getAttribute('href')).toBe(`/keys/${rows[1].id}/historie`);
-    expect(screen.getByRole('link',{name:/Bund teils ausgegeben/}).getAttribute('href')).toBe(`/keys/${keyId}`);
+    expect(screen.getByRole('link',{name:/Schlüsselbund teils ausgegeben/}).getAttribute('href')).toBe(`/keys/${keyId}`);
     expect(screen.getByRole('link',{name:/Kein Halter zugeordnet/}).getAttribute('href')).toBe(`/keys/${keyId}`);
     expect(screen.getByText('Teilweise ausgegeben – 1 Schlüssel verfügbar.')).toBeTruthy();
   });
@@ -166,7 +166,7 @@ describe('Schlüssel-Cockpit',()=>{
     renderKeys();
     const checkbox=await screen.findByLabelText('Haupteingang auswählen') as HTMLInputElement;
     fireEvent.click(checkbox);
-    fireEvent.click(screen.getByRole('button',{name:/Export \(1\)/}));
+    fireEvent.click(screen.getByRole('button',{name:/CSV exportieren \(1\)/}));
     await waitFor(()=>{
       const params=new URLSearchParams(lastExportUrl().split('?')[1]??'');
       expect(params.get('ids')).toBe(keyId);
@@ -187,9 +187,9 @@ describe('Schlüssel-Cockpit',()=>{
     renderKeys();
     await screen.findByLabelText('Haupteingang auswählen');
     fireEvent.click(screen.getByLabelText('Vollständig exportieren'));
-    fireEvent.click(screen.getByRole('button',{name:'Export'}));
+    fireEvent.click(screen.getByRole('button',{name:'CSV exportieren'}));
     await waitFor(()=>expect(new URLSearchParams(lastExportUrl().split('?')[1]??'').get('full')).toBe('true'));
-    expect((await screen.findByRole('alert')).textContent).toContain('10000 von 12000');
+    expect((await screen.findByRole('alert')).textContent).toContain('10.000 von 12.000');
   });
 
   it('hides all write controls without permissions and shows no UUID inputs',async()=>{
@@ -202,7 +202,7 @@ describe('Schlüssel-Cockpit',()=>{
     expect(screen.queryByRole('button',{name:'Verlust melden'})).toBeNull();
     expect(screen.queryByRole('button',{name:'Sperren'})).toBeNull();
     expect(screen.queryByRole('button',{name:'QR-Code'})).toBeNull();
-    expect(screen.queryByRole('button',{name:/Export/})).toBeNull();
+    expect(screen.queryByRole('button',{name:/CSV exportieren/})).toBeNull();
     for(const label of ['Standort-ID','Halter-UUID','Schlüssel-UUID'])expect(screen.queryByLabelText(label)).toBeNull();
     expect(document.body.textContent).not.toContain('Standort-ID');
     expect(document.body.textContent).not.toContain('Halter-UUID');
@@ -211,7 +211,7 @@ describe('Schlüssel-Cockpit',()=>{
 
   it('creates a key through pickers and posts the full master-data body',async()=>{
     renderKeys();
-    fireEvent.click(await screen.findByRole('button',{name:/\+ Schlüssel anlegen/}));
+    fireEvent.click(await screen.findByRole('button',{name:/Schlüssel anlegen/}));
     const dialog=screen.getByRole('dialog',{name:'Schlüssel anlegen'});
     fireEvent.change(within(dialog).getByLabelText('Kennziffer'),{target:{value:'K-2000'}});
     fireEvent.change(within(dialog).getByLabelText('Bezeichnung'),{target:{value:'Neuer Schlüssel'}});
@@ -367,7 +367,7 @@ describe('Schlüssel-Cockpit',()=>{
     await screen.findByRole('heading',{name:'Nachschicht',level:3});
     fireEvent.click(screen.getByRole('button',{name:'Schlüssel anzeigen'}));
     const card=()=>screen.getByRole('heading',{name:'Nachschicht',level:3}).closest('article')!;
-    const select=await within(card()).findByLabelText('Schlüssel für Bund');
+    const select=await within(card()).findByLabelText('Schlüssel für den Schlüsselbund');
     await waitFor(()=>expect(within(select).getAllByRole('option')).toHaveLength(101));
     expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('/keys/picker?pageSize=100&cursor=0'));
     fireEvent.click(within(card()).getByRole('button',{name:/Weitere Schlüssel laden/}));
@@ -377,18 +377,18 @@ describe('Schlüssel-Cockpit',()=>{
     const selected=many[219];
     fireEvent.change(select,{target:{value:selected.id}});
     expect((select as HTMLSelectElement).value).toBe(selected.id);
-    fireEvent.change(within(card()).getByLabelText('Schlüssel im Bund suchen'),{target:{value:'kein-treffer'}});
+    fireEvent.change(within(card()).getByLabelText('Schlüssel im Schlüsselbund suchen'),{target:{value:'kein-treffer'}});
     await waitFor(()=>expect((select as HTMLSelectElement).value).toBe(selected.id));
     expect(within(select).getByRole('option',{name:/Schlüssel 220/})).toBeTruthy();
   });
 
   it('manages bundles: create, add a key, issue and return only checked keys',async()=>{
     renderKeys();
-    fireEvent.click(await screen.findByRole('button',{name:/\+ Bund anlegen/}));
+    fireEvent.click(await screen.findByRole('button',{name:/Schlüsselbund anlegen/}));
     let dialog=screen.getByRole('dialog',{name:'Schlüsselbund anlegen'});
     fireEvent.change(within(dialog).getByLabelText('Name'),{target:{value:'Neuer Bund'}});
     fireEvent.change(within(dialog).getByLabelText('Objekt'),{target:{value:siteId}});
-    fireEvent.click(within(dialog).getByRole('button',{name:'Bund anlegen'}));
+    fireEvent.click(within(dialog).getByRole('button',{name:'Schlüsselbund anlegen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/key-bundles',expect.objectContaining({method:'POST'})));
     expect(bodyOf('/key-bundles')).toEqual(expect.objectContaining({name:'Neuer Bund',site_id:siteId}));
 
@@ -396,18 +396,18 @@ describe('Schlüssel-Cockpit',()=>{
     await screen.findByRole('heading',{name:'Nachschicht',level:3});
     fireEvent.click(within(bundleCard()).getByRole('button',{name:'Schlüssel anzeigen'}));
     expect(await within(bundleCard()).findByRole('option',{name:/K-1001/})).toBeTruthy();
-    fireEvent.change(within(bundleCard()).getByLabelText('Schlüssel im Bund suchen'),{target:{value:'K-1001'}});
-    fireEvent.change(within(bundleCard()).getByLabelText('Schlüssel für Bund'),{target:{value:keyId}});
+    fireEvent.change(within(bundleCard()).getByLabelText('Schlüssel im Schlüsselbund suchen'),{target:{value:'K-1001'}});
+    fireEvent.change(within(bundleCard()).getByLabelText('Schlüssel für den Schlüsselbund'),{target:{value:keyId}});
     fireEvent.click(within(bundleCard()).getByRole('button',{name:'Hinzufügen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/key-bundles/${bundleId}/items`,expect.objectContaining({method:'POST'})));
     expect(bodyOf(`/key-bundles/${bundleId}/items`)).toEqual(expect.objectContaining({key_id:keyId}));
 
-    fireEvent.click(within(bundleCard()).getByRole('button',{name:'Bund ausgeben'}));
-    dialog=screen.getByRole('dialog',{name:/Bund ausgeben/});
+    fireEvent.click(within(bundleCard()).getByRole('button',{name:'Schlüsselbund ausgeben'}));
+    dialog=screen.getByRole('dialog',{name:/Schlüsselbund ausgeben/});
     fireEvent.change(within(dialog).getByLabelText('Schlüsselhalter'),{target:{value:employeeId}});
     fireEvent.change(within(dialog).getByLabelText('Fällig am'),{target:{value:'2026-12-12T08:00'}});
     fireEvent.change(within(dialog).getByLabelText('Grund'),{target:{value:'Nachschicht'}});
-    fireEvent.click(within(dialog).getByRole('button',{name:'Bund ausgeben'}));
+    fireEvent.click(within(dialog).getByRole('button',{name:'Schlüsselbund ausgeben'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/key-bundles/${bundleId}/issue`,expect.objectContaining({method:'POST'})));
     expect(bodyOf(`/key-bundles/${bundleId}/issue`)).toEqual(expect.objectContaining({holder_employee_id:employeeId,reason:'Nachschicht'}));
 
@@ -426,7 +426,7 @@ describe('Schlüssel-Cockpit',()=>{
     const link=await screen.findByText('K-1004');
     const row=link.closest('tr')!;
     expect(within(row).queryByRole('button',{name:'Ausgabe vorbereiten'})).toBeNull();
-    expect(within(row).getByText('Nur über Bund verwaltbar')).toBeTruthy();
+    expect(within(row).getByText('Nur über den Schlüsselbund verwaltbar')).toBeTruthy();
     expect(within(row).getByRole('link',{name:'Öffnen'}).getAttribute('href')).toBe(`/keys/${bundledKeyId}`);
   });
 });

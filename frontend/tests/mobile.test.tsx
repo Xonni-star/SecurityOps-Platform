@@ -15,8 +15,8 @@ describe('mobile guard workflow',()=>{
   it('keeps a panic event in the outbox while offline',async()=>{
     Object.defineProperty(navigator,'onLine',{configurable:true,value:false});
     render(<MobileGuard/>);
-    fireEvent.click(screen.getByRole('button',{name:'PANIK'}));
+    fireEvent.click(screen.getByRole('button',{name:'Panik-Alarm auslösen'}));
     await waitFor(()=>expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({kind:'panic',path:'/api/v1/alarms/panic'})));
-    expect(await screen.findByText(/Panik offline gespeichert/)).toBeTruthy();
+    expect(await screen.findByText(/Der Panik-Alarm wurde offline gespeichert\. Eine Serverbestätigung liegt nicht vor\./)).toBeTruthy();
   });
 });

@@ -50,19 +50,19 @@ export function selectRetentionRuns<T extends {started_at:string|Date}>(runs:T[]
 
 function keyBytes(secret:string){return createHash('sha256').update(secret).digest();}
 export function encryptSecretPayload(payload:Record<string,string>,secret:string){
-  if(!secret)throw new Error('BACKUP_SECRET_KEY is required to encrypt target secrets');
+  if(!secret)throw new Error('BACKUP_SECRET_KEY ist zum Verschlüsseln der Zielgeheimnisse erforderlich');
   const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',keyBytes(secret),iv);
   const ciphertext=Buffer.concat([cipher.update(JSON.stringify(payload),'utf8'),cipher.final()]);
   return `${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${ciphertext.toString('base64url')}`;
 }
 export function decryptSecretPayload(value:string,secret:string):Record<string,string>{
-  if(!secret)throw new Error('BACKUP_SECRET_KEY is required to decrypt target secrets');
+  if(!secret)throw new Error('BACKUP_SECRET_KEY ist zum Entschlüsseln der Zielgeheimnisse erforderlich');
   const [ivValue,tagValue,ciphertextValue]=value.split('.');
-  if(!ivValue||!tagValue||!ciphertextValue)throw new Error('Invalid encrypted backup secret');
+  if(!ivValue||!tagValue||!ciphertextValue)throw new Error('Ungültiges verschlüsseltes Backup-Geheimnis');
   const decipher=createDecipheriv('aes-256-gcm',keyBytes(secret),Buffer.from(ivValue,'base64url'));
   decipher.setAuthTag(Buffer.from(tagValue,'base64url'));
   const clear=Buffer.concat([decipher.update(Buffer.from(ciphertextValue,'base64url')),decipher.final()]).toString('utf8');
   const payload=JSON.parse(clear) as unknown;
-  if(!payload||typeof payload!=='object')throw new Error('Invalid backup secret payload');
+  if(!payload||typeof payload!=='object')throw new Error('Ungültiger Backup-Geheimniswert');
   return Object.fromEntries(Object.entries(payload).filter((entry):entry is [string,string]=>typeof entry[1]==='string'));
 }

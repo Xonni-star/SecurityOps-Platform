@@ -60,7 +60,7 @@ test("real browser login, role/tenant access and NSL dashboard", async ({
 }) => {
   await login(page);
   await expect(
-    page.getByRole("heading", { name: "NSL-Leitstelle" }),
+    page.getByRole("heading", { name: "Leitstelle" }),
   ).toBeVisible();
   const me = await page.request.get("/api/v1/auth/me");
   expect(me.ok()).toBeTruthy();
@@ -98,9 +98,9 @@ test("creates, acknowledges and resolves an alarm through the UI", async ({
   await expect(page.getByText(description)).toBeVisible();
   const row = page.locator("tr").filter({ hasText: description });
   await row.getByRole("button", { name: "Quittieren" }).click();
-  await expect(row.getByText("acknowledged")).toBeVisible();
-  await row.getByRole("button", { name: "Erledigen" }).click();
-  await expect(row.getByText("resolved")).toBeVisible();
+  await expect(row.getByText("Quittiert")).toBeVisible();
+  await row.getByRole("button", { name: "Als erledigt markieren" }).click();
+  await expect(row.getByText("Erledigt")).toBeVisible();
 });
 
 test("runs the mobile PWA offline outbox and reconciles the server receipt", async ({
@@ -113,25 +113,27 @@ test("runs the mobile PWA offline outbox and reconciles the server receipt", asy
     Boolean((await navigator.serviceWorker.ready).active),
   );
   expect(sw).toBeTruthy();
-  await expect(page.getByText(/Online/)).toBeVisible();
+  await expect(page.getByText(/Verbunden/)).toBeVisible();
   await page.getByLabel("Route").fill("00000000-0000-4000-8000-000000000106");
   await page
-    .getByLabel("Mitarbeiter-ID")
+    .getByLabel("Mitarbeiter")
     .fill("00000000-0000-4000-8000-000000000104");
-  await page.getByLabel("NFC-/Barcode-Kennung").fill("e2e-nfc-01");
+  await page.getByLabel("NFC- oder Barcode-Kennung").fill("e2e-nfc-01");
   await context.setOffline(true);
   await page.getByRole("button", { name: "Kontrollpunkt bestätigen" }).click();
   await expect(
-    page.getByText("Offline gespeichert; wird nach Verbindung synchronisiert."),
+    page.getByText(
+      "Die Kontrolle wurde offline gespeichert und wird nach Wiederherstellung der Verbindung übermittelt.",
+    ),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: /Offline-Outbox \(1\)/ }),
+    page.getByRole("heading", { name: /Offline-Warteschlange \(1\)/ }),
   ).toBeVisible();
   await context.setOffline(false);
   await page.getByRole("button", { name: "Jetzt synchronisieren" }).click();
-  await expect(page.getByText(/synchronisiert/)).toBeVisible();
+  await expect(page.getByText(/übermittelt/)).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: /Offline-Outbox \(0\)/ }),
+    page.getByRole("heading", { name: /Offline-Warteschlange \(0\)/ }),
   ).toBeVisible();
-  await expect(page.getByText(/synchronisiert/)).toBeVisible();
+  await expect(page.getByText(/übermittelt/)).toBeVisible();
 });

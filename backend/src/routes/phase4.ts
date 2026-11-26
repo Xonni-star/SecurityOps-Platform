@@ -4,6 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {publish} from '../services/realtime.js';
 import {queueNotificationEvent} from '../services/notifications.js';
+import {pdfReport} from '../services/pdf.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -84,7 +85,7 @@ phase4Router.get('/nsl/alarms/:id',requirePermission('nsl:read'),async(req,res,n
     const alarm=(await query(`SELECT a.*,p.name priority_name,s.name site_name,s.address site_address,e.name employee_name,e.email employee_email
       FROM alarms a LEFT JOIN alarm_priorities p ON p.id=a.priority_id LEFT JOIN sites s ON s.id=a.site_id
       LEFT JOIN employees e ON e.id=a.employee_id WHERE a.tenant_id=$1 AND a.id=$2`,[req.user!.tenantId,req.params.id])).rows[0];
-    if(!alarm)return res.status(404).json({error:'Alarm not found'});
+    if(!alarm)return res.status(404).json({error:'Alarm nicht gefunden'});
     const history=await query(`SELECT h.*,u.email changed_by_email FROM alarm_history h LEFT JOIN users u ON u.id=h.changed_by
       WHERE h.tenant_id=$1 AND h.alarm_id=$2 ORDER BY h.created_at`,[req.user!.tenantId,req.params.id]);
     res.json({alarm,history:history.rows});
@@ -101,25 +102,10 @@ phase4Router.get('/reports/alarms',requirePermission('reports:read'),async(req,r
     await audit(req,'report.exported','alarm',undefined,{format,count:rows.length});
     const headers=['id','type','status','source','description','triggered_at','acknowledged_at','resolved_at','priority','site','employee'];
     const csv=[headers.join(','),...rows.map(row=>headers.map(key=>`"${String(row[key]??'').replaceAll('"','""')}"`).join(','))].join('\n');
-    if(format==='csv'){res.type('text/csv').set('content-disposition','attachment; filename="alarm-report.csv"').send(csv);return;}
-    const lines=['SecurityOps Alarm Report','',...rows.map(row=>headers.map(key=>`${key}: ${String(row[key]??'')}`).join(' | '))];
+    if(format==='csv'){res.type('text/csv').set('content-disposition','attachment; filename="alarmbericht.csv"').send(csv);return;}
+    const lines=['SecurityOps Alarmbericht','',...rows.map(row=>headers.map(key=>`${key}: ${String(row[key]??'')}`).join(' | '))];
     const content=lines.join('\n').replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
-    const pdf=`%PDF-1.4
-1 0 obj<< /Type /Catalog /Pages 2 0 R>>endobj
-2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1>>endobj
-3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R>>>>>>endobj
-4 0 obj<< /Length ${content.length+35}>>stream
-BT /F1 9 Tf 36 756 Td (${content}) Tj ET
-endstream endobj
-5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica>>endobj
-xref
-0 6
-0000000000 65535 f 
-trailer<< /Size 6 /Root 1 0 R>>
-startxref
-0
-%%EOF`;
-    res.type('application/pdf').set('content-disposition','attachment; filename="alarm-report.pdf"').send(Buffer.from(pdf));
+    res.type('application/pdf').set('content-disposition','attachment; filename="alarmbericht.pdf"').send(pdfReport(content));
   }catch(error){next(error);}
 });
 
@@ -144,7 +130,7 @@ phase4Router.post('/handovers/:id/acknowledge',requirePermission('nsl:write'),as
   try{
     const handover=(await query(`UPDATE shift_handovers SET status='acknowledged',acknowledged_by=$1,acknowledged_at=now()
       WHERE tenant_id=$2 AND id=$3 AND status='open' RETURNING *`,[req.user!.id,req.user!.tenantId,req.params.id])).rows[0];
-    if(!handover)return res.status(404).json({error:'Open handover not found'});
+    if(!handover)return res.status(404).json({error:'Offene Übergabe nicht gefunden'});
     await audit(req,'handover.acknowledged','handover',handover.id,{});
     publish(req.user!.tenantId,'handover.acknowledged',handover,'nsl:read');
     res.json(handover);
@@ -159,9 +145,9 @@ phase4Router.get('/messages',requirePermission('messages:read'),async(req,res,ne
 });
 phase4Router.post('/messages',requirePermission('messages:write'),async(req,res,next)=>{
   try{
-    const body=z.object({recipient_user_id:uuid.optional(),recipient_employee_id:uuid.optional(),body:nonempty.max(4000)}).strict().refine(value=>Boolean(value.recipient_user_id||value.recipient_employee_id),{message:'Recipient required'}).parse(req.body);
-    if(body.recipient_user_id&&!(await query('SELECT id FROM users WHERE id=$1 AND tenant_id=$2',[body.recipient_user_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Recipient not found'});
-    if(body.recipient_employee_id&&!(await query('SELECT id FROM employees WHERE id=$1 AND tenant_id=$2',[body.recipient_employee_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Employee not found'});
+    const body=z.object({recipient_user_id:uuid.optional(),recipient_employee_id:uuid.optional(),body:nonempty.max(4000)}).strict().refine(value=>Boolean(value.recipient_user_id||value.recipient_employee_id),{message:'Empfänger erforderlich'}).parse(req.body);
+    if(body.recipient_user_id&&!(await query('SELECT id FROM users WHERE id=$1 AND tenant_id=$2',[body.recipient_user_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Empfänger nicht gefunden'});
+    if(body.recipient_employee_id&&!(await query('SELECT id FROM employees WHERE id=$1 AND tenant_id=$2',[body.recipient_employee_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const message=(await query(`INSERT INTO direct_messages(tenant_id,sender_user_id,recipient_user_id,recipient_employee_id,body)
       VALUES($1,$2,$3,$4,$5) RETURNING *`,[req.user!.tenantId,req.user!.id,body.recipient_user_id??null,body.recipient_employee_id??null,body.body])).rows[0];
     await audit(req,'message.sent','message',message.id,{});
@@ -173,7 +159,7 @@ phase4Router.post('/messages/:id/read',requirePermission('messages:write'),async
   try{
     const message=(await query(`UPDATE direct_messages SET read_at=COALESCE(read_at,now())
       WHERE tenant_id=$1 AND id=$2 AND recipient_user_id=$3 RETURNING *`,[req.user!.tenantId,req.params.id,req.user!.id])).rows[0];
-    if(!message)return res.status(404).json({error:'Message not found'});
+    if(!message)return res.status(404).json({error:'Nachricht nicht gefunden'});
     publish(req.user!.tenantId,'message.read',message,'messages:read');res.json(message);
   }catch(error){next(error);}
 });
@@ -181,15 +167,15 @@ phase4Router.post('/messages/:id/read',requirePermission('messages:write'),async
 phase4Router.get('/notifications',requirePermission('notifications:read'),async(req,res,next)=>{
   try{res.json((await query(`SELECT * FROM notifications WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 200`,[req.user!.tenantId,req.user!.id])).rows);}catch(error){next(error);}
 });
-phase4Router.post('/notifications/:id/read',requirePermission('notifications:read'),async(req,res,next)=>{
-  try{const notification=(await query(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE tenant_id=$1 AND user_id=$2 AND id=$3 RETURNING *`,[req.user!.tenantId,req.user!.id,req.params.id])).rows[0];if(!notification)return res.status(404).json({error:'Notification not found'});res.json(notification);}catch(error){next(error);}
+phase4Router.post('/notifications/:id/read',requirePermission('notifications:write'),async(req,res,next)=>{
+  try{const notification=(await query(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE tenant_id=$1 AND user_id=$2 AND id=$3 RETURNING *`,[req.user!.tenantId,req.user!.id,req.params.id])).rows[0];if(!notification)return res.status(404).json({error:'Benachrichtigung nicht gefunden'});res.json(notification);}catch(error){next(error);}
 });
 phase4Router.get('/notification-subscriptions',requirePermission('notifications:read'),async(req,res,next)=>{
   try{res.json((await query('SELECT * FROM notification_subscriptions WHERE tenant_id=$1 AND (user_id=$2 OR role=$3) ORDER BY event_type,channel',[req.user!.tenantId,req.user!.id,req.user!.role])).rows);}catch(error){next(error);}
 });
 phase4Router.post('/notification-subscriptions',requirePermission('notifications:write'),async(req,res,next)=>{
   try{
-    const body=z.object({role:z.enum(['admin','operator','viewer']).optional(),user_id:uuid.optional(),event_type:nonempty,channel:z.enum(['email','sms','in_app']),recipient:z.string().trim().optional(),enabled:z.boolean().default(true)}).strict().refine(value=>Boolean(value.role||value.user_id),{message:'Role or user required'}).refine(value=>value.channel==='in_app'||Boolean(value.recipient),{message:'Recipient required'}).parse(req.body);
+    const body=z.object({role:z.enum(['admin','operator','viewer']).optional(),user_id:uuid.optional(),event_type:nonempty,channel:z.enum(['email','sms','in_app']),recipient:z.string().trim().optional(),enabled:z.boolean().default(true)}).strict().refine(value=>Boolean(value.role||value.user_id),{message:'Rolle oder Benutzer erforderlich'}).refine(value=>value.channel==='in_app'||Boolean(value.recipient),{message:'Empfänger erforderlich'}).parse(req.body);
     const subscription=(await query(`INSERT INTO notification_subscriptions(tenant_id,user_id,role,event_type,channel,recipient,enabled)
       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[req.user!.tenantId,body.user_id??null,body.role??null,body.event_type,body.channel,body.recipient??null,body.enabled])).rows[0];
     await audit(req,'notification.subscription_created','subscription',subscription.id,{});

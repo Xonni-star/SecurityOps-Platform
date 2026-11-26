@@ -17,7 +17,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
     const shiftId=uuid.parse(String(req.params.shiftId));
     const canRead=createSitePermissionReader(req);
     if(!await canRead('scheduling:read',siteId)||!await canRead('employees:read',siteId)||!await canRead('qualifications:read',siteId)){
-      return res.status(403).json({error:'Insufficient permissions for this site'});
+      return res.status(403).json({error:'Kein Zugriff auf Objekt'});
     }
     const tenantId=req.user!.tenantId;
     const shift=(await query<{
@@ -31,7 +31,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
        WHERE sh.tenant_id=$1 AND sh.id=$2 AND p.site_id=$3`,
       [tenantId,shiftId,siteId],
     )).rows[0];
-    if(!shift)return res.status(404).json({error:'Shift not found at this object'});
+    if(!shift)return res.status(404).json({error:'Schicht nicht im Objekt gefunden'});
     const startsAt=iso(shift.starts_at);
     const endsAt=iso(shift.ends_at);
     const employees=(await query<{
@@ -108,5 +108,5 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
       return {employee_id:employee.id,employee_name:employee.name,...evaluateShiftEligibility(input)};
     });
     res.json({shift_id:shift.id,site_id:siteId,required_qualification_codes:requiredCodes,employees:verdicts});
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid shift or site id'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Schicht- oder Objektkennung'});next(error);}
 });

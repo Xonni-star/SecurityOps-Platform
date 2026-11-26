@@ -165,7 +165,7 @@ describe('customer overview',()=>{
     };
 
     await selectRow();
-    fireEvent.click(screen.getByRole('button',{name:/Export \(1\)/}));
+    fireEvent.click(screen.getByRole('button',{name:/CSV exportieren \(1\)/}));
     await waitFor(()=>{
       const url=String([...fetchMock.mock.calls].reverse().find(([input])=>String(input).includes('/customers/export'))?.[0]??'');
       expect(url).toContain(`ids=${customerId}`);

@@ -8,14 +8,14 @@ import {detectShiftConflicts} from '../services/scheduling.js';
 
 const uuid=z.string().uuid();
 const isoDateTime=z.string().datetime({offset:true});
-const windowInput=z.object({starts_at:isoDateTime,ends_at:isoDateTime}).refine(value=>new Date(value.ends_at)>new Date(value.starts_at),'ends_at must be after starts_at');
+const windowInput=z.object({starts_at:isoDateTime,ends_at:isoDateTime}).refine(value=>new Date(value.ends_at)>new Date(value.starts_at),'ends_at muss nach starts_at liegen');
 const parameters=z.record(z.string(),z.unknown());
 const mutation=z.string().uuid();
 const permission=(req:Request,code:string,siteId:string)=>{
   const user=req.user!;
   const scope=effectivePermissionScope(normalizePermissionGrants(user.permissionGrants,user.permissions),code,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
   if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants:normalizePermissionGrants(user.permissionGrants,user.permissions)},scope,{tenantId:user.tenantId,siteId})) {
-    throw Object.assign(new Error('Insufficient permissions for this site'),{status:403});
+    throw Object.assign(new Error('Kein Zugriff auf Objekt'),{status:403});
   }
 };
 const ensureSession=(req:Request)=>{
@@ -40,9 +40,10 @@ schedulingRouter.get('/scheduling/rule-profiles',requirePermission('scheduling:r
 });
 schedulingRouter.post('/scheduling/rule-profiles',requirePermission('scheduling:rules:write'),async(req,res,next)=>{
   try{
-    const body=z.object({name:z.string().trim().min(1).max(120),version:z.number().int().positive(),parameters}).strict().parse(req.body);
+    const body=z.object({name:z.string().trim().min(1).max(120),version:z.number().int().positive(),parameters,client_mutation_id:mutation.optional()}).strict().parse(req.body);
     const sessionId=ensureSession(req);
-    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:mutation.parse(req.get('Idempotency-Key')??req.body.client_mutation_id),action:'scheduling.rule_profile',payload:req.body},async tx=>{
+    const mutationId=mutation.parse(req.get('Idempotency-Key')??body.client_mutation_id);
+    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId,action:'scheduling.rule_profile',payload:{...body,client_mutation_id:mutationId}},async tx=>{
       const row=(await tx.query(`INSERT INTO schedule_rule_profiles(tenant_id,name,version,parameters,created_by,created_session_id)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,version,parameters,created_at`,[req.user!.tenantId,body.name,body.version,body.parameters,req.user!.id,sessionId])).rows[0];
       await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',[req.user!.tenantId,req.user!.id,'scheduling.rule_profile.created','schedule_rule_profile',row.id,{version:body.version}]);
@@ -69,7 +70,7 @@ schedulingRouter.get('/scheduling/periods/:id',requirePermission('scheduling:rea
     const period=(await query(`SELECT p.*,r.name rule_profile_name,r.version rule_profile_version,r.parameters
       FROM schedule_periods p JOIN schedule_rule_profiles r ON r.tenant_id=p.tenant_id AND r.id=p.rule_profile_id
       WHERE p.tenant_id=$1 AND p.id=$2`,[req.user!.tenantId,req.params.id])).rows[0];
-    if(!period)return res.status(404).json({error:'Schedule period not found'});
+    if(!period)return res.status(404).json({error:'Dienstplanzeitraum nicht gefunden'});
     permission(req,'scheduling:read',period.site_id);
     const shifts=(await query(`SELECT sh.*,COALESCE(json_agg(json_build_object('id',a.id,'employee_id',a.employee_id,'status',a.status)) FILTER (WHERE a.id IS NOT NULL),'[]') assignments
       FROM schedule_shifts sh LEFT JOIN schedule_assignments a ON a.tenant_id=sh.tenant_id AND a.shift_id=sh.id
@@ -100,8 +101,8 @@ schedulingRouter.post('/scheduling/periods/:periodId/shifts',requirePermission('
     const sessionId=ensureSession(req);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'scheduling.shift',payload:req.body},async tx=>{
       const period=(await tx.query('SELECT id,site_id,rule_profile_id FROM schedule_periods WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.periodId])).rows[0];
-      if(!period)throw Object.assign(new Error('Schedule period not found'),{status:404});
-      if(period.site_id!==body.site_id)throw Object.assign(new Error('Shift site must match period site'),{status:400});
+      if(!period)throw Object.assign(new Error('Dienstplanzeitraum nicht gefunden'),{status:404});
+      if(period.site_id!==body.site_id)throw Object.assign(new Error('Objekt der Schicht muss dem Objekt des Zeitraums entsprechen'),{status:400});
       const profile=(await tx.query('SELECT parameters FROM schedule_rule_profiles WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,period.rule_profile_id])).rows[0];
       const row=(await tx.query(`INSERT INTO schedule_shifts(tenant_id,period_id,site_id,role_code,starts_at,ends_at,required_qualification_codes,notes,created_by,created_session_id,client_mutation_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[req.user!.tenantId,period.id,body.site_id,body.role_code,body.starts_at,body.ends_at,JSON.stringify(body.required_qualification_codes??[]),body.notes??null,req.user!.id,sessionId,body.client_mutation_id])).rows[0];
@@ -121,16 +122,16 @@ schedulingRouter.post('/scheduling/shifts/:shiftId/assignments',requirePermissio
     const sessionId=ensureSession(req);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'scheduling.assignment',payload:req.body},async tx=>{
       const shift=(await tx.query('SELECT sh.*,p.id period_id,p.rule_profile_id,p.site_id FROM schedule_shifts sh JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id WHERE sh.tenant_id=$1 AND sh.id=$2',[req.user!.tenantId,req.params.shiftId])).rows[0];
-      if(!shift)throw Object.assign(new Error('Schedule shift not found'),{status:404});
+      if(!shift)throw Object.assign(new Error('Dienstplanschicht nicht gefunden'),{status:404});
       permission(req,'scheduling:write',shift.site_id);
       const employee=(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
-      if(!employee)throw Object.assign(new Error('Employee not found'),{status:404});
+      if(!employee)throw Object.assign(new Error('Mitarbeiter nicht gefunden'),{status:404});
       const absence=(await tx.query(
         `SELECT id FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2
          AND starts_at < $4 AND $3 < ends_at LIMIT 1`,
         [req.user!.tenantId,body.employee_id,shift.starts_at,shift.ends_at],
       )).rows[0];
-      if(absence)throw Object.assign(new Error('Employee is absent during this shift'),{status:409});
+      if(absence)throw Object.assign(new Error('Mitarbeiter ist während dieser Schicht abwesend'),{status:409});
       const overlapping=(await tx.query(
         `SELECT a.id FROM schedule_assignments a JOIN schedule_shifts s
          ON s.tenant_id=a.tenant_id AND s.id=a.shift_id
@@ -138,7 +139,7 @@ schedulingRouter.post('/scheduling/shifts/:shiftId/assignments',requirePermissio
            AND s.starts_at < $4 AND $3 < s.ends_at LIMIT 1`,
         [req.user!.tenantId,body.employee_id,shift.starts_at,shift.ends_at],
       )).rows[0];
-      if(overlapping)throw Object.assign(new Error('Employee already assigned to an overlapping shift'),{status:409});
+      if(overlapping)throw Object.assign(new Error('Mitarbeiter ist bereits einer überschneidenden Schicht zugeordnet'),{status:409});
       const row=(await tx.query(`INSERT INTO schedule_assignments(tenant_id,shift_id,employee_id,created_by,created_session_id,client_mutation_id)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[req.user!.tenantId,shift.id,body.employee_id,req.user!.id,sessionId,body.client_mutation_id])).rows[0];
       const qualificationRows=(await tx.query<{code:string;valid_from:string|null;valid_until:string|null;status:string}>(

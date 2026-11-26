@@ -32,7 +32,7 @@ const customerSchema=z.object({
   country_code:z.string().regex(/^[A-Z]{2}$/).default('DE'),
   billing_address:nullableText(1000),
   communication_preferences:nullableText(1000),
-}).strict().refine(value=>!value.started_on||!value.ended_on||value.ended_on>=value.started_on,{message:'Invalid customer dates'});
+}).strict().refine(value=>!value.started_on||!value.ended_on||value.ended_on>=value.started_on,{message:'Ungültige Kundendaten'});
 
 const contactSchema=z.object({
   first_name:nullableText(120),
@@ -51,7 +51,7 @@ const contactSchema=z.object({
   is_billing_contact:z.boolean().default(false),
   is_emergency_contact:z.boolean().default(false),
   site_ids:z.array(uuid).max(100).default([]),
-}).strict().refine(value=>Boolean(value.first_name||value.last_name||value.email||value.phone||value.mobile_phone),{message:'At least one contact detail is required'});
+}).strict().refine(value=>Boolean(value.first_name||value.last_name||value.email||value.phone||value.mobile_phone),{message:'Mindestens ein Kontaktdetail ist erforderlich'});
 
 const relationshipSchema=z.object({
   site_id:uuid,
@@ -60,7 +60,7 @@ const relationshipSchema=z.object({
   ends_on:z.string().date().nullable().optional(),
   is_primary:z.boolean().default(false),
   notes:nullableText(4000),
-}).strict().refine(value=>!value.starts_on||!value.ends_on||value.ends_on>=value.starts_on,{message:'Invalid relationship dates'});
+}).strict().refine(value=>!value.starts_on||!value.ends_on||value.ends_on>=value.starts_on,{message:'Ungültige Zeiträume der Beziehung'});
 
 const contractSchema=z.object({
   contract_number:nonempty.max(80),
@@ -78,7 +78,7 @@ const contractSchema=z.object({
   sla:nullableText(4000),
   account_manager_employee_id:uuid.nullable().optional(),
   internal_notes:nullableText(8000),
-}).strict().refine(value=>!value.ends_on||value.ends_on>=value.starts_on,{message:'Invalid contract dates'});
+}).strict().refine(value=>!value.ends_on||value.ends_on>=value.starts_on,{message:'Ungültige Vertragsdaten'});
 
 const taskSchema=z.object({
   title:nonempty.max(240),
@@ -290,7 +290,7 @@ async function addHistory(tenantId:string,customerId:string,actorId:string,event
     [tenantId,customerId,actorId,eventType,subjectId??null,details],
   );
 }
-function invalid(res:import('express').Response){return res.status(400).json({error:'Invalid customer request'});}
+function invalid(res:import('express').Response){return res.status(400).json({error:'Ungültige Kundenanfrage'});}
 
 customersRouter.get('/customers/dashboard',requirePermission('customers:read'),async(req,res,next)=>{
   try{
@@ -337,7 +337,7 @@ customersRouter.get('/customers',requirePermission('customers:read'),async(req,r
     res.set('X-Page-Size',String(filters.pageSize));
     res.set('X-Page-Count',String(Math.max(1,Math.ceil(total/filters.pageSize))));
     res.json(result.rows);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid customer filters'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Kundenfilter'});next(error);}
 });
 
 customersRouter.get('/customers/action-list',requirePermission('customers:read'),async(req,res,next)=>{
@@ -362,7 +362,7 @@ customersRouter.get('/customers/export',requirePermission('customers:export'),as
     await recordAudit(req.user!.tenantId,req.user!.id,'customers.exported','customer',undefined,{count:rows.length,filters:{q:filters.q,status:filters.customer_status,risk:filters.risk_classification,manager:filters.account_manager_employee_id,contract_status:filters.contract_status,selected:ids.length>0}});
     res.set('Content-Disposition','attachment; filename="kunden.csv"');
     res.status(200).type('text/csv; charset=utf-8').send(`\ufeff${csv}`);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid export request'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Exportanfrage'});next(error);}
 });
 
 customersRouter.post('/customers/bulk',requireCsrf,requirePermission('customers:write'),async(req,res,next)=>{
@@ -391,7 +391,7 @@ customersRouter.post('/customers/bulk',requireCsrf,requirePermission('customers:
       }
       return {updated,foreign:false};
     });
-    if(result.foreign)return res.status(404).json({error:'One or more customers are not accessible'});
+    if(result.foreign)return res.status(404).json({error:'Ein oder mehrere Kunden sind nicht zugänglich'});
     res.json(result);
   }catch(error){next(error);}
 });
@@ -402,7 +402,7 @@ customersRouter.post('/customers',requireCsrf,requirePermission('customers:write
     if(!parsed.success)return invalid(res);
     const body=parsed.data;
     const tenantId=req.user!.tenantId;
-    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Account manager not found'});
+    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Kundenbetreuer nicht gefunden'});
     const row=(await query(
       `INSERT INTO customers(tenant_id,name,email,customer_number,legal_form,industry,customer_status,priority,risk_classification,started_on,ended_on,account_manager_employee_id,internal_notes,phone,website,billing_email,address_line1,address_line2,postal_code,city,region,country_code,billing_address,communication_preferences)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
@@ -428,7 +428,7 @@ customersRouter.get('/customers/:id/profile',requirePermission('customers:read')
        WHERE c.tenant_id=$1 AND c.id=$2`,
       [tenantId,customerId],
     )).rows[0];
-    if(!customer)return res.status(404).json({error:'Customer not found'});
+    if(!customer)return res.status(404).json({error:'Kunde nicht gefunden'});
     const customerDocumentReadScope=effectivePermissionScope(
       normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),
       'customer_documents:read',
@@ -479,7 +479,7 @@ customersRouter.get('/customers/:id/profile',requirePermission('customers:read')
       history:history.rows,operations:operations.rows[0],reminders,
       visible_sections:{contacts:can(req,'customer_contacts:read'),sites:can(req,'sites:read'),contracts:can(req,'contracts:read'),
         documents:customerDocumentReadScope==='tenant'||customerDocumentReadScope==='system',tasks:can(req,'customer_tasks:read'),history:can(req,'audit:read')}});
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid customer id'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Kunden-ID'});next(error);}
 });
 
 customersRouter.patch('/customers/:id',requireCsrf,requirePermission('customers:write'),async(req,res,next)=>{
@@ -489,12 +489,12 @@ customersRouter.patch('/customers/:id',requireCsrf,requirePermission('customers:
     if(!parsed.success||!Object.keys(parsed.data).length)return invalid(res);
     const body=parsed.data;
     const tenantId=req.user!.tenantId;
-    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Account manager not found'});
+    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Kundenbetreuer nicht gefunden'});
     const allowed=Object.keys(body);
     const values=allowed.map(key=>(body as Record<string,unknown>)[key]);
     const row=(await query(`UPDATE customers SET ${allowed.map((key,index)=>`${key}=$${index+1}`).join(',')},updated_at=now()
       WHERE tenant_id=$${allowed.length+1} AND id=$${allowed.length+2} RETURNING *`,[...values,tenantId,customerId])).rows[0];
-    if(!row)return res.status(404).json({error:'Customer not found'});
+    if(!row)return res.status(404).json({error:'Kunde nicht gefunden'});
     await addHistory(tenantId,customerId,req.user!.id,'customer.updated',customerId,{fields:allowed});
     await recordAudit(tenantId,req.user!.id,'customer.updated','customer',customerId,{fields:allowed});
     res.json(row);
@@ -507,10 +507,10 @@ customersRouter.post('/customers/:id/contacts',requireCsrf,requirePermission('cu
     const parsed=contactSchema.safeParse(req.body);
     if(!parsed.success)return invalid(res);
     const body=parsed.data,tenantId=req.user!.tenantId;
-    if(!((await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,customerId])).rows[0]))return res.status(404).json({error:'Customer not found'});
+    if(!((await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,customerId])).rows[0]))return res.status(404).json({error:'Kunde nicht gefunden'});
     if(body.site_ids.length){
       const sites=(await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=ANY($3::uuid[])',[tenantId,customerId,body.site_ids])).rows;
-      if(sites.length!==new Set(body.site_ids).size)return res.status(400).json({error:'Contact sites must already belong to the customer'});
+      if(sites.length!==new Set(body.site_ids).size)return res.status(400).json({error:'Kontaktstandorte müssen bereits zum Kunden gehören'});
     }
     const contact=await withTransaction(async client=>{
       if(body.is_primary)await client.query('UPDATE customer_contacts SET is_primary=false,updated_at=now() WHERE tenant_id=$1 AND customer_id=$2',[tenantId,customerId]);
@@ -533,10 +533,10 @@ customersRouter.patch('/customers/:id/contacts/:contactId',requireCsrf,requirePe
     if(!parsed.success||!Object.keys(parsed.data).length)return invalid(res);
     const body=parsed.data,tenantId=req.user!.tenantId;
     const existing=(await query('SELECT id FROM customer_contacts WHERE tenant_id=$1 AND customer_id=$2 AND id=$3',[tenantId,customerId,contactId])).rows[0];
-    if(!existing)return res.status(404).json({error:'Contact not found'});
+    if(!existing)return res.status(404).json({error:'Kontakt nicht gefunden'});
     if(body.site_ids){
       const sites=(await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=ANY($3::uuid[])',[tenantId,customerId,body.site_ids])).rows;
-      if(sites.length!==new Set(body.site_ids).size)return res.status(400).json({error:'Contact sites must already belong to the customer'});
+      if(sites.length!==new Set(body.site_ids).size)return res.status(400).json({error:'Kontaktstandorte müssen bereits zum Kunden gehören'});
     }
     const values={...body};delete values.site_ids;
     const fields=Object.keys(values);
@@ -567,7 +567,7 @@ customersRouter.patch('/customers/:id/sites/:siteId',requireCsrf,requirePermissi
     const link=(await query(`UPDATE customer_sites SET relationship_status=$1,is_primary=COALESCE($2,is_primary),updated_at=now()
       WHERE tenant_id=$3 AND customer_id=$4 AND site_id=$5 RETURNING *`,
       [relationship_status,is_primary??null,tenantId,customerId,siteId])).rows[0];
-    if(!link)return res.status(404).json({error:'Customer object relationship not found'});
+    if(!link)return res.status(404).json({error:'Kunden-Objekt-Beziehung nicht gefunden'});
     await addHistory(tenantId,customerId,req.user!.id,'site.relationship_updated',siteId,{relationship_status});
     await recordAudit(tenantId,req.user!.id,'customer.site.relationship_updated','customer_site',link.id,{customer_id:customerId,site_id:siteId,relationship_status});
     res.json(link);
@@ -582,7 +582,7 @@ customersRouter.post('/customers/:id/sites',requireCsrf,requirePermission('custo
     const body=parsed.data,tenantId=req.user!.tenantId;
     const existing=(await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,customerId])).rows[0];
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,body.site_id])).rows[0];
-    if(!existing||!site)return res.status(404).json({error:'Customer or site not found'});
+    if(!existing||!site)return res.status(404).json({error:'Kunde oder Objekt nicht gefunden'});
     if(body.is_primary)await query('UPDATE customer_sites SET is_primary=false,updated_at=now() WHERE tenant_id=$1 AND customer_id=$2',[tenantId,customerId]);
     const link=(await query(`INSERT INTO customer_sites(tenant_id,customer_id,site_id,relationship_type,relationship_status,is_primary,starts_on,ends_on,notes)
       VALUES($1,$2,$3,$4,'active',$5,$6,$7,$8) ON CONFLICT(tenant_id,customer_id,site_id) DO UPDATE
@@ -601,8 +601,8 @@ customersRouter.post('/customers/:id/contracts',requireCsrf,requirePermission('c
     if(!parsed.success)return invalid(res);
     const body=parsed.data,tenantId=req.user!.tenantId;
     const customer=(await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,customerId])).rows[0];
-    if(!customer)return res.status(404).json({error:'Customer not found'});
-    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Account manager not found'});
+    if(!customer)return res.status(404).json({error:'Kunde nicht gefunden'});
+    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Kundenbetreuer nicht gefunden'});
     const contract=(await query(`INSERT INTO contracts(tenant_id,customer_id,contract_number,contract_type,scope,starts_on,ends_on,renewal_type,notice_period_days,next_termination_date,status,total_value,monthly_value,billing_model,sla,account_manager_employee_id,internal_notes)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
       [tenantId,customerId,body.contract_number,body.contract_type,body.scope??null,body.starts_on,body.ends_on??null,body.renewal_type,body.notice_period_days??null,body.next_termination_date??null,body.status,body.total_value??null,body.monthly_value??null,body.billing_model??null,body.sla??null,body.account_manager_employee_id??null,body.internal_notes??null])).rows[0];
@@ -618,11 +618,11 @@ customersRouter.patch('/customers/:id/contracts/:contractId',requireCsrf,require
     const parsed=contractSchema.partial().safeParse(req.body);
     if(!parsed.success||!Object.keys(parsed.data).length)return invalid(res);
     const body=parsed.data,tenantId=req.user!.tenantId,fields=Object.keys(body);
-    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Account manager not found'});
+    if(body.account_manager_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.account_manager_employee_id])).rows[0]))return res.status(400).json({error:'Kundenbetreuer nicht gefunden'});
     const contract=(await query(`UPDATE contracts SET ${fields.map((field,index)=>`${field}=$${index+1}`).join(',')},updated_at=now()
       WHERE tenant_id=$${fields.length+1} AND customer_id=$${fields.length+2} AND id=$${fields.length+3} RETURNING *`,
       [...fields.map(field=>(body as Record<string,unknown>)[field]),tenantId,customerId,contractId])).rows[0];
-    if(!contract)return res.status(404).json({error:'Contract not found'});
+    if(!contract)return res.status(404).json({error:'Vertrag nicht gefunden'});
     await addHistory(tenantId,customerId,req.user!.id,'contract.updated',contractId,{fields,status:contract.status});
     await recordAudit(tenantId,req.user!.id,'customer.contract.updated','contract',contractId,{customer_id:customerId,fields});
     res.json(contract);
@@ -639,7 +639,7 @@ customersRouter.post('/customers/:id/contracts/:contractId/sites',requireCsrf,re
       SELECT $1,$2,co.id,cs.site_id FROM contracts co JOIN customer_sites cs ON cs.tenant_id=co.tenant_id AND cs.customer_id=co.customer_id AND cs.site_id=$4
       WHERE co.tenant_id=$1 AND co.customer_id=$2 AND co.id=$3
       ON CONFLICT(tenant_id,contract_id,site_id) DO NOTHING RETURNING *`,[tenantId,customerId,contractId,siteId])).rows[0];
-    if(!link)return res.status(400).json({error:'Contract and site must belong to this customer'});
+    if(!link)return res.status(400).json({error:'Vertrag und Objekt müssen zu diesem Kunden gehören'});
     await addHistory(tenantId,customerId,req.user!.id,'contract.site.linked',contractId,{site_id:siteId});
     await recordAudit(tenantId,req.user!.id,'customer.contract.site.linked','contract',contractId,{customer_id:customerId,site_id:siteId});
     res.status(201).json(link);
@@ -654,7 +654,7 @@ customersRouter.post('/customers/:id/contracts/:contractId/services',requireCsrf
     const body=parsed.data,tenantId=req.user!.tenantId;
     const contract=(await query('SELECT id FROM contracts WHERE tenant_id=$1 AND customer_id=$2 AND id=$3',[tenantId,customerId,contractId])).rows[0];
     const service=(await query('SELECT id FROM services WHERE tenant_id=$1 AND id=$2 AND status<>\'archived\'',[tenantId,body.service_id])).rows[0];
-    if(!contract||!service)return res.status(404).json({error:'Contract or service not found'});
+    if(!contract||!service)return res.status(404).json({error:'Vertrag oder Leistung nicht gefunden'});
     const row=(await query(`INSERT INTO contract_services(tenant_id,contract_id,service_id,quantity,unit,unit_price,starts_on,ends_on,notes)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,contract_id,service_id) DO UPDATE
       SET quantity=EXCLUDED.quantity,unit=EXCLUDED.unit,unit_price=EXCLUDED.unit_price,starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on,notes=EXCLUDED.notes,updated_at=now() RETURNING *`,
@@ -690,8 +690,8 @@ customersRouter.post('/customers/:id/tasks',requireCsrf,requirePermission('custo
     const parsed=taskSchema.safeParse(req.body);
     if(!parsed.success)return invalid(res);
     const body=parsed.data,tenantId=req.user!.tenantId;
-    if(!((await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,customerId])).rows[0]))return res.status(404).json({error:'Customer not found'});
-    if(body.assigned_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.assigned_employee_id])).rows[0]))return res.status(400).json({error:'Assigned employee not found'});
+    if(!((await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,customerId])).rows[0]))return res.status(404).json({error:'Kunde nicht gefunden'});
+    if(body.assigned_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.assigned_employee_id])).rows[0]))return res.status(400).json({error:'Zugewiesener Mitarbeiter nicht gefunden'});
     const task=(await query(`INSERT INTO customer_tasks(tenant_id,customer_id,title,description,due_at,assigned_employee_id,created_by,priority)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [tenantId,customerId,body.title,body.description??null,body.due_at??null,body.assigned_employee_id??null,req.user!.id,body.priority])).rows[0];
@@ -708,7 +708,7 @@ customersRouter.patch('/customers/:id/tasks/:taskId',requireCsrf,requirePermissi
     if(!parsed.success||!Object.keys(parsed.data).length)return invalid(res);
     const body=parsed.data,tenantId=req.user!.tenantId;
     const fields=Object.keys(body).filter(key=>key!=='status');
-    if(body.assigned_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.assigned_employee_id])).rows[0]))return res.status(400).json({error:'Assigned employee not found'});
+    if(body.assigned_employee_id&&!((await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[tenantId,body.assigned_employee_id])).rows[0]))return res.status(400).json({error:'Zugewiesener Mitarbeiter nicht gefunden'});
     const assignments=['title','description','due_at','assigned_employee_id','priority'].filter(key=>fields.includes(key));
     const values=assignments.map(key=>(body as Record<string,unknown>)[key]);
     const statusIndex=values.length+1;
@@ -720,7 +720,7 @@ customersRouter.patch('/customers/:id/tasks/:taskId',requireCsrf,requirePermissi
     updates.push('updated_at=now()');
     const task=(await query(`UPDATE customer_tasks SET ${updates.join(',')}
       WHERE tenant_id=$${tenantIndex} AND customer_id=$${customerIndex} AND id=$${taskIndex} RETURNING *`,values)).rows[0];
-    if(!task)return res.status(404).json({error:'Task not found'});
+    if(!task)return res.status(404).json({error:'Aufgabe nicht gefunden'});
     await addHistory(tenantId,customerId,req.user!.id,body.status?'task.status_changed':'task.updated',taskId,{...body});
     await recordAudit(tenantId,req.user!.id,'customer.task.updated','customer_task',taskId,{customer_id:customerId,...body});
     res.json(task);

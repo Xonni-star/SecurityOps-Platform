@@ -1,5 +1,8 @@
 import {FormEvent,ReactNode,useEffect,useRef,useState} from 'react';
 import {api,storedUser} from '../lib/api';
+import {berlinDateTimeToIso,formatDate,formatDateTime,formatNumber,isoToBerlinDateTimeLocal} from '../lib/format';
+import {statusLabel} from '../lib/status';
+import {commonText} from '../lib/text';
 import {uuid} from '../lib/uuid';
 
 export type KeyRow={
@@ -29,20 +32,18 @@ export type InventoryCheck={id:string;checked_at?:string|null;checker_name?:stri
 export type InventoryItem={key_id:string;expected_present:boolean;found?:boolean|null;actual_condition?:string|null};
 export type KeyProfile={key:KeyRow;holder:HolderInfo|null;site:SiteOption|null;bundle:BundleRow|null;recent_movements:RecordedMovement[];loss_reports:LossReport[];inventory_checks:InventoryCheck[];reminder_state?:Record<string,unknown>|null;visible_sections?:string[]|Record<string,boolean>|null};
 
-export const statusLabels:Record<string,string>={available:'Verfügbar',issued:'Ausgegeben',overdue:'Überfällig',lost:'Verloren',blocked:'Gesperrt',deactivated:'Deaktiviert',partial:'Teilweise ausgegeben'};
-export const keyTypeLabels:Record<string,string>={physical:'Physisch',master:'Hauptschlüssel',transponder:'Transponder',access_card:'Zutrittskarte',electronic:'Elektronisch',digital:'Digital',other:'Sonstiges'};
-export const conditionLabels:Record<string,string>={good:'Gut',damaged:'Beschädigt',incomplete:'Unvollständig',nonfunctional:'Funktionslos',suspicious_change:'Verdächtige Veränderung'};
-export const movementLabels:Record<string,string>={created:'Angelegt',issued:'Ausgegeben',returned:'Zurückgegeben',reported_lost:'Verlust gemeldet',lost:'Verloren',blocked:'Gesperrt',reactivated:'Reaktiviert',updated:'Geändert',inventory_check:'Bestandskontrolle',bundle_issued:'Bund ausgegeben',bundle_returned:'Bund zurückgegeben'};
-export const lossStatusLabels:Record<string,string>={reported:'Gemeldet',review:'In Prüfung',security_measure_required:'Sicherheitsmaßnahme erforderlich',replacement_required:'Ersatz erforderlich',closed:'Abgeschlossen'};
+const labelsFor=(values:string[],domain:Parameters<typeof statusLabel>[1]):Record<string,string>=>
+  Object.fromEntries(values.map(value=>[value,statusLabel(value,domain)]));
 
-export const displayDate=(value:string|null|undefined)=>value?new Date(value.length<=10?`${value}T00:00:00`:value).toLocaleDateString('de-DE'):'–';
-export const displayDateTime=(value:string|null|undefined)=>value?new Date(value).toLocaleString('de-DE'):'–';
-export const toDateTimeLocal=(value:string)=>{
-  const date=new Date(value);
-  if(Number.isNaN(date.getTime()))return '';
-  return new Date(date.getTime()-date.getTimezoneOffset()*60_000).toISOString().slice(0,16);
-};
-export const toIso=(value:string)=>value?new Date(value).toISOString():'';
+export const statusLabels=labelsFor(['available','issued','overdue','lost','blocked','deactivated','partial'],'key');
+export const keyTypeLabels=labelsFor(['physical','master','transponder','access_card','electronic','digital','other'],'keyType');
+export const conditionLabels=labelsFor(['good','damaged','incomplete','nonfunctional','suspicious_change'],'condition');
+export const lossStatusLabels=labelsFor(['reported','review','security_measure_required','replacement_required','closed'],'lossStatus');
+
+export const displayDate=(value:string|null|undefined)=>formatDate(value);
+export const displayDateTime=(value:string|null|undefined)=>formatDateTime(value);
+export const toDateTimeLocal=(value:string)=>isoToBerlinDateTimeLocal(value);
+export const toIso=(value:string)=>berlinDateTimeToIso(value);
 export const withMutation=(body:Record<string,unknown>)=>({...body,client_mutation_id:uuid()});
 export const siteLabel=(site:{id?:string;name?:string|null;site_number?:string|null}|null|undefined)=>site?[site.site_number,site.name].filter(Boolean).join(' · ')||'–':'–';
 export const employeeStatus=(employee:EmployeeOption)=>employee.employment_status??employee.status??null;
@@ -50,7 +51,7 @@ export const employeeLabel=(employee:EmployeeOption)=>{
   const name=[employee.first_name,employee.last_name].filter(Boolean).join(' ')||employee.name||employee.email||'Mitarbeiter';
   const number=employee.employee_number??employee.personnel_number;
   const status=employeeStatus(employee);
-  return `${name}${number?` (${number})`:''}${employee.department?` · ${employee.department}`:''}${status&&status!=='active'?` · ${status}`:''}`;
+  return `${name}${number?` (${number})`:''}${employee.department?` · ${employee.department}`:''}${status&&status!=='active'?` · ${statusLabel(status,'employment')}`:''}`;
 };
 export const holderName=(holder:HolderInfo|null|undefined)=>holder?.holder_name??holder?.name??holder?.holder_personnel_number??holder?.personnel_number??'–';
 export const holderUserId=(holder:HolderInfo|null|undefined)=>holder?.holder_user_id??holder?.user_id??null;
@@ -93,8 +94,8 @@ export function lastHolderBody(value:string){
   return {last_holder_user_id:holder.holder_user_id,last_holder_employee_id:holder.holder_employee_id};
 }
 
-export function StatusBadge({status}:{status:string}){
-  return <span className={`key-status key-status-${status}`}>{statusLabels[status]||status}</span>;
+export function StatusBadge({status,domain='key'}:{status:string;domain?:Parameters<typeof statusLabel>[1]}){
+  return <span className={`key-status key-status-${status}`}>{statusLabel(status,domain)}</span>;
 }
 
 export function EmployeePicker({label,value,onChange,employees,current,required=false}:{label:string;value:string;onChange:(value:string)=>void;employees:EmployeeOption[];current?:HolderInfo|null;required?:boolean}){
@@ -182,8 +183,8 @@ export function KeySearchSelect({label,searchLabel,value,onChange,siteId='',bund
       {keys.map(key=><option key={key.id} value={key.id}>{`${key.key_code} · ${key.label}`}</option>)}
     </select></label>
     {loading&&<small role="status">Schlüssel werden gesucht …</small>}
-    {!loading&&!keys.length&&<small role="status">Keine Schlüssel gefunden.</small>}
-    {hasMore&&<button type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore?'Weitere werden geladen …':`Weitere Schlüssel laden (${keys.length}/${total})`}</button>}
+    {!loading&&!keys.length&&<small role="status">Keine passenden Schlüssel gefunden.</small>}
+    {hasMore&&<button type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore?'Weitere werden geladen …':`Weitere Schlüssel laden (${formatNumber(keys.length)}/${formatNumber(total)})`}</button>}
   </div>;
 }
 
@@ -196,7 +197,7 @@ export function KeyPicker({label,value,onChange,keys,required=false}:{label:stri
 
 export function BundlePicker({label,value,onChange,bundles,required=false}:{label:string;value:string;onChange:(value:string)=>void;bundles:BundleRow[];required?:boolean}){
   return <label>{label}<select aria-label={label} value={value} required={required} onChange={event=>onChange(event.target.value)}>
-    <option value="">{required?'Bitte auswählen':'Kein Bund'}</option>
+    <option value="">{required?'Bitte auswählen':'Kein Schlüsselbund'}</option>
     {bundles.map(bundle=><option key={bundle.id} value={bundle.id}>{bundle.name}</option>)}
   </select></label>;
 }
@@ -218,7 +219,10 @@ async function send(path:string,method:'POST'|'PATCH'|'DELETE',body:Record<strin
   try{
     await api(path,{method,body:JSON.stringify(withMutation(body))});
     setError('');onDone();
-  }catch(cause){setError((cause as Error).message);}
+  }catch(cause){
+    const detail=(cause as Error).message;
+    setError(`${commonText.requestFailed}${detail?` ${detail}`:''}`);
+  }
 }
 
 export function CreateKeyDialog({sites,employees,onClose,onDone}:{sites:SiteOption[];employees:EmployeeOption[];onClose:()=>void;onDone:()=>void}){
@@ -342,16 +346,16 @@ export function LossDialog({item,employees,sites,incidents=[],priorities=[],onCl
     </select></label>
     {incidentMode==='existing'&&<label>Bestehender Vorfall<select aria-label="Bestehender Vorfall" required value={incidentId} onChange={event=>setIncidentId(event.target.value)}>
       <option value="">Bitte auswählen</option>
-      {incidents.map(incident=><option key={incident.id} value={incident.id}>{incident.description}{incident.priority_name?` · ${incident.priority_name}`:''}</option>)}
+      {incidents.map(incident=><option key={incident.id} value={incident.id}>{incident.description}{incident.priority_name?` · ${statusLabel(incident.priority_name,'priority')}`:''}</option>)}
     </select></label>}
     {incidentMode==='new'&&<label>Vorfallpriorität<select aria-label="Vorfallpriorität" required value={priorityId} onChange={event=>setPriorityId(event.target.value)}>
       <option value="">Bitte auswählen</option>
-      {priorities.map(priority=><option key={priority.id} value={priority.id}>{priority.name??priority.code??'Priorität'}</option>)}
+      {priorities.map(priority=><option key={priority.id} value={priority.id}>{priority.name??statusLabel(priority.code,'priority')}</option>)}
     </select></label>}
     <label className="span-2">Beschreibung<textarea required value={description} onChange={event=>setDescription(event.target.value)}/></label>
     <label className="span-2">Risikobewertung<textarea value={risk} onChange={event=>setRisk(event.target.value)}/></label>
     <label className="span-2">Sofortmaßnahmen<textarea value={measures} onChange={event=>setMeasures(event.target.value)}/></label>
-    <label className="span-2">Folge Maßnahmen<textarea value={followUp} onChange={event=>setFollowUp(event.target.value)}/></label>
+    <label className="span-2">Folgemaßnahmen<textarea value={followUp} onChange={event=>setFollowUp(event.target.value)}/></label>
     <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Verlust melden</button></div>
   </form></Dialog>;
 }
@@ -361,7 +365,7 @@ export function BlockDialog({item,action,onClose,onDone}:{item:KeyRow;action:'bl
   const valid=!!reason.trim();
   const submit=(event:FormEvent)=>{
     event.preventDefault();if(!valid)return;
-    if(!window.confirm(`${action==='block'?'Sperre':'Reaktivierung'} für ${item.key_code} wirklich ausführen?`))return;
+    if(!window.confirm(`Möchten Sie die ${action==='block'?'Sperre':'Reaktivierung'} für ${item.key_code} wirklich ausführen?`))return;
     void send(`/keys/${item.id}/${action}`,'POST',{reason:reason.trim(),immediate_measures:measures||null},onDone,setError);
   };
   return <Dialog title={action==='block'?`Schlüssel sperren · ${item.key_code}`:`Schlüssel reaktivieren · ${item.key_code}`} onClose={onClose}><form className="key-dialog-form" onSubmit={submit}>
@@ -391,13 +395,16 @@ export function QrCodeView({keyId,label,reference}:{keyId:string;label:string;re
         }
         const source=await import('qrcode').then(({toDataURL})=>toDataURL(url,{width:220,margin:1,errorCorrectionLevel:'M'}));
         if(!cancelled){setQr(source);setExpires(expiresAt);setError('');}
-      }catch(cause){if(!cancelled)setError((cause as Error).message);}
+      }catch(cause){
+        if(!cancelled)setError(`${commonText.requestFailed} ${(cause as Error).message}`);
+      }
     })();
     return ()=>{cancelled=true;};
   },[keyId,reference]);
   return <div className="key-qr-panel">
     {qr?<img src={qr} alt={`QR-Code für ${label}`}/>:<p role="status" className="employee-empty">{error||'QR-Code wird geladen …'}</p>}
-    <p className="key-qr-meta">Gültig bis {displayDateTime(expires)} · Der Token wird nicht angezeigt.</p>
+    {expires&&<p className="key-qr-meta">Gültig bis {displayDateTime(expires)}</p>}
+    <p className="key-qr-meta">Der Zugangscode wird nicht angezeigt.</p>
     <button type="button" onClick={()=>window.print()}>Etikett drucken</button>
   </div>;
 }
@@ -439,7 +446,7 @@ export function InventoryDialog({sites,bundles,onClose,onDone}:{sites:SiteOption
       <label><input type="checkbox" checked={entryFor(key).expected_present} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:event.target.checked,actual_condition:current[key.id]?.actual_condition??'good'}}))}/> {`${key.key_code} · ${key.label}`} erwartet</label>
       <label>Zustand<select aria-label={`Zustand ${key.key_code}`} value={entryFor(key).actual_condition} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:current[key.id]?.expected_present??true,actual_condition:event.target.value}}))}>{Object.entries(conditionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
     </div>):<p className="employee-empty">{loading?'Schlüssel werden geladen …':'Keine Schlüssel für diese Auswahl vorhanden.'}</p>}
-      {hasMore&&<small role="status">{`${scopedKeys.length} von ${total} Schlüsseln erfasst. Bitte die Suche eingrenzen (maximal 100 pro Bestandskontrolle).`}</small>}</div>
+      {hasMore&&<small role="status">{`${formatNumber(scopedKeys.length)} von ${formatNumber(total)} Schlüsseln erfasst. Bitte die Suche eingrenzen (maximal 100 pro Bestandskontrolle).`}</small>}</div>
     <label className="span-2">Notizen<textarea value={notes} onChange={event=>setNotes(event.target.value)}/></label>
     <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Bestandskontrolle speichern</button></div>
   </form></Dialog>;
@@ -456,7 +463,7 @@ export function BundleCreateDialog({sites,onClose,onDone}:{sites:SiteOption[];on
     {error&&<p role="alert" className="error">{error}</p>}
     <label className="span-2">Name<input required value={name} onChange={event=>setName(event.target.value)}/></label>
     <SitePicker label="Objekt" value={siteId} onChange={setSiteId} sites={sites}/>
-    <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Bund anlegen</button></div>
+    <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Schlüsselbund anlegen</button></div>
   </form></Dialog>;
 }
 
@@ -469,13 +476,13 @@ export function BundleIssueDialog({bundle,employees,onClose,onDone}:{bundle:Bund
       ...holderBody(holder),due_at:toIso(dueAt),reason:reason.trim(),
     },onDone,setError);
   };
-  return <Dialog title={`Bund ausgeben · ${bundle.name}`} onClose={onClose}><form className="key-dialog-form" onSubmit={submit}>
+  return <Dialog title={`Schlüsselbund ausgeben · ${bundle.name}`} onClose={onClose}><form className="key-dialog-form" onSubmit={submit}>
     <ActionContext item={bundle}/>
     {error&&<p role="alert" className="error">{error}</p>}
     <EmployeePicker label="Schlüsselhalter" value={holder} onChange={setHolder} employees={employees} required/>
     <label>Fällig am<input required type="datetime-local" value={dueAt} onChange={event=>setDueAt(event.target.value)}/></label>
     <label className="span-2">Grund<textarea required value={reason} onChange={event=>setReason(event.target.value)}/></label>
-    <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Bund ausgeben</button></div>
+    <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Schlüsselbund ausgeben</button></div>
   </form></Dialog>;
 }
 
@@ -486,13 +493,13 @@ export function BundleReturnDialog({bundle,items,partial,onClose,onDone}:{bundle
   const valid=selected.length>0&&!!reason.trim();
   const submit=(event:FormEvent)=>{
     event.preventDefault();if(!valid)return;
-    if(!partial&&!window.confirm(`Alle ${selected.length} Schlüssel aus ${bundle.name} zurückgeben?`))return;
+    if(!partial&&!window.confirm(`Möchten Sie alle ${formatNumber(selected.length)} Schlüssel aus ${bundle.name} zurückgeben?`))return;
     void send(`/key-bundles/${bundle.id}/return`,'POST',{key_ids:selected,reason:reason.trim()},onDone,setError);
   };
-  return <Dialog title={partial?'Teilweise Rückgabe':'Bund vollständig zurückgeben'} onClose={onClose} wide><form className="key-dialog-form" onSubmit={submit}>
+  return <Dialog title={partial?'Teilweise Rückgabe':'Schlüsselbund vollständig zurückgeben'} onClose={onClose} wide><form className="key-dialog-form" onSubmit={submit}>
     <ActionContext item={bundle}/>
     {error&&<p role="alert" className="error">{error}</p>}
-    <div className="span-2 bundle-member-list">{issued.length?issued.map(item=><label key={item.id}><input type="checkbox" checked={selected.includes(item.id)} onChange={()=>setSelected(current=>current.includes(item.id)?current.filter(id=>id!==item.id):[...current,item.id])}/> {`${item.key_code} · ${item.label}`}</label>):<p className="employee-empty">Keine ausgegebenen Schlüssel im Bund.</p>}</div>
+    <div className="span-2 bundle-member-list">{issued.length?issued.map(item=><label key={item.id}><input type="checkbox" checked={selected.includes(item.id)} onChange={()=>setSelected(current=>current.includes(item.id)?current.filter(id=>id!==item.id):[...current,item.id])}/> {`${item.key_code} · ${item.label}`}</label>):<p className="employee-empty">Keine ausgegebenen Schlüssel im Schlüsselbund.</p>}</div>
     <label className="span-2">Grund<textarea required value={reason} onChange={event=>setReason(event.target.value)}/></label>
     <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>{partial?'Ausgewählte Schlüssel zurückgeben':'Alle Schlüssel zurückgeben'}</button></div>
   </form></Dialog>;
@@ -503,10 +510,10 @@ export function BundleDeactivateDialog({bundle,onClose,onDone}:{bundle:BundleRow
   const valid=!!reason.trim();
   const submit=(event:FormEvent)=>{
     event.preventDefault();if(!valid)return;
-    if(!window.confirm(`Schlüsselbund ${bundle.name} deaktivieren?`))return;
+    if(!window.confirm(`Möchten Sie den Schlüsselbund ${bundle.name} deaktivieren?`))return;
     void send(`/key-bundles/${bundle.id}/deactivate`,'POST',{reason:reason.trim()},onDone,setError);
   };
-  return <Dialog title={`Bund deaktivieren · ${bundle.name}`} onClose={onClose}><form className="key-dialog-form" onSubmit={submit}>
+  return <Dialog title={`Schlüsselbund deaktivieren · ${bundle.name}`} onClose={onClose}><form className="key-dialog-form" onSubmit={submit}>
     <ActionContext item={bundle}/>
     {error&&<p role="alert" className="error">{error}</p>}
     <label className="span-2">Grund<textarea required value={reason} onChange={event=>setReason(event.target.value)}/></label>

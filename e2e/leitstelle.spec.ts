@@ -26,7 +26,7 @@ test.describe('NSL-Leitstelle',()=>{
     const cookies=await page.context().cookies();
     expect(cookies.find(cookie=>cookie.name==='securityops_session')?.httpOnly).toBe(true);
     expect(cookies.find(cookie=>cookie.name==='securityops_csrf')?.httpOnly).toBe(false);
-    await expect(page.getByRole('heading',{name:'NSL-Leitstelle'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'Leitstelle'})).toBeVisible();
     for(const name of ['Offene Alarme','Aktive Einsätze','Positionen','Kontrollgänge']){
       await expect(page.getByRole('heading',{name:new RegExp(`^${name}`)})).toBeVisible();
     }
@@ -41,9 +41,9 @@ test.describe('NSL-Leitstelle',()=>{
     const row=page.locator('tr').filter({hasText:description});
     await expect(row).toBeVisible();
     await row.getByRole('button',{name:'Quittieren'}).click();
-    await expect(row.getByText('acknowledged')).toBeVisible();
-    await row.getByRole('button',{name:'Erledigen'}).click();
-    await expect(row.getByText('resolved')).toBeVisible();
+    await expect(row.getByText('Quittiert')).toBeVisible();
+    await row.getByRole('button',{name:'Als erledigt markieren'}).click();
+    await expect(row.getByText('Erledigt')).toBeVisible();
 
     expect((await page.request.get(`/api/v1/alarms/${alarm.id}/history`)).status()).toBe(200);
     expect((await page.request.get('/api/v1/reports/alarms?format=csv')).status()).toBe(200);
@@ -58,9 +58,9 @@ test.describe('NSL-Leitstelle',()=>{
     await page.getByRole('button',{name:'Anmelden'}).click();
     await expect(page).toHaveURL('/');
     await page.goto('/mobile');
-    await expect(page.locator('main').getByRole('heading',{name:'Wächter-App'})).toBeVisible();
-    await expect(page.getByRole('button',{name:'PANIK'})).toBeVisible();
+    await expect(page.locator('main').getByRole('heading',{name:'Mobile Einsatz-App'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Panik-Alarm auslösen'})).toBeVisible();
     await expect(page.getByRole('button',{name:'Kontrollpunkt bestätigen'})).toBeVisible();
-    await expect(page.getByText(/Offline-Outbox/)).toBeVisible();
+    await expect(page.getByText(/Offline-Warteschlange/)).toBeVisible();
   });
 });

@@ -1,6 +1,9 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {api,hasPermission} from '../lib/api';
+import {formatDate,formatNumber} from '../lib/format';
+import {statusLabel} from '../lib/status';
+import {commonText} from '../lib/text';
 
 type Employee={
   id:string;
@@ -111,20 +114,20 @@ export function Employees(){
     <div className="employee-page-title">
       <div className="employee-page-title-spacer"></div>
       <div className="employee-page-actions">
-        {hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(value=>!value)}>+ Mitarbeiter anlegen</button>}
-        <a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">Export</a>
+        {hasPermission('employees:write')&&<button type="button" onClick={()=>setCreateOpen(value=>!value)}>Mitarbeiter anlegen</button>}
+        <a className="employee-export" href="/api/v1/reports/employees?format=csv" target="_blank" rel="noreferrer">{commonText.exportCsv}</a>
       </div>
     </div>
 
     {error&&<p role="alert" className="error">{error}</p>}
 
     {dashboard&&<div className="stats-grid employee-metrics">
-      <article><strong>{dashboard.employees.total}</strong><span>Mitarbeiter gesamt</span></article>
-      <article><strong>{dashboard.employees.active}</strong><span>Aktiv</span></article>
-      <article><strong>{dashboard.open_absences}</strong><span>Offene Abwesenheiten</span></article>
-      <article><strong>{dashboard.sick_employees}</strong><span>Krank</span></article>
-      <article><strong>{dashboard.upcoming_shift_assignments}</strong><span>Aktuell im Dienst</span></article>
-      <article><strong>{dashboard.qualifications_expiring_90_days+dashboard.qualifications_expired}</strong><span>Qualifikationswarnungen</span></article>
+      <article><strong>{formatNumber(dashboard.employees.total)}</strong><span>Mitarbeiter gesamt</span></article>
+      <article><strong>{formatNumber(dashboard.employees.active)}</strong><span>Aktiv</span></article>
+      <article><strong>{formatNumber(dashboard.open_absences)}</strong><span>Offene Abwesenheiten</span></article>
+      <article><strong>{formatNumber(dashboard.sick_employees)}</strong><span>Erkrankt</span></article>
+      <article><strong>{formatNumber(dashboard.upcoming_shift_assignments)}</strong><span>Aktuell im Dienst</span></article>
+      <article><strong>{formatNumber(dashboard.qualifications_expiring_90_days+dashboard.qualifications_expired)}</strong><span>Qualifikationswarnungen</span></article>
     </div>}
 
     {createOpen&&hasPermission('employees:write')&&<form onSubmit={createEmployee} className="employee-create open">
@@ -139,7 +142,7 @@ export function Employees(){
       <div className="employee-filterbar">
         <input className="employee-search" placeholder="Name, Personalnummer, Funktion oder E-Mail suchen" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}} />
         <select value={statusFilter} onChange={event=>{setStatusFilter(event.target.value);setPage(1);}} aria-label="Status">
-          <option value="all">Status: Alle</option><option value="active">Status: Aktiv</option><option value="probation">Status: Probezeit</option><option value="leave">Status: Abwesenheit</option><option value="terminated">Status: Ausgeschieden</option>
+          <option value="all">Status: Alle</option><option value="active">Status: Aktiv</option><option value="probation">Status: In Probezeit</option><option value="leave">Status: Beurlaubt</option><option value="terminated">Status: Beendet</option>
         </select>
         <select value={departmentFilter} onChange={event=>{setDepartmentFilter(event.target.value);setPage(1);}} aria-label="Abteilung">
           <option value="all">Abteilung: Alle</option>{departments.map(department=><option key={department} value={department}>{department}</option>)}
@@ -171,16 +174,16 @@ export function Employees(){
               <td>{employee.employee_number||'–'}</td>
               <td>{employee.position||employee.title||'–'}</td>
               <td>{employee.department||'–'}</td>
-              <td><span className={`employee-status ${employee.employment_status}`}>{employee.employment_status==='active'?'Aktiv':employee.employment_status==='leave'?'Abwesenheit':employee.employment_status==='probation'?'Probezeit':employee.employment_status==='terminated'?'Ausgeschieden':employee.employment_status}</span></td>
+              <td><span className={`employee-status ${employee.employment_status}`}>{statusLabel(employee.employment_status,'employment')}</span></td>
               <td>{employee.current_object||'–'}</td>
-              <td><span className={`qualification-mini ${employee.qualification_status==='abgelaufen'?'expired':''}`}>{employee.qualification_status||'keine Daten'}</span></td>
+              <td><span className={`qualification-mini ${employee.qualification_status==='abgelaufen'?'expired':''}`}>{statusLabel(employee.qualification_status)}</span></td>
               <td><button type="button" onClick={()=>navigate(`/employees/${employee.id}`)}>Bearbeiten</button></td>
             </tr>)}
           </tbody>
         </table>
         {filtered.length===0&&<p className="employee-empty">Keine Mitarbeiter entsprechen den aktiven Filtern.</p>}
         {filtered.length>0&&<div className="employee-pagination">
-          <span>{filtered.length} Mitarbeiter · Seite {currentPage} von {pageCount}</span>
+          <span>{formatNumber(filtered.length)} Mitarbeiter · Seite {formatNumber(currentPage)} von {formatNumber(pageCount)}</span>
           <button type="button" disabled={currentPage===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button>
           <button type="button" disabled={currentPage===pageCount} onClick={()=>setPage(value=>Math.min(pageCount,value+1))}>Weiter</button>
         </div>}
@@ -189,7 +192,7 @@ export function Employees(){
     {dashboard&&<div className="employee-task-grid">
       <article>
         <h3>Auslaufende Qualifikationen</h3>
-        {dashboard.expiring_qualifications?.length?<ul>{dashboard.expiring_qualifications.map((item:any)=><li key={`${item.employee}-${item.code}`}><strong>{item.employee}</strong><span>{item.code} · {item.valid_until}</span></li>)}</ul>:<p className="employee-empty">Keine auslaufenden Qualifikationen.</p>}
+        {dashboard.expiring_qualifications?.length?<ul>{dashboard.expiring_qualifications.map((item:any)=><li key={`${item.employee}-${item.code}`}><strong>{item.employee}</strong><span>{item.code} · {formatDate(item.valid_until)}</span></li>)}</ul>:<p className="employee-empty">Keine auslaufenden Qualifikationen.</p>}
       </article>
       <article>
         <h3>Fehlende Dokumente</h3>

@@ -18,18 +18,18 @@ describe('key management domain',()=>{
     expect(transitionKeyStatus('issued','returned')).toBe('available');
     expect(transitionKeyStatus('issued','lost')).toBe('lost');
     expect(transitionKeyStatus('lost','deactivated')).toBe('deactivated');
-    expect(()=>transitionKeyStatus('available','returned')).toThrow('Invalid key status transition');
-    expect(()=>transitionKeyStatus('deactivated','issued')).toThrow('Invalid key status transition');
-    expect(()=>transitionKeyStatus('issued','issued')).toThrow('Invalid key status transition');
+    expect(()=>transitionKeyStatus('available','returned')).toThrow('Ungültiger Schlüsselstatuswechsel');
+    expect(()=>transitionKeyStatus('deactivated','issued')).toThrow('Ungültiger Schlüsselstatuswechsel');
+    expect(()=>transitionKeyStatus('issued','issued')).toThrow('Ungültiger Schlüsselstatuswechsel');
   });
   it('supports technical block and reactivation without losing history',()=>{
     expect(transitionKeyStatus('available','blocked')).toBe('blocked');
     expect(transitionKeyStatus('issued','blocked')).toBe('blocked');
     expect(transitionKeyStatus('lost','blocked')).toBe('blocked');
     expect(transitionKeyStatus('blocked','reactivated')).toBe('available');
-    expect(()=>transitionKeyStatus('blocked','returned')).toThrow('Invalid key status transition');
-    expect(()=>transitionKeyStatus('available','reactivated')).toThrow('Invalid key status transition');
-    expect(()=>transitionKeyStatus('deactivated','blocked')).toThrow('Invalid key status transition');
+    expect(()=>transitionKeyStatus('blocked','returned')).toThrow('Ungültiger Schlüsselstatuswechsel');
+    expect(()=>transitionKeyStatus('available','reactivated')).toThrow('Ungültiger Schlüsselstatuswechsel');
+    expect(()=>transitionKeyStatus('deactivated','blocked')).toThrow('Ungültiger Schlüsselstatuswechsel');
   });
   it('derives overdue only for issued keys past their due date',()=>{
     const now=new Date('2026-06-15T12:00:00.000Z');
@@ -50,10 +50,10 @@ describe('key management domain',()=>{
       {id:'key-b',site_id:null,status:'issued' as const,holder_user_id:'u1',holder_employee_id:null},
     ];
     expect(validateBundleReturn(keys,['key-b','key-a'],{actorUserId:'u1',operator:false}).map(key=>key.id)).toEqual(['key-a','key-b']);
-    expect(()=>validateBundleReturn(keys,['key-a','missing'],{actorUserId:'u1',operator:false})).toThrow('Every requested key must belong to the bundle');
-    expect(()=>validateBundleReturn([{...keys[0],status:'lost' as const},keys[1]],['key-a','key-b'],{actorUserId:'u1',operator:false})).toThrow('is not issued');
-    expect(()=>validateBundleReturn(keys,['key-a','key-a'],{actorUserId:'u1',operator:false})).toThrow('only be returned once');
-    expect(()=>validateBundleReturn(keys,['key-a'],{actorUserId:'u2',operator:false})).toThrow('may not return');
+    expect(()=>validateBundleReturn(keys,['key-a','missing'],{actorUserId:'u1',operator:false})).toThrow('Jeder angeforderte Schlüssel muss zum Schlüsselbund gehören');
+    expect(()=>validateBundleReturn([{...keys[0],status:'lost' as const},keys[1]],['key-a','key-b'],{actorUserId:'u1',operator:false})).toThrow('ist nicht ausgegeben');
+    expect(()=>validateBundleReturn(keys,['key-a','key-a'],{actorUserId:'u1',operator:false})).toThrow('nur einmal zurückgegeben werden');
+    expect(()=>validateBundleReturn(keys,['key-a'],{actorUserId:'u2',operator:false})).toThrow('nicht zurückgeben');
   });
   it('keeps partial bundle returns visible until every member is returned',()=>{
     expect(bundleStatus(0,3)).toBe('available');

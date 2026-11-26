@@ -40,6 +40,7 @@ describe('login and protected navigation',()=>{
     storage.set('securityops_user',JSON.stringify({email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}));
     window.history.pushState({},'','/employees');
     apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/auth/me')return {user:{email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}};
       if(path===' /employees')return [];
       if(path==='/employees')return [];
       if(path==='/employees/dashboard')return {
@@ -69,6 +70,7 @@ describe('login and protected navigation',()=>{
     storage.set('securityops_user',JSON.stringify({email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}));
     window.history.pushState({},'','/employees/00000000-4000-4000-8000-000000000111');
     apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/auth/me')return {user:{email:'admin@example.com',role:'admin',permissions:['employees:read','employees:write']}};
       if(path.endsWith('/profile'))return {
         employee:{id:'00000000-4000-4000-8000-000000000111',name:'Ava Worker',email:'ava@example.com',employment_status:'active',employment_type:'employee'},
         contracts:[],qualifications:[],absences:[],object_assignments:[],work_time:[],documents:[],availability:[],
@@ -80,6 +82,23 @@ describe('login and protected navigation',()=>{
     expect(document.querySelectorAll('.app-shell')).toHaveLength(1);
     expect(document.querySelectorAll('.sidebar')).toHaveLength(1);
   });
+
+  it('clears a stale client auth flag when the server rejects the session',async()=>{
+    storage.set('securityops_authenticated','true');
+    storage.set('securityops_user',JSON.stringify({email:'admin@example.com',role:'admin',permissions:[]}));
+    window.history.pushState({},'','/employees');
+    apiMock.mockRejectedValue(new Error('Authentication required'));
+    render(<App/>);
+    expect(await screen.findByRole('heading',{name:'Willkommen zurück'})).toBeTruthy();
+    expect(localStorage.getItem('securityops_authenticated')).toBeNull();
+    expect(localStorage.getItem('securityops_user')).toBeNull();
+  });
+
+  it('shows an explicit not found page instead of silently redirecting to the dashboard',()=>{
+    window.history.pushState({},'','/does-not-exist');
+    render(<App/>);
+    expect(screen.getByRole('heading',{name:'Seite nicht gefunden'})).toBeTruthy();
+  });
 });
 
 describe('basic CRUD',()=>{
@@ -87,9 +106,9 @@ describe('basic CRUD',()=>{
     apiMock.mockResolvedValueOnce([{id:'e-1',name:'Ava',email:'ava@example.com'}]).mockResolvedValueOnce({id:'e-2',name:'Ben'}).mockResolvedValueOnce([{id:'e-1',name:'Ava',email:'ava@example.com'},{id:'e-2',name:'Ben'}]);
     render(<MemoryRouter><Resource name="employees" fields={['name','email']}/></MemoryRouter>);
     expect(await screen.findByText('Ava — ava@example.com')).toBeTruthy();
-    fireEvent.change(screen.getByPlaceholderText('name'),{target:{value:'Ben'}});
-    fireEvent.change(screen.getByPlaceholderText('email'),{target:{value:'ben@example.com'}});
-    fireEvent.click(screen.getByRole('button',{name:'Add'}));
+    fireEvent.change(screen.getByPlaceholderText('Bezeichnung'),{target:{value:'Ben'}});
+    fireEvent.change(screen.getByPlaceholderText('E-Mail-Adresse'),{target:{value:'ben@example.com'}});
+    fireEvent.click(screen.getByRole('button',{name:'Eintrag anlegen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/employees',{method:'POST',body:JSON.stringify({name:'Ben',email:'ben@example.com'})}));
     expect(await screen.findByText('Ben')).toBeTruthy();
   });

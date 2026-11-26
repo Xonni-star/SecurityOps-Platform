@@ -68,7 +68,7 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   await expect(page.getByRole('heading',{name:'Kundenverwaltung'})).toBeVisible();
   const board=page.getByRole('region',{name:'Handlungsübersicht'});
   await expect(board).toBeVisible();
-  for(const bucket of ['A ·','B ·','C ·'])await expect(board.getByRole('heading',{name:new RegExp(bucket)})).toBeVisible();
+  for(const bucket of ['Sofort handeln','Zeitnah klären','Beobachten'])await expect(board.getByRole('heading',{name:new RegExp(bucket)})).toBeVisible();
   await expect(board.getByRole('link').first()).toBeVisible();
   const actionResponse=await page.request.get(`${apiBase}/api/v1/customers/action-list`);
   expect(actionResponse.status()).toBe(200);
@@ -91,7 +91,7 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   await expect(page.getByRole('row').filter({hasText:customerName})).toBeVisible();
 
   const download=page.waitForEvent('download');
-  await page.getByRole('button',{name:/Export/}).click();
+  await page.getByRole('button',{name:/CSV exportieren/}).click();
   expect((await download).suggestedFilename()).toContain('kunden.csv');
 
   await page.getByRole('row').filter({hasText:customerName}).getByText(customerName,{exact:true}).click();
@@ -132,7 +132,7 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   await viewer.goto('/customers');
   await expect(viewer.getByRole('heading',{name:'Kundenverwaltung'})).toBeVisible();
   await expect(viewer.getByRole('button',{name:/Kunde anlegen/})).toHaveCount(0);
-  await expect(viewer.getByRole('button',{name:/Export/})).toHaveCount(0);
+  await expect(viewer.getByRole('button',{name:/CSV exportieren/})).toHaveCount(0);
   const viewerProfile=await viewer.request.get(`${apiBase}/api/v1/customers/${customer.id}/profile`);
   expect(viewerProfile.status()).toBe(200);
   const viewerWrite=await viewer.request.post(`${apiBase}/api/v1/customers`,{headers:await csrf(viewer),data:{name:'E2E nicht erlaubt'}});

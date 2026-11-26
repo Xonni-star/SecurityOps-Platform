@@ -161,7 +161,7 @@ const locationSchema=locationFields.extend({
   security_level:z.enum(['unknown','low','medium','high','critical']).default('unknown'),
   sort_order:z.number().int().min(0).max(100000).default(0),
 }).strict();
-const locationPatchSchema=locationFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
+const locationPatchSchema=locationFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'Mindestens ein Feld ist erforderlich'});
 type LocationType='building'|'area'|'zone';
 const parentTypeFor:Record<LocationType,LocationType|null>={building:null,area:'building',zone:'area'};
 const hazardFields=z.object({
@@ -178,8 +178,8 @@ const hazardFields=z.object({
   status:z.enum(['open','mitigated','accepted','closed']),
 }).strict();
 const hazardSchema=hazardFields.extend({status:z.enum(['open','mitigated','accepted','closed']).default('open')}).strict()
-  .refine(value=>!value.due_on||!value.review_on||value.review_on>=value.due_on,{message:'review_on must be on or after due_on'});
-const hazardPatchSchema=hazardFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
+  .refine(value=>!value.due_on||!value.review_on||value.review_on>=value.due_on,{message:'review_on muss gleich oder nach due_on liegen'});
+const hazardPatchSchema=hazardFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'Mindestens ein Feld ist erforderlich'});
 const hazardMeasureFields=z.object({
   title:nonempty.max(160),
   description:z.string().trim().max(4000).nullable().optional(),
@@ -188,7 +188,7 @@ const hazardMeasureFields=z.object({
   status:z.enum(['open','in_progress','completed','cancelled']),
 }).strict();
 const hazardMeasureSchema=hazardMeasureFields.extend({status:z.enum(['open','in_progress','completed','cancelled']).default('open')}).strict();
-const hazardMeasurePatchSchema=hazardMeasureFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'At least one field is required'});
+const hazardMeasurePatchSchema=hazardMeasureFields.partial().strict().refine(value=>Object.keys(value).length>0,{message:'Mindestens ein Feld ist erforderlich'});
 const instructionSchema=z.object({
   location_id:uuid.nullable().optional(),
   title:nonempty.max(200),
@@ -199,7 +199,7 @@ const instructionSchema=z.object({
   valid_from:z.string().date().nullable().optional(),
   valid_until:z.string().date().nullable().optional(),
   supersedes_id:uuid.nullable().optional(),
-}).strict().refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from,{message:'valid_until must be on or after valid_from'});
+}).strict().refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from,{message:'valid_until muss gleich oder nach valid_from liegen'});
 
 function patchAssignments<T extends object>(body:T,columns:Record<keyof T,string>,firstParameter:number){
   const entries=Object.entries(body);
@@ -452,7 +452,7 @@ objectManagementRouter.get(
             CASE WHEN h.risk_score>=20 THEN 'critical'::text ELSE 'high'::text END AS severity,
             'Gefährdungen'::text AS category,
             'Kritische Gefährdung: '||h.title AS title,
-            'Risikoscore '||h.risk_score||COALESCE(' · '||l.name,'') AS detail,
+            'Risikowert '||h.risk_score||COALESCE(' · '||l.name,'') AS detail,
             h.due_on::date AS due_on,'gefaehrdungen'::text AS tab,'sites:read'::text AS permission,
             h.id::text AS entity_id,NULL::text AS employee_id
           FROM object_hazards h
@@ -469,18 +469,18 @@ objectManagementRouter.get(
             AND m.status IN ('open','in_progress') AND m.due_on<CURRENT_DATE
           UNION ALL
           SELECT i.site_id,'high'::text,'Dienstanweisungen',
-            'Freigabe ausstehend: '||i.title,'Version '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
+            'Freigabe ausstehend: '||i.title,'Fassung '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
           FROM site_instructions i
           WHERE i.tenant_id=$1 AND i.site_id=ANY($3::uuid[]) AND i.status='pending_approval'
           UNION ALL
           SELECT i.site_id,'high'::text,'Dienstanweisungen',
-            'Dienstanweisung abgelaufen: '||i.title,'Version '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
+            'Dienstanweisung abgelaufen: '||i.title,'Fassung '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
           FROM site_instructions i
           WHERE i.tenant_id=$1 AND i.site_id=ANY($3::uuid[]) AND i.status='approved'
             AND i.valid_until IS NOT NULL AND i.valid_until<CURRENT_DATE
           UNION ALL
           SELECT i.site_id,'medium'::text,'Dienstanweisungen',
-            'Kenntnisnahme ausstehend: '||i.title,
+            'Bestätigung ausstehend: '||i.title,
             count(DISTINCT oa.employee_id)||' zugeordnete Mitarbeitende ohne Bestätigung',
             i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
           FROM site_instructions i
@@ -517,7 +517,7 @@ objectManagementRouter.get(
             AND EXISTS (SELECT 1 FROM dms_versions v WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available')
           UNION ALL
           SELECT d.site_id,'high'::text,'Dokumente',
-            'Dokumentfreigabe ausstehend: '||d.title,'Freigabe und/oder verfügbare Version prüfen',d.valid_until::date,'dokumente','dms:read',d.id::text,NULL::text
+            'Dokumentfreigabe ausstehend: '||d.title,'Freigabe und/oder verfügbare Fassung prüfen',d.valid_until::date,'dokumente','dms:read',d.id::text,NULL::text
           FROM dms_documents d
           WHERE d.tenant_id=$1 AND d.site_id=ANY($4::uuid[]) AND d.document_status='active'
             AND (d.approval_status<>'approved' OR NOT EXISTS (
@@ -606,7 +606,7 @@ objectManagementRouter.get(
           :row.status==='blocked'?'Schlüssel technisch gesperrt'
           :missingHolder?'Ausgegebener Schlüssel ohne Halter'
           :row.due_at!==null?`Rückgabe fällig am ${row.due_at.slice(0,10)}`
-          :'Kein Standort hinterlegt';
+          :'Kein Objekt hinterlegt';
         return {
           id:`key:${row.id}`,site_id:row.site_id,site_name:siteNames.get(row.site_id)??null,entity_id:row.id,
           employee_id:null,severity,priority:priorityForSeverity(severity),category:'Schlüssel',
@@ -626,15 +626,15 @@ function requireSiteScope(permission:string):RequestHandler{
       const user=req.user!;
       const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
       const scope=effectivePermissionScope(grants,permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-      if(!scope)return res.status(403).json({error:'Insufficient permissions'});
+      if(!scope)return res.status(403).json({error:'Unzureichende Berechtigungen'});
       if(scope==='own'){
         const owner=await query('SELECT 1 FROM resource_owners WHERE tenant_id=$1 AND resource=$2 AND resource_id=$3 AND user_id=$4',[user.tenantId,'sites',siteId,user.id]);
-        if(!owner.rowCount)return res.status(403).json({error:'Permission scope does not include this site'});
+        if(!owner.rowCount)return res.status(403).json({error:'Kein Zugriff auf Objekt'});
       }else if(!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId})){
-        return res.status(403).json({error:'Permission scope does not include this site'});
+        return res.status(403).json({error:'Kein Zugriff auf Objekt'});
       }
       next();
-    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
+    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Objektkennung'});next(error);}
   };
 }
 
@@ -680,7 +680,7 @@ objectManagementRouter.get(
          WHERE s.tenant_id=$1 AND s.id=$2`,
         [user.tenantId,id,canReadStaffing],
       )).rows[0];
-      if(!siteRow)return res.status(404).json({error:'Not found'});
+      if(!siteRow)return res.status(404).json({error:'Nicht gefunden'});
       const site=canReadStaffing?siteRow:{...siteRow,object_manager_employee_id:null,operations_manager_employee_id:null};
       const customers=canReadTenantData('customers:read')?(await query(
         `SELECT cs.*,c.name AS customer_name,c.customer_number
@@ -1107,7 +1107,7 @@ objectManagementRouter.get(
           id:`hazard-${hazard.id}`,site_id:id,entity_id:hazard.id,
           severity:hazard.risk_score>=20?'critical':'high',category:'Gefährdungen',
           title:`Kritische Gefährdung: ${hazard.title}`,
-          detail:`Risikoscore ${hazard.risk_score}${hazard.location_name?` · ${hazard.location_name}`:''}`,
+          detail:`Risikowert ${hazard.risk_score}${hazard.location_name?` · ${hazard.location_name}`:''}`,
           due_on:day(hazard.due_on),tab:'gefaehrdungen',permission:'sites:read',target:sectionTarget('gefaehrdungen','hazard',hazard.id),
         }));
         for(const measure of hazard.measures??[]){
@@ -1122,19 +1122,19 @@ objectManagementRouter.get(
         const instructionTarget=sectionTarget('anweisungen','instruction',instruction.id);
         if(instruction.status==='pending_approval')actions.push(action({
           id:`instruction-approval-${instruction.id}`,site_id:id,entity_id:instruction.id,severity:'high',category:'Dienstanweisungen',
-          title:`Freigabe ausstehend: ${instruction.title}`,detail:`Version ${instruction.version}`,
+          title:`Freigabe ausstehend: ${instruction.title}`,detail:`Fassung ${instruction.version}`,
           due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:instructionTarget,
         }));
         if(instruction.status==='approved'&&instruction.valid_until&&day(instruction.valid_until)!<today)actions.push(action({
           id:`instruction-expired-${instruction.id}`,site_id:id,entity_id:instruction.id,severity:'high',category:'Dienstanweisungen',
-          title:`Dienstanweisung abgelaufen: ${instruction.title}`,detail:`Version ${instruction.version}`,
+          title:`Dienstanweisung abgelaufen: ${instruction.title}`,detail:`Fassung ${instruction.version}`,
           due_on:day(instruction.valid_until),tab:'anweisungen',permission:'watchbook:read',target:instructionTarget,
         }));
       }
       for(const acknowledgement of missingAcknowledgements)actions.push(action({
         id:`acknowledgement-${acknowledgement.instruction_id}`,site_id:id,entity_id:acknowledgement.instruction_id,
         severity:'medium',category:'Dienstanweisungen',
-        title:`Kenntnisnahme ausstehend: ${acknowledgement.title}`,
+        title:`Bestätigung ausstehend: ${acknowledgement.title}`,
         detail:acknowledgement.missing_employees.map(employee=>employee.employee_name).join(', '),
         due_on:null,tab:'anweisungen',permission:'watchbook:read',target:sectionTarget('anweisungen','instruction',acknowledgement.instruction_id),
       }));
@@ -1156,7 +1156,7 @@ objectManagementRouter.get(
         }));
         if(document.computed_status==='nicht_freigegeben')actions.push(action({
           id:`document-unapproved-${document.id}`,site_id:id,entity_id:document.id,severity:'high',category:'Dokumente',
-          title:`Dokumentfreigabe ausstehend: ${document.title}`,detail:'Freigabe und/oder verfügbare Version prüfen',
+          title:`Dokumentfreigabe ausstehend: ${document.title}`,detail:'Freigabe und/oder verfügbare Fassung prüfen',
           due_on:day(document.valid_until),tab:'dokumente',permission:'dms:read',target:documentTarget,
         }));
         if(document.review_state==='overdue')actions.push(action({
@@ -1200,7 +1200,7 @@ objectManagementRouter.get(
         target:`${qualification.employee_url}?qualification=${qualification.id}${qualification.evidence_document_id&&!['missing','not_found'].includes(qualification.evidence_status)?`&document=${qualification.evidence_document_id}`:''}`,
       }));
       res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications:enrichedQualifications,personnelSummary,recentPersonnelChanges,handovers,devices,priorityActions:sortPriorityActions(actions,12)});
-    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid site id'});next(error);}
+    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Objektkennung'});next(error);}
   },
 );
 
@@ -1208,7 +1208,7 @@ objectManagementRouter.post('/sites/:id/document-requirements',requireAuth,requi
   try{
     const siteId=uuid.parse(String(req.params.id));
     const body=z.object({document_type:nonempty.max(160),required:z.boolean().default(true),responsible_employee_id:uuid.nullable().optional()}).strict().parse(req.body);
-    if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     const row=(await query(
       `INSERT INTO dms_document_requirements(tenant_id,site_id,document_type,required,responsible_employee_id,created_by)
        VALUES($1,$2,$3,$4,$5,$6)
@@ -1218,7 +1218,7 @@ objectManagementRouter.post('/sites/:id/document-requirements',requireAuth,requi
     )).rows[0];
     await recordAudit(req.user!.tenantId,req.user!.id,'site.document_requirement.saved','dms_document_requirement',row.id,{site_id:siteId,document_type:body.document_type,required:body.required});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document requirement'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Dokumentanforderung'});next(error);}
 });
 
 objectManagementRouter.patch('/sites/:id/document-requirements/:requirementId',requireAuth,requireCsrf,requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('dms:write'),async(req,res,next)=>{
@@ -1226,16 +1226,16 @@ objectManagementRouter.patch('/sites/:id/document-requirements/:requirementId',r
     const siteId=uuid.parse(String(req.params.id));
     const requirementId=uuid.parse(String(req.params.requirementId));
     const body=z.object({required:z.boolean(),responsible_employee_id:uuid.nullable().optional()}).strict().parse(req.body);
-    if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     const row=(await query(
       `UPDATE dms_document_requirements SET required=$4,responsible_employee_id=$5,updated_at=now()
        WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING *`,
       [req.user!.tenantId,siteId,requirementId,body.required,body.responsible_employee_id??null],
     )).rows[0];
-    if(!row)return res.status(404).json({error:'Document requirement not found'});
+    if(!row)return res.status(404).json({error:'Dokumentanforderung nicht gefunden'});
     await recordAudit(req.user!.tenantId,req.user!.id,'site.document_requirement.updated','dms_document_requirement',requirementId,{site_id:siteId,required:body.required});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document requirement'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Dokumentanforderung'});next(error);}
 });
 
 objectManagementRouter.delete('/sites/:id/document-requirements/:requirementId',requireAuth,requireCsrf,requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('dms:write'),async(req,res,next)=>{
@@ -1243,7 +1243,7 @@ objectManagementRouter.delete('/sites/:id/document-requirements/:requirementId',
     const siteId=uuid.parse(String(req.params.id));
     const requirementId=uuid.parse(String(req.params.requirementId));
     const row=(await query('DELETE FROM dms_document_requirements WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING id',[req.user!.tenantId,siteId,requirementId])).rows[0];
-    if(!row)return res.status(404).json({error:'Document requirement not found'});
+    if(!row)return res.status(404).json({error:'Dokumentanforderung nicht gefunden'});
     await recordAudit(req.user!.tenantId,req.user!.id,'site.document_requirement.deleted','dms_document_requirement',requirementId,{site_id:siteId});
     res.status(204).send();
   }catch(error){next(error);}
@@ -1253,33 +1253,33 @@ objectManagementRouter.post('/sites/:id/locations',requireAuth,requireCsrf,requi
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=locationSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
-    if(!site)return res.status(404).json({error:'Site not found'});
+    if(!site)return res.status(404).json({error:'Objekt nicht gefunden'});
     if(body.parent_id){
       const parent=(await query('SELECT id,location_type FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.parent_id])).rows[0];
-      if(!parent)return res.status(400).json({error:'Parent location not found in site'});
-      if(parent.location_type!==parentTypeFor[body.location_type])return res.status(400).json({error:`Parent location must be a ${parentTypeFor[body.location_type]??'root location'}`});
+      if(!parent)return res.status(400).json({error:'Übergeordneter Bereich nicht im Objekt gefunden'});
+      if(parent.location_type!==parentTypeFor[body.location_type])return res.status(400).json({error:`Übergeordneter Bereich muss ein ${parentTypeFor[body.location_type]??'Wurzelbereich'} sein`});
     }else if(parentTypeFor[body.location_type]){
-      return res.status(400).json({error:`${body.location_type} locations require a parent location`});
+      return res.status(400).json({error:`${body.location_type}-Bereiche erfordern einen übergeordneten Bereich`});
     }
     if(body.responsible_employee_id){
-      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     }
     const row=(await query(`INSERT INTO object_locations(tenant_id,site_id,parent_id,code,name,location_type,description,security_level,hazard_notes,access_rules,responsible_employee_id,sort_order)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [tenantId,siteId,body.parent_id??null,body.code??null,body.name,body.location_type,body.description??null,body.security_level,body.hazard_notes??null,body.access_rules??null,body.responsible_employee_id??null,body.sort_order])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.location.created','object_locations',row.id,{site_id:siteId,location_type:body.location_type});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid location'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Bereich'});next(error);}
 });
 
 objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const locationId=uuid.parse(String(req.params.locationId)); const body=locationPatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const current=(await query('SELECT id,location_type,parent_id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,locationId])).rows[0];
-    if(!current)return res.status(404).json({error:'Location not found'});
+    if(!current)return res.status(404).json({error:'Bereich nicht gefunden'});
     if(body.parent_id){
       const parent=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.parent_id])).rows[0];
-      if(!parent)return res.status(400).json({error:'Parent location not found in site'});
+      if(!parent)return res.status(400).json({error:'Übergeordneter Bereich nicht im Objekt gefunden'});
       const cycle=(await query(
         `WITH RECURSIVE descendants AS (
            SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND parent_id=$3
@@ -1290,26 +1290,26 @@ objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requ
          SELECT 1 FROM descendants WHERE id=$4`,
         [tenantId,siteId,locationId,body.parent_id],
       )).rows[0];
-      if(body.parent_id===locationId||cycle)return res.status(400).json({error:'Parent location would create a hierarchy cycle'});
+      if(body.parent_id===locationId||cycle)return res.status(400).json({error:'Der übergeordnete Bereich würde einen Hierarchiezyklus erzeugen'});
     }
     if(body.parent_id!==undefined||body.location_type!==undefined){
       const locationType=(body.location_type??current.location_type) as LocationType;
       const parentId=body.parent_id===undefined?current.parent_id:body.parent_id;
-      if(locationType==='building'&&parentId)return res.status(400).json({error:'Building locations cannot have a parent location'});
-      if(locationType!=='building'&&!parentId)return res.status(400).json({error:`${locationType} locations require a parent location`});
+      if(locationType==='building'&&parentId)return res.status(400).json({error:'Gebäudebereiche können keinen übergeordneten Bereich haben'});
+      if(locationType!=='building'&&!parentId)return res.status(400).json({error:`${locationType}-Bereiche erfordern einen übergeordneten Bereich`});
       if(parentId){
         const parent=(await query('SELECT location_type FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,parentId])).rows[0];
-        if(!parent)return res.status(400).json({error:'Parent location not found in site'});
-        if(parent.location_type!==parentTypeFor[locationType])return res.status(400).json({error:`Parent location must be a ${parentTypeFor[locationType]??'root location'}`});
+        if(!parent)return res.status(400).json({error:'Übergeordneter Bereich nicht im Objekt gefunden'});
+        if(parent.location_type!==parentTypeFor[locationType])return res.status(400).json({error:`Übergeordneter Bereich muss ein ${parentTypeFor[locationType]??'Wurzelbereich'} sein`});
       }
       if(body.location_type&&body.location_type!==current.location_type){
         const children=(await query('SELECT location_type FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND parent_id=$3',[tenantId,siteId,locationId])).rows;
         const expectedChildType=locationType==='building'?'area':locationType==='area'?'zone':null;
-        if(children.some(child=>child.location_type!==expectedChildType))return res.status(400).json({error:'Location type is incompatible with its existing child locations'});
+        if(children.some(child=>child.location_type!==expectedChildType))return res.status(400).json({error:'Der Bereichstyp ist mit den vorhandenen untergeordneten Bereichen nicht vereinbar'});
       }
     }
     if(body.responsible_employee_id){
-      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     }
     const columns:Record<keyof typeof body,string>={parent_id:'parent_id',code:'code',name:'name',location_type:'location_type',description:'description',security_level:'security_level',hazard_notes:'hazard_notes',access_rules:'access_rules',responsible_employee_id:'responsible_employee_id',sort_order:'sort_order'};
     const patch=patchAssignments(body,columns,4);
@@ -1318,47 +1318,47 @@ objectManagementRouter.patch('/sites/:id/locations/:locationId',requireAuth,requ
        WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING *`,
       [tenantId,siteId,locationId,...patch.values],
     )).rows[0];
-    if(!row)return res.status(404).json({error:'Location not found'});
+    if(!row)return res.status(404).json({error:'Bereich nicht gefunden'});
     await recordAudit(tenantId,req.user!.id,'site.location.updated','object_locations',locationId,{site_id:siteId,changed_fields:Object.keys(body)});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid location'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Bereich'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/hazards',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=hazardSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
-    if(!site)return res.status(404).json({error:'Site not found'});
+    if(!site)return res.status(404).json({error:'Objekt nicht gefunden'});
     if(body.location_id){
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.location_id])).rows[0];
-      if(!location)return res.status(400).json({error:'Location not found in site'});
+      if(!location)return res.status(400).json({error:'Bereich nicht im Objekt gefunden'});
     }
     if(body.responsible_employee_id){
-      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     }
     const row=(await query(`INSERT INTO object_hazards(tenant_id,site_id,location_id,title,category,description,likelihood,impact,protective_measures,responsible_employee_id,due_on,review_on,status,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
       [tenantId,siteId,body.location_id??null,body.title,body.category,body.description,body.likelihood,body.impact,body.protective_measures??null,body.responsible_employee_id??null,body.due_on??null,body.review_on??null,body.status,req.user!.id])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.hazard.created','object_hazards',row.id,{site_id:siteId,risk_score:body.likelihood*body.impact});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Gefährdung'});next(error);}
 });
 
 objectManagementRouter.patch('/sites/:id/hazards/:hazardId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const hazardId=uuid.parse(String(req.params.hazardId)); const body=hazardPatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const current=(await query('SELECT id,due_on,review_on,likelihood,impact FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,hazardId])).rows[0];
-    if(!current)return res.status(404).json({error:'Hazard not found'});
+    if(!current)return res.status(404).json({error:'Gefährdung nicht gefunden'});
     if(body.location_id){
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.location_id])).rows[0];
-      if(!location)return res.status(400).json({error:'Location not found in site'});
+      if(!location)return res.status(400).json({error:'Bereich nicht im Objekt gefunden'});
     }
     if(body.responsible_employee_id){
-      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+      if(!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     }
     const dueOn=body.due_on===undefined?(current.due_on?String(current.due_on).slice(0,10):null):body.due_on;
     const reviewOn=body.review_on===undefined?(current.review_on?String(current.review_on).slice(0,10):null):body.review_on;
-    if(dueOn&&reviewOn&&reviewOn<dueOn)return res.status(400).json({error:'review_on must be on or after due_on'});
+    if(dueOn&&reviewOn&&reviewOn<dueOn)return res.status(400).json({error:'review_on muss gleich oder nach due_on liegen'});
     const columns:Record<keyof typeof body,string>={location_id:'location_id',title:'title',category:'category',description:'description',likelihood:'likelihood',impact:'impact',protective_measures:'protective_measures',responsible_employee_id:'responsible_employee_id',due_on:'due_on',review_on:'review_on',status:'status'};
     const patch=patchAssignments(body,columns,4);
     const row=(await query(
@@ -1366,32 +1366,32 @@ objectManagementRouter.patch('/sites/:id/hazards/:hazardId',requireAuth,requireC
        WHERE tenant_id=$1 AND site_id=$2 AND id=$3 RETURNING *`,
       [tenantId,siteId,hazardId,...patch.values],
     )).rows[0];
-    if(!row)return res.status(404).json({error:'Hazard not found'});
+    if(!row)return res.status(404).json({error:'Gefährdung nicht gefunden'});
     await recordAudit(tenantId,req.user!.id,'site.hazard.updated','object_hazards',hazardId,{site_id:siteId,changed_fields:Object.keys(body),risk_score:(body.likelihood??Number(current.likelihood))*(body.impact??Number(current.impact))});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Gefährdung'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/hazards/:hazardId/measures',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const hazardId=uuid.parse(String(req.params.hazardId)); const body=hazardMeasureSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const hazard=(await query('SELECT id FROM object_hazards WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,hazardId])).rows[0];
-    if(!hazard)return res.status(404).json({error:'Hazard not found'});
-    if(body.responsible_employee_id&&!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    if(!hazard)return res.status(404).json({error:'Gefährdung nicht gefunden'});
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     const row=(await query(`INSERT INTO object_hazard_measures(tenant_id,site_id,hazard_id,title,description,responsible_employee_id,due_on,status,completed_at,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $8='completed' THEN now() ELSE NULL END,$9) RETURNING *`,
       [tenantId,siteId,hazardId,body.title,body.description??null,body.responsible_employee_id??null,body.due_on??null,body.status,req.user!.id])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.hazard_measure.created','object_hazard_measures',row.id,{site_id:siteId,hazard_id:hazardId,status:body.status,due_on:body.due_on??null});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard measure'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Gefährdungsmaßnahme'});next(error);}
 });
 
 objectManagementRouter.patch('/sites/:id/hazards/:hazardId/measures/:measureId',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const hazardId=uuid.parse(String(req.params.hazardId)); const measureId=uuid.parse(String(req.params.measureId)); const body=hazardMeasurePatchSchema.parse(req.body); const tenantId=req.user!.tenantId;
     const current=(await query('SELECT id,status FROM object_hazard_measures WHERE tenant_id=$1 AND site_id=$2 AND hazard_id=$3 AND id=$4',[tenantId,siteId,hazardId,measureId])).rows[0];
-    if(!current)return res.status(404).json({error:'Hazard measure not found'});
-    if(body.responsible_employee_id&&!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
+    if(!current)return res.status(404).json({error:'Gefährdungsmaßnahme nicht gefunden'});
+    if(body.responsible_employee_id&&!await employeeAssignedToSite(tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Verantwortlicher Mitarbeiter muss diesem Objekt zugeordnet sein'});
     const columns:Record<keyof typeof body,string>={title:'title',description:'description',responsible_employee_id:'responsible_employee_id',due_on:'due_on',status:'status'};
     const patch=patchAssignments(body,columns,6);
     const status=body.status??current.status;
@@ -1400,79 +1400,79 @@ objectManagementRouter.patch('/sites/:id/hazards/:hazardId/measures/:measureId',
        WHERE tenant_id=$1 AND site_id=$2 AND hazard_id=$3 AND id=$5 RETURNING *`,
       [tenantId,siteId,hazardId,status,measureId,...patch.values],
     )).rows[0];
-    if(!row)return res.status(404).json({error:'Hazard measure not found'});
+    if(!row)return res.status(404).json({error:'Gefährdungsmaßnahme nicht gefunden'});
     await recordAudit(tenantId,req.user!.id,'site.hazard_measure.updated','object_hazard_measures',measureId,{site_id:siteId,hazard_id:hazardId,changed_fields:Object.keys(body),status});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid hazard measure'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Gefährdungsmaßnahme'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/instructions',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const body=instructionSchema.parse(req.body); const tenantId=req.user!.tenantId;
-    if(body.status==='approved'||body.status==='archived')return res.status(400).json({error:'Instructions must be submitted for approval and cannot be created as approved or archived'});
+    if(body.status==='approved'||body.status==='archived')return res.status(400).json({error:'Dienstanweisungen müssen zur Freigabe eingereicht werden und dürfen nicht als genehmigt oder archiviert erstellt werden'});
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
-    if(!site)return res.status(404).json({error:'Site not found'});
+    if(!site)return res.status(404).json({error:'Objekt nicht gefunden'});
     if(body.location_id){
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.location_id])).rows[0];
-      if(!location)return res.status(400).json({error:'Location not found in site'});
+      if(!location)return res.status(400).json({error:'Bereich nicht im Objekt gefunden'});
     }
     if(body.supersedes_id){
       const previous=(await query('SELECT id,version,title FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,body.supersedes_id])).rows[0];
-      if(!previous)return res.status(400).json({error:'Superseded instruction not found in site'});
-      if(body.title!==previous.title||body.version!==Number(previous.version)+1)return res.status(400).json({error:'A new instruction version must retain its title and increment the version by one'});
+      if(!previous)return res.status(400).json({error:'Zu ersetzende Dienstanweisung nicht im Objekt gefunden'});
+      if(body.title!==previous.title||body.version!==Number(previous.version)+1)return res.status(400).json({error:'Eine neue Fassung einer Dienstanweisung muss den Titel beibehalten und die Fassungsnummer um eins erhöhen'});
       const latest=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,previous.title])).rows[0];
-      if(latest?.id!==previous.id)return res.status(409).json({error:'Only the latest instruction version can be superseded'});
+      if(latest?.id!==previous.id)return res.status(409).json({error:'Nur die neueste Fassung einer Dienstanweisung kann ersetzt werden'});
     }else{
-      if(body.version!==1)return res.status(400).json({error:'A new instruction must start at version 1'});
+      if(body.version!==1)return res.status(400).json({error:'Eine neue Dienstanweisung muss mit Fassung 1 beginnen'});
       const existing=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,body.title])).rows[0];
-      if(existing)return res.status(409).json({error:'An existing instruction with this title must be superseded'});
+      if(existing)return res.status(409).json({error:'Eine bestehende Dienstanweisung mit diesem Titel muss ersetzt werden'});
     }
     const row=(await query(`INSERT INTO site_instructions(tenant_id,site_id,location_id,title,content,version,status,requires_acknowledgement,valid_from,valid_until,created_by,approved_by,approved_at,supersedes_id)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,NULL,$12) RETURNING *`,
       [tenantId,siteId,body.location_id??null,body.title,body.content,body.version,body.status,body.requires_acknowledgement,body.valid_from??null,body.valid_until??null,req.user!.id,body.supersedes_id??null])).rows[0];
     await recordAudit(tenantId,req.user!.id,'site.instruction.created','site_instructions',row.id,{site_id:siteId,version:body.version,status:body.status});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid instruction'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Dienstanweisung'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/instructions/:instructionId/approve',requireAuth,requireCsrf,requirePermission('site_instructions:approve',{allowedScopes:['tenant','site','system']}),requireSiteScope('site_instructions:approve'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId)); const tenantId=req.user!.tenantId;
     const current=(await query('SELECT id,status,created_by,version,title FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
-    if(!current)return res.status(404).json({error:'Instruction not found'});
-    if(current.created_by===req.user!.id)return res.status(403).json({error:'Instruction authors cannot approve their own instruction'});
-    if(current.status!=='pending_approval')return res.status(409).json({error:'Only pending instructions can be approved'});
+    if(!current)return res.status(404).json({error:'Dienstanweisung nicht gefunden'});
+    if(current.created_by===req.user!.id)return res.status(403).json({error:'Erstellende dürfen eigene Dienstanweisungen nicht freigeben'});
+    if(current.status!=='pending_approval')return res.status(409).json({error:'Nur ausstehende Dienstanweisungen können freigegeben werden'});
     const latest=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,current.title])).rows[0];
-    if(latest?.id!==current.id)return res.status(409).json({error:'Only the latest instruction version can be approved'});
+    if(latest?.id!==current.id)return res.status(409).json({error:'Nur die neueste Dienstanweisungsversion kann freigegeben werden'});
     const row=(await query(`UPDATE site_instructions SET status='approved',approved_by=$4,approved_at=now(),updated_at=now()
       WHERE tenant_id=$1 AND site_id=$2 AND id=$3 AND status='pending_approval' AND created_by<>$4
         AND NOT EXISTS(SELECT 1 FROM site_instructions newer WHERE newer.tenant_id=site_instructions.tenant_id AND newer.site_id=site_instructions.site_id AND newer.title=site_instructions.title AND newer.version>site_instructions.version)
       RETURNING *`,
       [tenantId,siteId,instructionId,req.user!.id])).rows[0];
-    if(!row)return res.status(409).json({error:'Instruction status changed before approval'});
+    if(!row)return res.status(409).json({error:'Der Status der Dienstanweisung wurde vor der Freigabe geändert'});
     await recordAudit(tenantId,req.user!.id,'site.instruction.approved','site_instructions',instructionId,{site_id:siteId,version:current.version});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid instruction id'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Dienstanweisungs-ID'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/instructions/:instructionId/return-for-revision',requireAuth,requireCsrf,requirePermission('site_instructions:approve',{allowedScopes:['tenant','site','system']}),requireSiteScope('site_instructions:approve'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id)); const instructionId=uuid.parse(String(req.params.instructionId)); const body=z.object({reason:nonempty.max(4000)}).strict().parse(req.body); const tenantId=req.user!.tenantId;
     const current=(await query('SELECT id,status,created_by,version,title FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenantId,siteId,instructionId])).rows[0];
-    if(!current)return res.status(404).json({error:'Instruction not found'});
-    if(current.created_by===req.user!.id)return res.status(403).json({error:'Instruction authors cannot return their own instruction'});
-    if(current.status!=='pending_approval')return res.status(409).json({error:'Only pending instructions can be returned for revision'});
+    if(!current)return res.status(404).json({error:'Dienstanweisung nicht gefunden'});
+    if(current.created_by===req.user!.id)return res.status(403).json({error:'Erstellende dürfen eigene Dienstanweisungen nicht zurückgeben'});
+    if(current.status!=='pending_approval')return res.status(409).json({error:'Nur ausstehende Dienstanweisungen können zur Überarbeitung zurückgegeben werden'});
     const latest=(await query('SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 ORDER BY version DESC LIMIT 1',[tenantId,siteId,current.title])).rows[0];
-    if(latest?.id!==current.id)return res.status(409).json({error:'Only the latest instruction version can be returned for revision'});
+    if(latest?.id!==current.id)return res.status(409).json({error:'Nur die neueste Dienstanweisungsversion kann zur Überarbeitung zurückgegeben werden'});
     const row=(await query(`UPDATE site_instructions SET status='draft',approved_by=NULL,approved_at=NULL,updated_at=now()
       WHERE tenant_id=$1 AND site_id=$2 AND id=$3 AND status='pending_approval' AND created_by<>$4
         AND NOT EXISTS(SELECT 1 FROM site_instructions newer WHERE newer.tenant_id=site_instructions.tenant_id AND newer.site_id=site_instructions.site_id AND newer.title=site_instructions.title AND newer.version>site_instructions.version)
       RETURNING *`,
       [tenantId,siteId,instructionId,req.user!.id])).rows[0];
-    if(!row)return res.status(409).json({error:'Instruction status changed before it could be returned'});
+    if(!row)return res.status(409).json({error:'Der Status der Dienstanweisung wurde vor der Rückgabe geändert'});
     await recordAudit(tenantId,req.user!.id,'site.instruction.returned_for_revision','site_instructions',instructionId,{site_id:siteId,version:current.version,reason:body.reason});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid return for revision'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Rückgabe zur Überarbeitung'});next(error);}
 });
 
 objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgements',requireAuth,requireCsrf,requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('sites:write'),requirePermission('employees:read',{allowedScopes:['tenant','site','system']}),requireSiteScope('employees:read'),async(req,res,next)=>{
@@ -1485,11 +1485,11 @@ objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgem
         AND EXISTS(SELECT 1 FROM employee_object_assignments oa
           WHERE oa.tenant_id=e.tenant_id AND oa.site_id=$3 AND oa.employee_id=e.id
             AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE))`,[tenantId,body.employee_id,siteId])).rows[0];
-    if(!instruction||!employee)return res.status(404).json({error:'Instruction or employee not found'});
-    if(instruction.status!=='approved')return res.status(409).json({error:'Only approved instructions can be acknowledged'});
-    if(!instruction.requires_acknowledgement)return res.status(409).json({error:'This instruction does not require acknowledgement'});
+    if(!instruction||!employee)return res.status(404).json({error:'Dienstanweisung oder Mitarbeiter nicht gefunden'});
+    if(instruction.status!=='approved')return res.status(409).json({error:'Nur freigegebene Dienstanweisungen können bestätigt werden'});
+    if(!instruction.requires_acknowledgement)return res.status(409).json({error:'Für diese Dienstanweisung ist keine Bestätigung erforderlich'});
     const latestApproved=(await query("SELECT id FROM site_instructions WHERE tenant_id=$1 AND site_id=$2 AND title=$3 AND status='approved' ORDER BY version DESC LIMIT 1",[tenantId,siteId,instruction.title])).rows[0];
-    if(latestApproved?.id!==instruction.id)return res.status(409).json({error:'Only the current approved version can be acknowledged'});
+    if(latestApproved?.id!==instruction.id)return res.status(409).json({error:'Nur die aktuelle freigegebene Fassung kann bestätigt werden'});
     const row=(await query(`INSERT INTO instruction_acknowledgements(tenant_id,instruction_id,employee_id,acknowledged_version)
       SELECT $1,$2,$3,$4
       WHERE EXISTS(
@@ -1502,11 +1502,11 @@ objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgem
     if(!row){
       const existing=(await query('SELECT 1 FROM instruction_acknowledgements WHERE tenant_id=$1 AND instruction_id=$2 AND employee_id=$3 AND acknowledged_version=$4',[tenantId,instructionId,body.employee_id,instruction.version])).rows[0];
       if(existing)return res.status(200).json({acknowledged:true,version:instruction.version});
-      return res.status(409).json({error:'Instruction version is no longer current'});
+      return res.status(409).json({error:'Dienstanweisungsversion ist nicht mehr aktuell'});
     }
     await recordAudit(tenantId,req.user!.id,'site.instruction.acknowledged','instruction_acknowledgements',instructionId,{site_id:siteId,employee_id:body.employee_id,version:instruction.version});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid acknowledgement'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Bestätigung'});next(error);}
 });
 
 objectManagementRouter.post(
@@ -1514,7 +1514,7 @@ objectManagementRouter.post(
   requireAuth,
   requireCsrf,
   requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),
-  requirePermission('customers:write'),
+  requirePermission('customers:write',{allowedScopes:['tenant','site','system']}),
   requireSiteScope('sites:write'),
   async(req,res,next)=>{
     try{
@@ -1523,8 +1523,8 @@ objectManagementRouter.post(
       const tenantId=req.user!.tenantId;
       const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[tenantId,siteId])).rows[0];
       const customer=(await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[tenantId,body.customer_id])).rows[0];
-      if(!site||!customer)return res.status(404).json({error:'Site or customer not found'});
-      if(body.ends_on&&body.starts_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Invalid relationship dates'});
+      if(!site||!customer)return res.status(404).json({error:'Objekt oder Kunde nicht gefunden'});
+      if(body.ends_on&&body.starts_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Ungültige Zeiträume der Beziehung'});
       const link=(await query(
         `INSERT INTO customer_sites(tenant_id,customer_id,site_id,relationship_type,starts_on,ends_on,notes)
          VALUES($1,$2,$3,$4,$5,$6,$7)
@@ -1536,7 +1536,7 @@ objectManagementRouter.post(
       )).rows[0];
       await recordAudit(tenantId,req.user!.id,'site.customer_linked','customer_sites',link.id,{site_id:siteId,customer_id:body.customer_id});
       res.status(201).json(link);
-    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid customer relationship'});next(error);}
+    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Kundenbeziehung'});next(error);}
   },
 );
 
@@ -1557,9 +1557,9 @@ objectManagementRouter.delete(
          RETURNING id`,
         [req.user!.tenantId,siteId,customerId],
       );
-      if(!result.rowCount)return res.status(404).json({error:'Relationship not found'});
+      if(!result.rowCount)return res.status(404).json({error:'Beziehung nicht gefunden'});
       await recordAudit(req.user!.tenantId,req.user!.id,'site.customer_link_archived','customer_sites',result.rows[0].id,{site_id:siteId,customer_id:customerId});
       res.status(204).send();
-    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid relationship id'});next(error);}
+    }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Beziehungs-ID'});next(error);}
   },
 );

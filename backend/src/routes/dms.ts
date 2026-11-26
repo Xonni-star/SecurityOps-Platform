@@ -26,12 +26,12 @@ function customerDocumentPermission(req:Request,permission:'customer_documents:r
 function siteAccess(req:Request,siteId:string|null,permission='dms:read'){
   const user=req.user!;
   const scope=effectivePermissionScope(normalizePermissionGrants(user.permissionGrants,user.permissions),permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-  if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants:normalizePermissionGrants(user.permissionGrants,user.permissions)},scope,{tenantId:user.tenantId,siteId}))throw Object.assign(new Error('Insufficient permissions for this document scope'),{status:403});
+  if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants:normalizePermissionGrants(user.permissionGrants,user.permissions)},scope,{tenantId:user.tenantId,siteId}))throw Object.assign(new Error('Unzureichende Berechtigungen für diesen Dokumentbereich'),{status:403});
 }
 function decodeContent(value:unknown){
-  if(typeof value!=='string'||!/^[A-Za-z0-9+/]*={0,2}$/.test(value)||value.length%4!==0)throw Object.assign(new Error('content_base64 must be valid base64'),{status:400});
+  if(typeof value!=='string'||!/^[A-Za-z0-9+/]*={0,2}$/.test(value)||value.length%4!==0)throw Object.assign(new Error('content_base64 muss gültiges Base64 sein'),{status:400});
   const content=Buffer.from(value,'base64');
-  if(!content.length)throw Object.assign(new Error('Document content must not be empty'),{status:400});
+  if(!content.length)throw Object.assign(new Error('Dokumentinhalt darf nicht leer sein'),{status:400});
   return content;
 }
 function safeFilename(title:string,versionNo:number,contentType:string){
@@ -84,23 +84,23 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     ).refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from).parse(req.body);
     siteAccess(req,body.site_id??null,'dms:write');
     if(body.customer_id){
-      if(!customerDocumentPermission(req,'customer_documents:write'))throw Object.assign(new Error('Insufficient permissions for customer documents'),{status:403});
+      if(!customerDocumentPermission(req,'customer_documents:write'))throw Object.assign(new Error('Unzureichende Berechtigungen für Kundendokumente'),{status:403});
       const customer=(await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.customer_id])).rows[0];
-      if(!customer)throw Object.assign(new Error('Customer not found'),{status:404});
-      if(body.site_id&&!((await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=$3',[req.user!.tenantId,body.customer_id,body.site_id])).rows[0]))throw Object.assign(new Error('Document site must belong to the customer'),{status:400});
+      if(!customer)throw Object.assign(new Error('Kunde nicht gefunden'),{status:404});
+      if(body.site_id&&!((await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=$3',[req.user!.tenantId,body.customer_id,body.site_id])).rows[0]))throw Object.assign(new Error('Objekt des Dokuments muss zum Kunden gehören'),{status:400});
     }
     if(body.employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
-      if(!employee)throw Object.assign(new Error('Employee not found'),{status:404});
+      if(!employee)throw Object.assign(new Error('Mitarbeiter nicht gefunden'),{status:404});
     }
     if(body.responsible_employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rows[0];
-      if(!employee)throw Object.assign(new Error('Responsible employee not found'),{status:404});
+      if(!employee)throw Object.assign(new Error('Verantwortlicher Mitarbeiter nicht gefunden'),{status:404});
     }
     if(body.location_id){
-      if(!body.site_id)throw Object.assign(new Error('Location requires a site'),{status:400});
+      if(!body.site_id)throw Object.assign(new Error('Für den Bereich ist ein Objekt erforderlich'),{status:400});
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,body.site_id,body.location_id])).rows[0];
-      if(!location)throw Object.assign(new Error('Object location not found'),{status:404});
+      if(!location)throw Object.assign(new Error('Objektbereich nicht gefunden'),{status:404});
     }
     const content=decodeContent(body.content_base64);
     const maxBytes=env.DMS_MAX_BYTES;
@@ -121,13 +121,13 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       let scan;
       try{scan=await dmsScanner.scan(content);}catch(error){
         await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,'scan_provider_error']);
-        throw Object.assign(new Error('Malware scan provider failed'),{status:502,cause:error});
+        throw Object.assign(new Error('Virenscan-Anbieter fehlgeschlagen'),{status:502,cause:error});
       }
       const lifecycle=scanLifecycle(scan);
       if(lifecycle.state==='rejected'){
         await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);
         await dmsStorage.delete(objectKey);
-        return res.status(422).json({error:'Document rejected by malware scan',state:'rejected',signature:scan.signature});
+        return res.status(422).json({error:'Dokument durch Virenscan abgelehnt',state:'rejected',signature:scan.signature});
       }
       const available=(await query(`UPDATE dms_versions SET lifecycle_state='available',scanned_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,versionId])).rows[0];
       await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.uploaded','dms_document',documentId,{version_id:versionId,sha256:available.sha256,size_bytes:available.size_bytes,customer_id:body.customer_id??null});
@@ -151,16 +151,16 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
       review_on:z.string().date().nullable().optional(),
     }).strict().refine(value=>Object.keys(value).length>0).refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from).parse(req.body);
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
-    if(!document)return res.status(404).json({error:'Document not found'});
+    if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     siteAccess(req,document.site_id,'dms:write');
-    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
     if(body.responsible_employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.responsible_employee_id])).rows[0];
-      if(!employee)return res.status(400).json({error:'Responsible employee not found'});
+      if(!employee)return res.status(400).json({error:'Verantwortlicher Mitarbeiter nicht gefunden'});
     }
     if(body.location_id){
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,document.site_id,body.location_id])).rows[0];
-      if(!location)return res.status(400).json({error:'Object location not found'});
+      if(!location)return res.status(400).json({error:'Objektbereich nicht gefunden'});
     }
     const columns:Record<string,string>={title:'title',description:'description',document_number:'document_number',document_type:'document_type',responsible_employee_id:'responsible_employee_id',location_id:'location_id',valid_from:'valid_from',valid_until:'valid_until',review_on:'review_on'};
     const entries=Object.entries(body);
@@ -172,22 +172,22 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
     )).rows[0];
     await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.updated','dms_document',documentId,{changed_fields:Object.keys(body)});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document metadata'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Dokumentmetadaten'});next(error);}
 });
 
 dmsRouter.post('/dms/documents/:documentId/request-review',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const documentId=uuid.parse(String(req.params.documentId));
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
-    if(!document)return res.status(404).json({error:'Document not found'});
+    if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     siteAccess(req,document.site_id??null,'dms:write');
-    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
-    if(document.document_status!=='active'||!['draft','rejected'].includes(document.approval_status))return res.status(409).json({error:'Document cannot be submitted for review'});
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
+    if(document.document_status!=='active'||!['draft','rejected'].includes(document.approval_status))return res.status(409).json({error:'Dokument kann nicht zur Prüfung eingereicht werden'});
     const row=(await query(`UPDATE dms_documents SET approval_status='pending_approval',reviewed_at=NULL,approval_feedback=NULL,updated_at=now()
       WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,documentId])).rows[0];
     await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.review_requested','dms_document',documentId,{previous_status:document.approval_status});
     res.json({...row,...classifyDocument(row)});
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid document id'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Dokument-ID'});next(error);}
 });
 
 dmsRouter.post('/dms/documents/:documentId/approve',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
@@ -195,20 +195,20 @@ dmsRouter.post('/dms/documents/:documentId/approve',requirePermission('dms:write
     const documentId=uuid.parse(String(req.params.documentId));
     const body=z.object({feedback:z.string().trim().max(2000).nullable().optional()}).strict().parse(req.body??{});
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
-    if(!document)return res.status(404).json({error:'Document not found'});
+    if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     siteAccess(req,document.site_id??null,'dms:write');
-    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
-    if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Uploaders cannot approve their own document'});
-    if(document.document_status!=='active'||!['draft','pending_approval','rejected'].includes(document.approval_status))return res.status(409).json({error:'Document is not in an approvable state'});
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
+    if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Hochladende dürfen eigene Dokumente nicht freigeben'});
+    if(document.document_status!=='active'||!['draft','pending_approval','rejected'].includes(document.approval_status))return res.status(409).json({error:'Dokument befindet sich nicht in einem freigabefähigen Status'});
     const latest=(await query(`SELECT * FROM dms_versions WHERE tenant_id=$1 AND document_id=$2 ORDER BY version_no DESC LIMIT 1`,[req.user!.tenantId,documentId])).rows[0];
-    if(latest?.lifecycle_state!=='available')return res.status(409).json({error:'No released document version is available for approval'});
+    if(latest?.lifecycle_state!=='available')return res.status(409).json({error:'Für die Freigabe ist keine freigegebene Dokumentversion verfügbar'});
     const row=(await query(`UPDATE dms_documents SET approval_status='approved',approved_by=$3,approved_at=now(),reviewed_at=now(),rejection_reason=NULL,updated_at=now()
       WHERE tenant_id=$1 AND id=$2 AND approval_status<>'approved' RETURNING *`,[req.user!.tenantId,documentId,req.user!.id])).rows[0];
-    if(!row)return res.status(409).json({error:'Document is not in an approvable state'});
+    if(!row)return res.status(409).json({error:'Dokument befindet sich nicht in einem freigabefähigen Status'});
     await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.approved','dms_document',documentId,{previous_status:document.approval_status,feedback:body.feedback??null});
     const classifiable={...row,versions:[latest]};
     res.json({...classifiable,...classifyDocument(classifiable)});
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid approval request'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Freigabeantrag'});next(error);}
 });
 
 dmsRouter.post('/dms/documents/:documentId/return-for-revision',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
@@ -216,22 +216,22 @@ dmsRouter.post('/dms/documents/:documentId/return-for-revision',requirePermissio
     const documentId=uuid.parse(String(req.params.documentId));
     const body=z.object({reason:z.string().trim().min(1).max(2000)}).strict().parse(req.body);
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
-    if(!document)return res.status(404).json({error:'Document not found'});
+    if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     siteAccess(req,document.site_id??null,'dms:write');
-    if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Uploaders cannot decide on their own document'});
-    if(document.document_status!=='active'||!['pending_approval','approved'].includes(document.approval_status))return res.status(409).json({error:'Document cannot be returned for revision'});
+    if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Hochladende dürfen über eigene Dokumente nicht entscheiden'});
+    if(document.document_status!=='active'||!['pending_approval','approved'].includes(document.approval_status))return res.status(409).json({error:'Dokument kann nicht zur Überarbeitung zurückgegeben werden'});
     const row=(await query(`UPDATE dms_documents SET approval_status='rejected',approval_feedback=$3,rejection_reason=$3,reviewed_at=now(),approved_by=NULL,approved_at=NULL,updated_at=now()
       WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,documentId,body.reason])).rows[0];
     await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.returned_for_revision','dms_document',documentId,{previous_status:document.approval_status,reason:body.reason});
     res.json({...row,...classifyDocument(row)});
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid revision request'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Überarbeitungsantrag'});next(error);}
 });
 
 dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.documentId])).rows[0];
-    if(!document)return res.status(404).json({error:'Document not found'});
-    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
+    if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
     siteAccess(req,document.site_id??null,'dms:write');
     const body=z.object({content_base64:z.string(),content_type:z.string().trim().min(1).max(160),retention_until:z.string().datetime({offset:true}).nullable().optional(),client_mutation_id:uuid}).strict().parse(req.body);
     const content=decodeContent(body.content_base64);validateDmsUpload(content,body.content_type,env.DMS_MAX_BYTES,allowedTypes);
@@ -248,10 +248,10 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
       let scan;
       try{scan=await dmsScanner.scan(content);}catch(error){
         await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason='scan_provider_error',scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId]);
-        throw Object.assign(new Error('Malware scan provider failed'),{status:502,cause:error});
+        throw Object.assign(new Error('Virenscan-Anbieter fehlgeschlagen'),{status:502,cause:error});
       }
       const lifecycle=scanLifecycle(scan);
-      if(lifecycle.state==='rejected'){await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);await dmsStorage.delete(objectKey);return res.status(422).json({error:'Document rejected by malware scan',state:'rejected'});}
+      if(lifecycle.state==='rejected'){await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);await dmsStorage.delete(objectKey);return res.status(422).json({error:'Dokument durch Virenscan abgelehnt',state:'rejected'});}
       const available=(await query(`UPDATE dms_versions SET lifecycle_state='available',scanned_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,versionId])).rows[0];
       await recordAudit(req.user!.tenantId,req.user!.id,'dms.version.uploaded','dms_version',versionId,{document_id:document.id,version_no:available.version_no});
       return res.status(201).json(available);
@@ -263,12 +263,12 @@ dmsRouter.get('/dms/documents/:documentId/versions/:versionId/download',requireP
   try{
     const row=(await query(`SELECT d.*,v.* FROM dms_documents d JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
       WHERE d.tenant_id=$1 AND d.id=$2 AND v.id=$3 AND d.document_status='active'`,[req.user!.tenantId,req.params.documentId,req.params.versionId])).rows[0];
-    if(!row)return res.status(404).json({error:'Document version not found'});
-    if(row.customer_id&&!customerDocumentPermission(req,'customer_documents:read'))return res.status(403).json({error:'Insufficient permissions for customer documents'});
+    if(!row)return res.status(404).json({error:'Dokumentversion nicht gefunden'});
+    if(row.customer_id&&!customerDocumentPermission(req,'customer_documents:read'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
     siteAccess(req,row.site_id??null);
-    if(!canDownloadDmsVersion(row.document_status,row.lifecycle_state))return res.status(409).json({error:'Document version is not available',state:row.lifecycle_state});
+    if(!canDownloadDmsVersion(row.document_status,row.lifecycle_state))return res.status(409).json({error:'Dokumentversion ist nicht verfügbar',state:row.lifecycle_state});
     const blob=await dmsStorage.get(row.object_key);
-    if(blob.content.byteLength!==Number(row.size_bytes)||sha256(blob.content)!==row.sha256)return res.status(502).json({error:'Blob integrity check failed'});
+    if(blob.content.byteLength!==Number(row.size_bytes)||sha256(blob.content)!==row.sha256)return res.status(502).json({error:'Integritätsprüfung des Blobs fehlgeschlagen'});
     res.setHeader('Content-Type',row.content_type);res.setHeader('Content-Length',String(blob.content.byteLength));res.setHeader('Content-Disposition',`attachment; filename="${safeFilename(row.title,row.version_no,row.content_type)}"`);
     return res.send(blob.content);
   }catch(error){next(error);}

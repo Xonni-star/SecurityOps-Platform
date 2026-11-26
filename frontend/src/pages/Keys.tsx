@@ -1,11 +1,14 @@
 import {useEffect,useState} from 'react';
 import {Link,useNavigate} from 'react-router-dom';
 import {api,csrf,hasPermission,storedUser} from '../lib/api';
+import {formatNumber} from '../lib/format';
+import {statusLabel} from '../lib/status';
+import {commonText} from '../lib/text';
 import {uuid} from '../lib/uuid';
 import {
   ActionEntry,ActionList,BundleDetail,BundleRow,Dashboard,DocumentOption,EmployeeOption,IncidentOption,KeyRow,PriorityOption,SiteOption,StatusBadge,
   BundleCreateDialog,BundleDeactivateDialog,BundleIssueDialog,BundleReturnDialog,BlockDialog,
-  CreateKeyDialog,InventoryDialog,IssueDialog,LossDialog,QrDialog,ReturnDialog,KeySearchSelect,displayDate,keyTypeLabels,
+  CreateKeyDialog,InventoryDialog,IssueDialog,LossDialog,QrDialog,ReturnDialog,KeySearchSelect,displayDate,employeeLabel,keyTypeLabels,statusLabels,
 } from './keyParts';
 
 type SortKey='key_code'|'label'|'status'|'key_type'|'site_name'|'holder_name'|'due_at'|'last_movement_at';
@@ -23,8 +26,9 @@ const bucketLabels:Record<'A'|'B'|'C',string>={A:'Sofort handeln',B:'Zeitnah kl�
 async function fetchKeyPage(query:string){
   const response=await fetch(`${apiBase}/keys?${query}`,{credentials:'include',headers:{'Content-Type':'application/json'}});
   if(!response.ok){
-    let message='Schlüssel konnten nicht geladen werden.';
-    try{const body=await response.json() as {error?:string};if(body?.error)message=body.error;}catch{/* response has no JSON body */}
+    const hint='Bitte prüfen Sie Ihre Filter und versuchen Sie es erneut.';
+    let message=`Schlüssel konnten nicht geladen werden. ${hint}`;
+    try{const body=await response.json() as {error?:string};if(body?.error)message=`${body.error} ${hint}`;}catch{/* response has no JSON body */}
     throw new Error(message);
   }
   const rows=await response.json() as KeyRow[];
@@ -166,14 +170,14 @@ export function Keys(){
       const response=await fetch(`${apiBase}/keys/export?${exportQuery.toString()}`,{
         credentials:'include',headers:{'Content-Type':'application/json','x-csrf-token':typeof csrf==='function'?csrf():''},
       });
-      if(!response.ok)throw new Error('Schlüsselexport fehlgeschlagen.');
+      if(!response.ok)throw new Error('Der CSV-Export konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.');
       const disposition=response.headers.get('Content-Disposition')??'';
       const filename=/filename="?([^";]+)"?/i.exec(disposition)?.[1]??'schluessel.csv';
       const url=URL.createObjectURL(await response.blob());
       const link=document.createElement('a');link.href=url;link.download=filename;link.click();URL.revokeObjectURL(url);
       const count=response.headers.get('X-Key-Export-Count');
       const total=response.headers.get('X-Key-Export-Total');
-      if(response.headers.get('X-Key-Export-Truncated')==='true')setError(`Export auf ${count??'?'} von ${total??'?'} Treffern begrenzt. Für alle Treffer „Vollständig exportieren“ aktivieren.`);
+      if(response.headers.get('X-Key-Export-Truncated')==='true')setError(`Der CSV-Export ist auf ${formatNumber(Number(count))} von ${formatNumber(Number(total))} Treffern begrenzt. Aktivieren Sie „Vollständig exportieren“, um alle Treffer zu exportieren.`);
       else setError('');
     }catch(cause){setError((cause as Error).message);}
   };
@@ -238,33 +242,33 @@ export function Keys(){
   ];
   const detailCards:[number,string][]=[
     [dashboard?.blocked??0,'Gesperrt'],[dashboard?.deactivated??0,'Deaktiviert'],[dashboard?.without_site??0,'Ohne Objekt'],
-    [dashboard?.without_holder??0,'Ohne Halter'],[dashboard?.partial_bundles??0,'Unvollständige Bunde'],
+    [dashboard?.without_holder??0,'Ohne Halter'],[dashboard?.partial_bundles??0,'Unvollständige Schlüsselbünde'],
     [dashboard?.due_today??0,'Heute fällig'],[dashboard?.due_7_days??0,'In 7 Tagen fällig'],[dashboard?.due_30_days??0,'In 30 Tagen fällig'],
   ];
   const bundleKeys=(bundle:BundleRow)=>bundleItems[bundle.id]??[];
 
   return <section className="employee-management customer-management key-management">
     <div className="employee-page-title">
-      <div><h1>Schlüsselverwaltung</h1><p>Ausgabe, Rückgabe, Verlust, Bund und Bestandskontrolle revisionssicher im Blick.</p></div>
+      <div><h1>Schlüsselverwaltung</h1><p>Ausgabe, Rückgabe, Verlust, Schlüsselbund und Bestandskontrolle revisionssicher im Blick.</p></div>
       <div className="employee-page-actions">
         {canInventory&&<button type="button" onClick={()=>setDialog({kind:'inventory'})}>Bestandskontrolle</button>}
         {canExport&&<>
           <label className="key-export-full"><input type="checkbox" checked={exportFull} onChange={event=>setExportFull(event.target.checked)}/> Vollständig exportieren</label>
-          <button type="button" onClick={()=>void exportCsv()}>Export{selected.length?` (${selected.length})`:''}</button>
+          <button type="button" onClick={()=>void exportCsv()}>{commonText.exportCsv}{selected.length?` (${formatNumber(selected.length)})`:''}</button>
         </>}
-        {canCreate&&<button type="button" onClick={()=>setDialog({kind:'create'})}>+ Schlüssel anlegen</button>}
-        {canBundleWrite&&<button type="button" onClick={()=>setDialog({kind:'bundle-create'})}>+ Bund anlegen</button>}
+        {canCreate&&<button type="button" onClick={()=>setDialog({kind:'create'})}>Schlüssel anlegen</button>}
+        {canBundleWrite&&<button type="button" onClick={()=>setDialog({kind:'bundle-create'})}>Schlüsselbund anlegen</button>}
       </div>
     </div>
     {error&&<p role="alert" className="error">{error}</p>}
     {dashboard&&<>
       <div className="stats-grid employee-metrics key-metrics">
-        {primaryCards.map(([value,label])=><article key={label}><strong>{value}</strong><span>{label}</span></article>)}
+        {primaryCards.map(([value,label])=><article key={label}><strong>{formatNumber(value)}</strong><span>{label}</span></article>)}
       </div>
       <details className="key-more-metrics"><summary>Weitere Kennzahlen</summary>
-        <div className="stats-grid employee-metrics">{detailCards.map(([value,label])=><article key={label}><strong>{value}</strong><span>{label}</span></article>)}</div>
+        <div className="stats-grid employee-metrics">{detailCards.map(([value,label])=><article key={label}><strong>{formatNumber(value)}</strong><span>{label}</span></article>)}</div>
         {dashboard.recent_movements?.length>0&&<ul className="key-recent-movements">{dashboard.recent_movements.slice(0,6).map(movement=><li key={movement.id}>
-          <Link to={`/keys/${movement.key_id}`}>{movement.key_code||movement.key_label||'Schlüssel'}</Link> · {movement.movement_type} · {displayDate(movement.created_at)}
+          <Link to={`/keys/${movement.key_id}`}>{movement.key_code||movement.key_label||'Schlüssel'}</Link> · {statusLabel(movement.movement_type,'movement')} · {displayDate(movement.created_at)}
         </li>)}</ul>}
       </details>
     </>}
@@ -274,40 +278,40 @@ export function Keys(){
         const total=actions.totals?.[bucket]??actions[bucket]?.length??0;
         const shown=actions[bucket]?.length??0;
         return <article key={bucket} className={`customer-action-column bucket-${bucket}`}>
-          <h3>{bucket} · {bucketLabels[bucket]} <small>{total}</small></h3>
+          <h3>{bucketLabels[bucket]} <small>{formatNumber(total)}</small></h3>
           <ul>{shown?actions[bucket].map(entry=><li key={entry.id}>
             <Link to={actionTarget(entry)}><strong>{entry.label}</strong><small>{entry.key_code||entry.site_name||''}</small></Link>
             {entry.due_at&&<small className="customer-action-due">Fällig {displayDate(entry.due_at)}</small>}
-          </li>):<li className="employee-empty">Keine Einträge</li>}</ul>
-          {total>shown&&<p className="key-action-more" role="status">Weitere {total-shown} Vorgänge sind in der Gesamtzahl enthalten.</p>}
+          </li>):<li className="employee-empty">Keine Einträge vorhanden.</li>}</ul>
+          {total>shown&&<p className="key-action-more" role="status">Weitere {formatNumber(total-shown)} Vorgänge sind in der Gesamtzahl enthalten.</p>}
         </article>;
       })}</div>
     </section>
 
-    {canBundleRead&&<section className="key-bundle-section" aria-label="Schlüsselbunde">
-      <div className="key-section-heading"><h2>Schlüsselbunde</h2><span>{bundles.length} Bunde</span></div>
-      {bundles.length===0&&<p className="employee-empty">Keine Schlüsselbunde erfasst.</p>}
+    {canBundleRead&&<section className="key-bundle-section" aria-label="Schlüsselbünde">
+      <div className="key-section-heading"><h2>Schlüsselbünde</h2><span>{formatNumber(bundles.length)} Schlüsselbünde</span></div>
+      {bundles.length===0&&<p className="employee-empty">Keine Schlüsselbünde erfasst.</p>}
       <div className="key-bundle-grid">{bundles.map(bundle=>{
         const partial=bundle.issued_count>0&&bundle.issued_count<bundle.item_count;
         const items=bundleKeys(bundle);
         return <article key={bundle.id} id={`bundle-${bundle.id}`} className={`key-bundle-card${partial?' inconsistent':''}`}>
           <header><div><h3>{bundle.name}</h3><p>{siteLabelForBundle(bundle)} · {bundle.description||'Keine Beschreibung'}</p></div><StatusBadge status={bundle.status}/></header>
-          <dl><dt>Schlüssel</dt><dd>{bundle.item_count}</dd><dt>Ausgegeben</dt><dd>{bundle.issued_count}</dd><dt>Halter</dt><dd>{bundle.holder_name||'–'}</dd></dl>
-          {partial&&<p role="status" className="key-partial-warning">Teilweise ausgegeben – {bundle.item_count-bundle.issued_count} Schlüssel verfügbar.</p>}
-          {bundle.item_count===0&&<p role="status" className="key-partial-warning">Leerer Bund – bitte Schlüssel zuordnen.</p>}
+          <dl><dt>Schlüssel</dt><dd>{formatNumber(bundle.item_count)}</dd><dt>Ausgegeben</dt><dd>{formatNumber(bundle.issued_count)}</dd><dt>Halter</dt><dd>{bundle.holder_name||'–'}</dd></dl>
+          {partial&&<p role="status" className="key-partial-warning">Teilweise ausgegeben – {formatNumber(bundle.item_count-bundle.issued_count)} Schlüssel verfügbar.</p>}
+          {bundle.item_count===0&&<p role="status" className="key-partial-warning">Leerer Schlüsselbund – bitte ordnen Sie Schlüssel zu.</p>}
           <div className="key-bundle-actions">
             <button type="button" onClick={()=>void loadBundleItems(bundle)}>Schlüssel anzeigen</button>
             {canBundleHistory&&<button type="button" onClick={()=>void loadBundleHistory(bundle)}>Historie</button>}
-            {canBundleIssue&&bundle.status==='available'&&<button type="button" onClick={()=>setDialog({kind:'bundle-issue',bundle})}>Bund ausgeben</button>}
+            {canBundleIssue&&bundle.status==='available'&&<button type="button" onClick={()=>setDialog({kind:'bundle-issue',bundle})}>Schlüsselbund ausgeben</button>}
             {canBundleReturn&&bundle.issued_count>0&&<button type="button" onClick={()=>void openBundleReturn(bundle,true)}>Teilweise Rückgabe</button>}
             {canBundleReturn&&bundle.issued_count>0&&<button type="button" onClick={()=>void openBundleReturn(bundle,false)}>Vollständige Rückgabe</button>}
             {canBundleDeactivate&&bundle.status!=='deactivated'&&<button type="button" onClick={()=>setDialog({kind:'bundle-deactivate',bundle})}>Deaktivieren</button>}
           </div>
-          {bundleHistory[bundle.id]&&<div className="key-history"><h4>Historie</h4>{bundleHistory[bundle.id].length?bundleHistory[bundle.id].map(entry=><p key={entry.id}>{displayDate(entry.created_at)} · {entry.movement_type||entry.label||'Ereignis'} {entry.description?`· ${entry.description}`:''}</p>):<p className="employee-empty">Keine Ereignisse erfasst.</p>}</div>}
+          {bundleHistory[bundle.id]&&<div className="key-history"><h4>Historie</h4>{bundleHistory[bundle.id].length?bundleHistory[bundle.id].map(entry=><p key={entry.id}>{displayDate(entry.created_at)} · {entry.movement_type?statusLabel(entry.movement_type,'movement'):entry.label||'Ereignis'}{entry.description?` · ${entry.description}`:''}</p>):<p className="employee-empty">Keine Ereignisse erfasst.</p>}</div>}
           {bundleItems[bundle.id]&&<div className="bundle-member-list">
-            {items.length?items.map(item=><div key={item.id}><Link to={`/keys/${item.id}`}>{item.key_code} · {item.label}</Link><StatusBadge status={item.status}/>{canBundleWrite&&<button type="button" onClick={()=>void removeBundleKey(bundle,item.id)}>Entfernen</button>}</div>):<p className="employee-empty">Keine Schlüssel im Bund.</p>}
+            {items.length?items.map(item=><div key={item.id}><Link to={`/keys/${item.id}`}>{item.key_code} · {item.label}</Link><StatusBadge status={item.status}/>{canBundleWrite&&<button type="button" onClick={()=>void removeBundleKey(bundle,item.id)}>Entfernen</button>}</div>):<p className="employee-empty">Keine Schlüssel im Schlüsselbund.</p>}
             {canBundleWrite&&<div className="key-bundle-add">
-              <KeySearchSelect label="Schlüssel für Bund" searchLabel="Schlüssel im Bund suchen" siteId={bundle.site_id??''} excludeBundleId={bundle.id} status="available"
+              <KeySearchSelect label="Schlüssel für den Schlüsselbund" searchLabel="Schlüssel im Schlüsselbund suchen" siteId={bundle.site_id??''} excludeBundleId={bundle.id} status="available"
                 value={bundleKeySelection[bundle.id]||''} onChange={value=>setBundleKeySelection(current=>({...current,[bundle.id]:value}))}/>
               <button type="button" disabled={!bundleKeySelection[bundle.id]} onClick={()=>void addBundleKey(bundle)}>Hinzufügen</button>
             </div>}
@@ -320,10 +324,10 @@ export function Keys(){
       <div className="employee-filterbar key-filterbar">
         <input className="employee-search" aria-label="Schlüssel suchen" placeholder="Schlüssel, Kennziffer, Objekt oder Halter suchen" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}}/>
         <select aria-label="Schlüsselstatus" value={status} onChange={event=>{setStatus(event.target.value);setPage(1);}}>
-          <option value="all">Alle Status</option>{Object.entries({available:'Verfügbar',issued:'Ausgegeben',overdue:'Überfällig',lost:'Verloren',blocked:'Gesperrt',deactivated:'Deaktiviert'}).map(([value,label])=><option key={value} value={value}>{label}</option>)}
+          <option value="all">Status: Alle</option>{Object.entries(statusLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}
         </select>
         <select aria-label="Schlüsseltyp" value={keyType} onChange={event=>{setKeyType(event.target.value);setPage(1);}}>
-          <option value="all">Alle Typen</option>{Object.entries(keyTypeLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}
+          <option value="all">Alle Schlüsseltypen</option>{Object.entries(keyTypeLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}
         </select>
         <select aria-label="Objekt" value={siteFilter} onChange={event=>{setSiteFilter(event.target.value);setPage(1);}}>
           <option value="all">Alle Objekte</option>{sites.map(site=><option key={site.id} value={site.id}>{site.site_number?`${site.site_number} · ${site.name}`:site.name}</option>)}
@@ -331,10 +335,10 @@ export function Keys(){
         <select aria-label="Halter" value={holderFilter} onChange={event=>{setHolderFilter(event.target.value);setPage(1);}}>
           <option value="all">Alle Halter</option>
           {(()=>{const self=selfFilterOption();return self?<option value={self.value}>{self.label}</option>:null;})()}
-          {employees.map(employee=><option key={employee.id} value={employee.id}>{[employee.first_name,employee.last_name].filter(Boolean).join(' ')||employee.name||employee.email||employee.id}{employee.employee_number?` (${employee.employee_number})`:''}</option>)}
+          {employees.map(employee=><option key={employee.id} value={employee.id}>{employeeLabel(employee)}</option>)}
         </select>
         <select aria-label="Schlüsselbund" value={bundleFilter} onChange={event=>{setBundleFilter(event.target.value);setPage(1);}}>
-          <option value="all">Alle Bunde</option>{bundles.map(bundle=><option key={bundle.id} value={bundle.id}>{bundle.name}</option>)}
+          <option value="all">Alle Schlüsselbünde</option>{bundles.map(bundle=><option key={bundle.id} value={bundle.id}>{bundle.name}</option>)}
         </select>
         <input aria-label="Ort" placeholder="Ort / Gebäude" value={location} onChange={event=>{setLocation(event.target.value);setPage(1);}}/>
         <button type="button" onClick={resetFilters}>Filter zurücksetzen</button>
@@ -345,26 +349,26 @@ export function Keys(){
           <th><button type="button" onClick={()=>toggleSort('key_code')}>Kennziffer</button></th>
           <th><button type="button" onClick={()=>toggleSort('label')}>Bezeichnung</button></th>
           <th><button type="button" onClick={()=>toggleSort('status')}>Status</button></th>
-          <th><button type="button" onClick={()=>toggleSort('key_type')}>Typ</button></th>
+          <th><button type="button" onClick={()=>toggleSort('key_type')}>Schlüsseltyp</button></th>
           <th><button type="button" onClick={()=>toggleSort('site_name')}>Objekt</button></th>
           <th><button type="button" onClick={()=>toggleSort('holder_name')}>Halter</button></th>
           <th><button type="button" onClick={()=>toggleSort('due_at')}>Fällig</button></th>
           <th><button type="button" onClick={()=>toggleSort('last_movement_at')}>Letzte Bewegung</button></th>
-          <th>Aktion</th>
+          <th>Aktionen</th>
         </tr></thead><tbody>
           {keys.map(key=><tr key={key.id} className={selected.includes(key.id)?'selected-row':''}>
             <td><input type="checkbox" aria-label={`${key.label} auswählen`} checked={selected.includes(key.id)} onChange={()=>toggleSelected(key.id)}/></td>
             <td><Link to={`/keys/${key.id}`}><strong>{key.key_code}</strong></Link></td>
             <td><button type="button" className="employee-name-link" onClick={()=>navigate(`/keys/${key.id}`)}><strong>{key.label}</strong><small>{key.location||key.building||'Kein Standort erfasst'}</small></button></td>
             <td><StatusBadge status={key.status}/></td>
-            <td>{keyTypeLabels[key.key_type]||key.key_type}</td>
+            <td>{statusLabel(key.key_type,'keyType')}</td>
             <td>{key.site_name||'Ohne Objekt'}</td>
             <td>{key.holder_name||'Kein Halter'}{key.bundle_name&&<small className="key-bundle-tag"> · {key.bundle_name}</small>}</td>
             <td>{displayDate(key.due_at)}</td>
-            <td>{key.last_movement_type?`${movementText(key.last_movement_type)} · ${displayDate(key.last_movement_at)}`:'–'}</td>
+            <td>{key.last_movement_type?`${statusLabel(key.last_movement_type,'movement')} · ${displayDate(key.last_movement_at)}`:'–'}</td>
             <td><div className="key-row-actions">
               <Link to={`/keys/${key.id}`}>Öffnen</Link>
-              {key.bundle_id?<span className="key-bundled-hint">Nur über Bund verwaltbar</span>:<>
+              {key.bundle_id?<span className="key-bundled-hint">Nur über den Schlüsselbund verwaltbar</span>:<>
                 {canIssue&&key.status==='available'&&<button type="button" onClick={()=>setDialog({kind:'issue',item:key})}>Ausgabe vorbereiten</button>}
                 {canReturn&&key.status==='issued'&&<button type="button" onClick={()=>setDialog({kind:'return',item:key})}>Rückgabe erfassen</button>}
                 {canManage&&(key.status==='issued'||key.status==='overdue')&&<button type="button" onClick={()=>setDialog({kind:'loss',item:key})}>Verlust melden</button>}
@@ -378,7 +382,7 @@ export function Keys(){
         </tbody></table>
         {loading&&<p className="employee-empty">Schlüssel werden geladen …</p>}
         {!loading&&keys.length===0&&<p className="employee-empty">Keine Schlüssel entsprechen den aktiven Filtern.</p>}
-        {total>0&&<div className="employee-pagination"><span>{total} Schlüssel · Seite {page} von {pageCount}</span><button type="button" disabled={page===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={page>=pageCount} onClick={()=>setPage(value=>value+1)}>Weiter</button></div>}
+        {total>0&&<div className="employee-pagination"><span>{formatNumber(total)} Schlüssel · Seite {formatNumber(page)} von {formatNumber(pageCount)}</span><button type="button" disabled={page===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={page>=pageCount} onClick={()=>setPage(value=>value+1)}>Weiter</button></div>}
       </div>
     </div>
     {!canUpdate&&<p className="key-permission-note" role="status">Stammdaten und Statusänderungen sind nur mit entsprechenden Schlüsselberechtigungen verfügbar.</p>}
@@ -395,9 +399,4 @@ function selfFilterOption(){
 
 function siteLabelForBundle(bundle:BundleRow){
   return bundle.site_name||'Kein Objekt';
-}
-
-function movementText(type:string){
-  const labels:Record<string,string>={issued:'Ausgabe',returned:'Rückgabe',lost:'Verlust',blocked:'Sperre',reactivated:'Reaktivierung',created:'Anlage',inventory_check:'Bestandskontrolle'};
-  return labels[type]||type;
 }

@@ -25,7 +25,7 @@ phase8Router.delete('/push-subscriptions',requirePermission('push_subscriptions:
   try{
     const endpoint=z.string().url().parse(req.body?.endpoint);
     const result=await query('DELETE FROM push_subscriptions WHERE tenant_id=$1 AND user_id=$2 AND endpoint=$3 RETURNING id',[req.user!.tenantId,req.user!.id,endpoint]);
-    if(!result.rowCount)return res.status(404).json({error:'Subscription not found'});
+    if(!result.rowCount)return res.status(404).json({error:'Abonnement nicht gefunden'});
     await recordAudit(req.user!.tenantId,req.user!.id,'push_subscription.deleted','push_subscription',result.rows[0].id,{});
     res.status(204).end();
   }catch(error){next(error);}

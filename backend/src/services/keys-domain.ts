@@ -16,7 +16,7 @@ const transitions:Record<KeyMovement,{from:KeyStatus[];to:KeyStatus|'preserve'}>
 export function transitionKeyStatus(status:KeyStatus,movement:KeyMovement):KeyStatus{
   const transition=transitions[movement];
   if(!transition.from.includes(status)){
-    throw Object.assign(new Error(`Invalid key status transition: ${status} -> ${movement}`),{status:409,code:'KEY_INVALID_STATUS_TRANSITION'});
+    throw Object.assign(new Error(`Ungültiger Schlüsselstatuswechsel: ${status} -> ${movement}`),{status:409,code:'KEY_INVALID_STATUS_TRANSITION'});
   }
   return transition.to==='preserve'?status:(transition.to as KeyStatus);
 }
@@ -47,15 +47,15 @@ export function validateBundleReturn(
   actor:{actorUserId:string;operator:boolean},
 ){
   if(new Set(requestedKeyIds).size!==requestedKeyIds.length){
-    throw Object.assign(new Error('Each bundle key may only be returned once'),{status:400,code:'KEY_BUNDLE_DUPLICATE_KEY'});
+    throw Object.assign(new Error('Jeder Bundschlüssel darf nur einmal zurückgegeben werden'),{status:400,code:'KEY_BUNDLE_DUPLICATE_KEY'});
   }
   const byId=new Map(keys.map(key=>[key.id,key]));
   const selected=requestedKeyIds.map(keyId=>{
     const key=byId.get(keyId);
-    if(!key)throw Object.assign(new Error('Every requested key must belong to the bundle'),{status:404,code:'KEY_BUNDLE_MEMBER_NOT_FOUND'});
-    if(key.status!=='issued')throw Object.assign(new Error(`Key ${key.id} is not issued`),{status:409,code:'KEY_BUNDLE_INVALID_KEY_STATUS'});
+    if(!key)throw Object.assign(new Error('Jeder angeforderte Schlüssel muss zum Schlüsselbund gehören'),{status:404,code:'KEY_BUNDLE_MEMBER_NOT_FOUND'});
+    if(key.status!=='issued')throw Object.assign(new Error(`Schlüssel ${key.id} ist nicht ausgegeben`),{status:409,code:'KEY_BUNDLE_INVALID_KEY_STATUS'});
     if(!canReturnKey({actorUserId:actor.actorUserId,holderUserId:key.holder_user_id,operator:actor.operator})){
-      throw Object.assign(new Error(`Actor may not return key ${key.id}`),{status:403,code:'KEY_BUNDLE_RETURN_FORBIDDEN'});
+      throw Object.assign(new Error(`Akteur darf Schlüssel ${key.id} nicht zurückgeben`),{status:403,code:'KEY_BUNDLE_RETURN_FORBIDDEN'});
     }
     return key;
   });

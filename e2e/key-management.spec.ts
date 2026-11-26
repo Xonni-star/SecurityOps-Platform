@@ -78,7 +78,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   await expect(page.getByText('Ohne Objekt')).toBeVisible();
   const board=page.getByRole('region',{name:'Handlungsübersicht'});
   await expect(board).toBeVisible();
-  for(const bucket of ['A ·','B ·','C ·'])await expect(board.getByRole('heading',{name:new RegExp(bucket)})).toBeVisible();
+  for(const bucket of ['Sofort handeln','Zeitnah klären','Beobachten'])await expect(board.getByRole('heading',{name:new RegExp(bucket)})).toBeVisible();
   const actionLinks=board.getByRole('link');
   expect(await actionLinks.count()).toBeGreaterThan(0);
   for(const link of await actionLinks.all())expect(new URL(await link.getAttribute('href')??'',page.url()).pathname).toMatch(/^\/keys\//);
@@ -102,7 +102,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
 
   await row.getByRole('checkbox').check();
   const download=page.waitForEvent('download');
-  await page.getByRole('button',{name:/Export \(1\)/}).click();
+  await page.getByRole('button',{name:/CSV exportieren \(1\)/}).click();
   const exported=await download;
   expect(exported.suggestedFilename()).toContain('schluessel.csv');
 
@@ -141,7 +141,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   await expect(page.getByRole('link',{name:'Objektseite öffnen'})).toHaveAttribute('href',`/sites/${siteId}/schluessel?key=${key.id}`);
 
   const qr=page.waitForResponse(response=>response.url().includes(`/api/v1/keys/${key.id}/qr`)&&response.request().method()==='GET');
-  await page.getByRole('button',{name:'QR/Etikett'}).click();
+  await page.getByRole('button',{name:'QR-Code & Etikett'}).click();
   const qrResponse=await qr;
   expect(qrResponse.status()).toBe(200);
   const {token}=await qrResponse.json();
@@ -149,16 +149,16 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   await expect(page.getByText(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')))).toHaveCount(0);
 
   await page.goto(`/keys/${key.id}/qr?ref=${encodeURIComponent(token)}`);
-  await expect(page.locator('.key-qr-check-valid')).toContainText('QR-Verweis gültig');
+  await expect(page.locator('.key-qr-check-valid')).toContainText('QR-Code gültig');
   const [payloadPart,signaturePart]=token.split('.');
   const tampered=`${payloadPart}.${signaturePart[0]==='A'?'B':'A'}${signaturePart.slice(1)}`;
   await page.goto(`/keys/${key.id}/qr?ref=${encodeURIComponent(tampered)}`);
-  await expect(page.locator('.key-qr-check-invalid')).toContainText('QR-Verweis ungültig');
+  await expect(page.locator('.key-qr-check-invalid')).toContainText('QR-Code ist ungültig');
 
   await page.goto('/keys');
   const fullExport=page.waitForRequest(request=>new URL(request.url()).searchParams.get('full')==='true');
   await page.getByLabel('Vollständig exportieren').check();
-  await page.getByRole('button',{name:'Export'}).click();
+  await page.getByRole('button',{name:'CSV exportieren'}).click();
   expect((await fullExport).url()).toContain('/api/v1/keys/export');
   await page.getByLabel('Vollständig exportieren').uncheck();
 
@@ -186,34 +186,34 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   await dialog.getByRole('button',{name:'Bestandskontrolle speichern'}).click();
   expect((await inventory).status()).toBe(201);
 
-  await expect(page.getByRole('heading',{name:'Schlüsselbunde'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Schlüsselbünde'})).toBeVisible();
   if(user.permissions.includes('keys:bundle_write')){
     const bundle=page.waitForResponse(response=>response.url().includes('/api/v1/key-bundles')&&response.request().method()==='POST');
-    await page.getByRole('button',{name:'+ Bund anlegen'}).click();
-    dialog=page.getByRole('dialog',{name:'Schlüsselbund anlagen'});
+    await page.getByRole('button',{name:'Schlüsselbund anlegen'}).click();
+    dialog=page.getByRole('dialog',{name:'Schlüsselbund anlegen'});
     await dialog.getByLabel('Name').fill(`E2E Bund ${suffix}`);
     await dialog.getByLabel('Objekt').selectOption(siteId);
-    await dialog.getByRole('button',{name:'Bund anlegen'}).click();
+    await dialog.getByRole('button',{name:'Schlüsselbund anlegen'}).click();
     expect((await bundle).status()).toBe(201);
     const {id:bundleId}=await bundle.json() as {id:string};
     const card=page.locator(`#bundle-${bundleId}`);
     await expect(card).toBeVisible();
     await card.getByRole('button',{name:'Schlüssel anzeigen'}).click();
     for(const member of [key,bundleKey]){
-      await expect(card.getByLabel('Schlüssel für Bund').locator(`option[value="${member.id}"]`)).toBeAttached();
-      await card.getByLabel('Schlüssel für Bund').selectOption(member.id);
+      await expect(card.getByLabel('Schlüssel für den Schlüsselbund').locator(`option[value="${member.id}"]`)).toBeAttached();
+      await card.getByLabel('Schlüssel für den Schlüsselbund').selectOption(member.id);
       const add=page.waitForResponse(response=>response.url().includes(`/key-bundles/${bundleId}/items`)&&response.request().method()==='POST');
       await card.getByRole('button',{name:'Hinzufügen'}).click();
       expect((await add).status()).toBe(201);
     }
 
     const bundleIssue=page.waitForResponse(response=>response.url().includes(`/key-bundles/${bundleId}/issue`)&&response.request().method()==='POST');
-    await card.getByRole('button',{name:'Bund ausgeben'}).click();
-    dialog=page.getByRole('dialog',{name:/^Bund ausgeben/});
+    await card.getByRole('button',{name:'Schlüsselbund ausgeben'}).click();
+    dialog=page.getByRole('dialog',{name:/^Schlüsselbund ausgeben/});
     await dialog.getByLabel('Schlüsselhalter').selectOption(employeeId);
     await dialog.getByLabel('Fällig am').fill(dateTimeIn(7));
     await dialog.getByLabel('Grund').fill('E2E Bundesausgabe');
-    await dialog.getByRole('button',{name:'Bund ausgeben'}).click();
+    await dialog.getByRole('button',{name:'Schlüsselbund ausgeben'}).click();
     expect((await bundleIssue).status()).toBe(201);
 
     const partialReturn=page.waitForResponse(response=>response.url().includes(`/key-bundles/${bundleId}/return`)&&response.request().method()==='POST');
@@ -227,7 +227,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
     page.once('dialog',confirmation=>void confirmation.accept());
     const fullReturn=page.waitForResponse(response=>response.url().includes(`/key-bundles/${bundleId}/return`)&&response.request().method()==='POST');
     await card.getByRole('button',{name:'Vollständige Rückgabe'}).click();
-    dialog=page.getByRole('dialog',{name:'Bund vollständig zurückgeben'});
+    dialog=page.getByRole('dialog',{name:'Schlüsselbund vollständig zurückgeben'});
     await dialog.getByLabel('Grund').fill('E2E vollständige Rückgabe');
     await dialog.getByRole('button',{name:'Alle Schlüssel zurückgeben'}).click();
     expect((await fullReturn).status()).toBe(200);
@@ -235,7 +235,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
     page.once('dialog',confirmation=>void confirmation.accept());
     const deactivate=page.waitForResponse(response=>response.url().includes(`/key-bundles/${bundleId}/deactivate`)&&response.request().method()==='POST');
     await card.getByRole('button',{name:'Deaktivieren'}).click();
-    dialog=page.getByRole('dialog',{name:/^Bund deaktivieren/});
+    dialog=page.getByRole('dialog',{name:/^Schlüsselbund deaktivieren/});
     await dialog.getByLabel('Grund').fill('E2E Deaktivierung');
     await dialog.getByRole('button',{name:'Deaktivierung bestätigen'}).click();
     expect((await deactivate).status()).toBe(200);
@@ -243,9 +243,9 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
     const bundleHistory=page.waitForResponse(response=>response.url().includes(`/key-bundles/${bundleId}/history`)&&response.request().method()==='GET');
     await card.getByRole('button',{name:'Historie'}).click();
     expect((await bundleHistory).status()).toBe(200);
-    await expect(card.getByText(/item_added|issued|partial_return|returned|deactivated/).first()).toBeVisible();
+    await expect(card.getByText(/Schlüssel hinzugefügt|Ausgegeben|Teilweise zurückgegeben|Zurückgegeben|Deaktiviert/).first()).toBeVisible();
   }else{
-    await expect(page.getByRole('button',{name:'+ Bund anlegen'})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Schlüsselbund anlegen'})).toHaveCount(0);
   }
 
   const viewer=await browser.newPage();
@@ -255,7 +255,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
     expect((await viewerIdentity.json()).user.permissions).toContain('keys:read');
     await viewer.goto('/keys');
     await expect(viewer.getByRole('heading',{name:'Schlüsselverwaltung'})).toBeVisible();
-    await expect(viewer.getByRole('button',{name:'+ Schlüssel anlegen'})).toHaveCount(0);
+    await expect(viewer.getByRole('button',{name:'Schlüssel anlegen'})).toHaveCount(0);
     await expect(viewer.getByRole('button',{name:'Bestandskontrolle'})).toHaveCount(0);
     await viewer.goto(`/keys/${key.id}/stammdaten`);
     await expect(viewer.getByRole('heading',{name:'E2E Haupteingang'})).toBeVisible();
@@ -276,7 +276,7 @@ test('key cockpit stays usable at desktop, laptop, tablet and phone widths',asyn
     await page.goto('/keys');
     await expect(page.getByRole('heading',{name:'Schlüsselverwaltung'})).toBeVisible();
     await expect(page.getByRole('region',{name:'Handlungsübersicht'})).toBeVisible();
-    await expect(page.getByRole('button',{name:'Export'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'CSV exportieren'})).toBeVisible();
     const layout=await page.evaluate(()=>({viewport:innerWidth,document:document.documentElement.scrollWidth}));
     expect(layout.document,`horizontal overflow at ${width}x${height}`).toBeLessThanOrEqual(layout.viewport+1);
     await page.getByRole('button',{name:'Bestandskontrolle'}).click();

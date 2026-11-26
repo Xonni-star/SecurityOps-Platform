@@ -37,6 +37,38 @@ describe('phase 5 reporting',()=>{
     const response=await request(app).get('/api/v1/reports/employees?format=csv').set('Cookie',csrf.Cookie);
     expect(response.status).toBe(200);expect(response.text).toContain('employee-1');
   });
+
+  it('rejects malformed report filter UUIDs with 400',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      return result([]);
+    });
+    const response=await request(app).get('/api/v1/reports/patrols?site_id=not-a-uuid').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(400);expect(response.body.error).toBe('Ungültiger Berichtsfilter');
+  });
+
+  it('emits a PDF with a resolvable cross-reference table',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('FROM alarms'))return result([{id:'alarm-1',status:'open',description:'Test (alarm)'}]);
+      return result([]);
+    });
+    const response=await request(app)
+      .get('/api/v1/reports/alarms?format=pdf')
+      .set('Cookie',csrf.Cookie)
+      .buffer(true)
+      .parse((res,callback)=>{
+        const chunks:Buffer[]=[];
+        res.on('data',chunk=>chunks.push(Buffer.from(chunk)));
+        res.on('end',()=>callback(null,Buffer.concat(chunks).toString('utf8')));
+      });
+    expect(response.status).toBe(200);
+    const pdf=String(response.body);
+    const xrefOffset=Number(pdf.match(/startxref\s+(\d+)/)?.[1]);
+    expect(xrefOffset).toBeGreaterThan(0);
+    expect(pdf.slice(xrefOffset,xrefOffset+4)).toBe('xref');
+    expect(pdf).toContain('0000000009 00000 n');
+  });
 });
 
 describe('phase 5 TimeScan and privacy',()=>{
