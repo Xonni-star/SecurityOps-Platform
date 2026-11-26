@@ -2,6 +2,12 @@ import 'dotenv/config';
 import { z } from 'zod';
 const optionalString=z.preprocess(value=>value===''?undefined:value,z.string().min(1).optional());
 const optionalUrl=z.preprocess(value=>value===''?undefined:value,z.string().url().optional());
+const supportedReminderDays=[0,1,3,7];
+const reminderDays=z.string().default('7,3,1,0').transform(value=>[...new Set(value.split(',')
+  .map(part=>Number(part.trim())).filter(Number.isInteger))])
+  .refine(values=>values.length>0&&values.every(value=>supportedReminderDays.includes(value)),{
+    message:'KEY_REMINDER_DAYS must contain at least one of 0,1,3,7',
+  });
 const schema=z.object({
   NODE_ENV:z.string().default('development'),
   PORT:z.coerce.number().default(3000),
@@ -29,6 +35,9 @@ const schema=z.object({
   BACKUP_DIRECTORY:z.string().default('./backups'),
   BACKUP_SECRET_KEY:optionalString,
   WATCHBOOK_HASH_SECRET:optionalString,
+  KEY_QR_SECRET:optionalString,
+  KEY_REMINDER_DAYS:reminderDays,
+  KEY_REMINDER_INTERVAL_MS:z.coerce.number().int().min(60000).max(604800000).default(3600000),
   DMS_STORAGE_PROVIDER:z.enum(['minio']).default('minio'),
   DMS_MAX_BYTES:z.coerce.number().int().positive().max(1073741824).default(52428800),
   DMS_ALLOWED_CONTENT_TYPES:z.string().default('application/pdf,image/jpeg,image/png,text/plain'),

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 - Enterprise key management cockpit
+
+- Extended the existing `/keys` module into a server-side cockpit with six real KPIs, expandable secondary metrics and A/B/C actions that deep-link to the concrete key file.
+- Added a bounded, tenant-scoped key list with combinable filters, sorting, pagination headers, selection, permission-gated CSV export and status badges.
+- Added digital key files with permission-filtered sections, object/site linkage, holders and complete immutable movement history.
+- Added guided issue/return flows with employee and site pickers, receipt documents, atomic availability re-checks, return conditions and consistent status resets.
+- Added configurable, idempotent return reminders through the existing notification infrastructure and a loss workflow with risk, immediate measures, status and optional incident linkage.
+- Added key bundles with membership, issue, partial/full return, deactivation, history, object linkage, safe QR references and inventory checks.
+- Added migration 054 with columns, tables, indexes, RLS policies, `keys:*` role grants and widened CHECK constraints; existing keys, bundles and history rows are unchanged.
+- Extended backend, frontend, PostgreSQL integration and real-browser E2E coverage, including a restricted viewer account.
+
 ## 1.2.0 - Enterprise customer cockpit
 
 - Added a server-side customer list with combinable search/filter/sort/pagination, bounded page sizes and total-count headers.

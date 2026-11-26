@@ -244,3 +244,27 @@ Existing customers, contacts, contracts, tasks, documents and history rows are
 not rewritten. The cockpit reads those existing tables directly; reminders are
 derived from live contract terms and deduplicated by `contractId:code`, so no
 duplicate reminder table or parallel record store is introduced.
+
+## Enterprise key management cockpit
+
+Migration 054 is additive. It extends `keys` with serial/manufacturer/location,
+responsible employee and due-date columns, widens the key-type, status and
+movement check constraints, and replaces only the obsolete holder/status
+equivalence constraint with `keys_single_holder_check`. Existing key and bundle
+rows keep their IDs and histories. New tenant-scoped, RLS-protected tables store
+issue/return receipts (`key_receipts`), loss reports with optional incident and
+DMS linkage (`key_loss_reports`), HMAC-only QR references (`key_qr_tokens`),
+inventory checks and items, and deduplicated reminder state
+(`key_reminder_state`). Composite foreign keys include `tenant_id`; the
+append-only movement triggers from earlier migrations remain in force.
+
+Indexes cover tenant + due date/status, label, holder, responsible employee,
+receipts, loss reports, QR expiry, inventory and reminder lookups. The migration
+adds `keys:create`, `keys:update`, `keys:export`, `keys:view_history`,
+`keys:qr:read`, `keys:report_loss`, `keys:inventory:read`,
+`keys:inventory:write`, `keys:reminder:write`, `keys:bundle_history_read` and
+`keys:bundle_deactivate` with admin/operator/superadmin grants and read-only
+viewer grants. Existing `keys:*` codes are unchanged. `key_reminder_state.days`
+permits `-1` (overdue) plus the configurable `0`, `1`, `3` and `7` day offsets;
+`KEY_REMINDER_DAYS` accepts only that supported subset, so configuration can never
+write a value rejected by the constraint.

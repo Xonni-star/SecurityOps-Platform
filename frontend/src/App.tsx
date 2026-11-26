@@ -18,6 +18,7 @@ import {Watchbook} from './pages/Watchbook';
 import {Scheduling} from './pages/Scheduling';
 import {Dms} from './pages/Dms';
 import {Keys} from './pages/Keys';
+import {KeyDetail} from './pages/KeyDetail';
 import {Handovers} from './pages/Handovers';
 import {Qualifications} from './pages/Qualifications';
 import {AlarmForwarding} from './pages/AlarmForwarding';
@@ -46,6 +47,8 @@ export default function App(){
         <Route path="/qualifications" element={<Qualifications/>}/>
         <Route path="/dms" element={<Dms/>}/>
         <Route path="/keys" element={<Keys/>}/>
+        <Route path="/keys/:keyId" element={<KeyDetail/>}/>
+        <Route path="/keys/:keyId/:section" element={<KeyDetail/>}/>
         <Route path="/handovers" element={<Handovers/>}/>
         <Route path="/reports" element={<Reports/>}/>
         <Route path="/customer-reports" element={<CustomerReports/>}/>

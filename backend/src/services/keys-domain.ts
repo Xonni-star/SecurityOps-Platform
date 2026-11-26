@@ -1,20 +1,30 @@
-export type KeyStatus='available'|'issued'|'lost'|'deactivated';
-export type KeyMovement='created'|'issued'|'returned'|'lost'|'deactivated';
+import crypto from 'node:crypto';
 
-const transitions:Record<KeyMovement,{from:KeyStatus[];to:KeyStatus}>={
+export type KeyStatus='available'|'issued'|'overdue'|'lost'|'blocked'|'deactivated';
+export type KeyMovement='created'|'issued'|'returned'|'lost'|'deactivated'|'blocked'|'reactivated';
+
+const transitions:Record<KeyMovement,{from:KeyStatus[];to:KeyStatus|'preserve'}>={
   created:{from:['available'],to:'available'},
   issued:{from:['available'],to:'issued'},
   returned:{from:['issued'],to:'available'},
-  lost:{from:['issued'],to:'lost'},
-  deactivated:{from:['available','issued','lost'],to:'deactivated'},
+  lost:{from:['issued','blocked'],to:'lost'},
+  blocked:{from:['available','issued','lost'],to:'blocked'},
+  reactivated:{from:['blocked'],to:'available'},
+  deactivated:{from:['available','issued','lost','blocked'],to:'deactivated'},
 };
 
-export function transitionKeyStatus(status:KeyStatus,movement:KeyMovement){
+export function transitionKeyStatus(status:KeyStatus,movement:KeyMovement):KeyStatus{
   const transition=transitions[movement];
   if(!transition.from.includes(status)){
     throw Object.assign(new Error(`Invalid key status transition: ${status} -> ${movement}`),{status:409,code:'KEY_INVALID_STATUS_TRANSITION'});
   }
-  return transition.to;
+  return transition.to==='preserve'?status:(transition.to as KeyStatus);
+}
+
+export function derivedKeyStatus(status:KeyStatus,dueAt:string|Date|null|undefined,now=new Date()):KeyStatus{
+  if(status!=='issued'||!dueAt)return status;
+  const due=new Date(dueAt).getTime();
+  return Number.isFinite(due)&&due<now.getTime()?'overdue':'issued';
 }
 
 export function holderIsValid(holderUserId:string|null|undefined,holderEmployeeId:string|null|undefined){
@@ -52,7 +62,15 @@ export function validateBundleReturn(
   return selected.sort((left,right)=>left.id.localeCompare(right.id));
 }
 
-export function bundleStatus(issuedCount:number,totalCount:number):'available'|'issued'|'partial'{
+export function bundleStatus(issuedCount:number,totalCount:number):'available'|'issued'|'partial'|'deactivated'{
   if(issuedCount===0)return 'available';
   return issuedCount===totalCount?'issued':'partial';
 }
+
+/** QR references carry only opaque identifiers and an expiry; never a key code, serial or site secret. */
+export function buildKeyQrToken(secret:string,tenantId:string,keyId:string,expiresAt:Date|string){
+  const payload=Buffer.from(JSON.stringify({tid:tenantId,kid:keyId,exp:new Date(expiresAt).toISOString()})).toString('base64url');
+  const signature=crypto.createHmac('sha256',secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+export function hashKeyQrToken(token:string){return crypto.createHash('sha256').update(token).digest('hex');}

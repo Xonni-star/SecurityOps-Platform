@@ -19,7 +19,7 @@ const descriptions:Record<string,string>={
   '/customers':'Kundenstammdaten und Ansprechpartner zentral pflegen.',
   '/sites':'Objekte, Adressen und sicherheitsrelevante Standortdaten verwalten.',
   '/devices':'Betriebsgeräte und deren Status tenant- und standortbezogen verwalten.',
-  '/keys':'Schlüssel ausgeben, zurücknehmen, als verloren melden oder deaktivieren.',
+  '/keys':'Schlüssel, Bunde, Ausgaben, Verlustmeldungen und Bestandskontrollen verwalten.',
   '/nfc-devices':'NFC-Geräte registrieren, zuordnen und bei Bedarf sperren.',
   '/dms':'Sicherheitsrelevante Dokumente versioniert und revisionssicher verwalten.',
   '/reports':'Kennzahlen, Arbeitszeiten und exportierbare Berichte für Auswertung und Nachweis.',
@@ -53,9 +53,10 @@ export function Layout(){
   const employeeRoute=location.pathname==='/employees'||location.pathname.startsWith('/employees/');
   const customerRoute=location.pathname==='/customers'||location.pathname.startsWith('/customers/');
   const siteRoute=location.pathname==='/sites'||location.pathname.startsWith('/sites/');
-  const title=employeeRoute?'Mitarbeiter':customerRoute?'Kunden':siteRoute?'Objekte':visible.flatMap(group=>group.items).find(([path])=>path===location.pathname)?.[1]??'SecurityOps';
-  const description=employeeRoute?descriptions['/employees']:customerRoute?descriptions['/customers']:siteRoute?descriptions['/sites']:descriptions[location.pathname];
-  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':customerRoute?'SECURITYOPS / VERWALTUNG / KUNDEN':siteRoute?'SECURITYOPS / VERWALTUNG / OBJEKTE':'SECURITYOPS / ARBEITSBEREICH';
+  const keyRoute=location.pathname==='/keys'||location.pathname.startsWith('/keys/');
+  const title=employeeRoute?'Mitarbeiter':customerRoute?'Kunden':siteRoute?'Objekte':keyRoute?'Schlüssel':visible.flatMap(group=>group.items).find(([path])=>path===location.pathname)?.[1]??'SecurityOps';
+  const description=employeeRoute?descriptions['/employees']:customerRoute?descriptions['/customers']:siteRoute?descriptions['/sites']:keyRoute?descriptions['/keys']:descriptions[location.pathname];
+  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':customerRoute?'SECURITYOPS / VERWALTUNG / KUNDEN':siteRoute?'SECURITYOPS / VERWALTUNG / OBJEKTE':keyRoute?'SECURITYOPS / VERWALTUNG / SCHLÜSSEL':'SECURITYOPS / ARBEITSBEREICH';
 
   return <div className="app-shell">
     <aside className={open?'sidebar open':'sidebar'}>
@@ -86,7 +87,7 @@ export function Layout(){
         </div>
         <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzer'}</span></div>
       </header>
-      <main className={employeeRoute||customerRoute||siteRoute?'page-content employee-page':'page-content'}><Outlet/></main>
+      <main className={employeeRoute||customerRoute||siteRoute||keyRoute?'page-content employee-page':'page-content'}><Outlet/></main>
     </div>
   </div>;
 }

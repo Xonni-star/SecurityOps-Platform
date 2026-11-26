@@ -57,3 +57,66 @@ describe('object management OpenAPI coverage', () => {
     expect(paths['/dms/documents'].post.summary ?? '').toBeTruthy();
   });
 });
+
+describe('key management OpenAPI coverage', () => {
+  const endpoints: Array<[string, string, boolean]> = [
+    ['/keys', 'get', false],
+    ['/keys', 'post', true],
+    ['/keys/dashboard', 'get', false],
+    ['/keys/action-list', 'get', false],
+    ['/keys/export', 'get', false],
+    ['/keys/inventory-checks', 'get', false],
+    ['/keys/inventory-checks', 'post', true],
+    ['/keys/{id}', 'get', false],
+    ['/keys/{id}', 'patch', true],
+    ['/keys/{id}/issue', 'post', true],
+    ['/keys/{id}/return', 'post', true],
+    ['/keys/{id}/report-loss', 'post', true],
+    ['/keys/{id}/loss-reports/{reportId}', 'patch', true],
+    ['/keys/{id}/block', 'post', true],
+    ['/keys/{id}/reactivate', 'post', true],
+    ['/keys/{id}/history', 'get', false],
+    ['/keys/{id}/qr', 'get', false],
+    ['/keys/{id}/lost', 'post', true],
+    ['/keys/{id}/deactivate', 'post', true],
+    ['/key-bundles', 'get', false],
+    ['/key-bundles', 'post', true],
+    ['/key-bundles/{id}', 'get', false],
+    ['/key-bundles/{id}/history', 'get', false],
+    ['/key-bundles/{id}/items', 'post', true],
+    ['/key-bundles/{id}/items/{keyId}', 'delete', true],
+    ['/key-bundles/{id}/deactivate', 'post', true],
+    ['/key-bundles/{id}/issue', 'post', true],
+    ['/key-bundles/{id}/return', 'post', true],
+  ];
+
+  it.each(endpoints)('documents %s %s with session security', (path, method, requiresCsrf) => {
+    const operation = paths[path]?.[method];
+    expect(operation).toBeDefined();
+    const security = operation?.security ?? [];
+    expect(security.length).toBeGreaterThan(0);
+    expect(security[0]).toHaveProperty('sessionCookie');
+    if (requiresCsrf) expect(security[0]).toHaveProperty('csrfToken');
+  });
+
+  it('documents all server-side key list filters and pagination headers', () => {
+    const parameters = (paths['/keys'].get as unknown as {parameters:Array<{name:string}>}).parameters;
+    expect(parameters.map(parameter=>parameter.name)).toEqual(expect.arrayContaining([
+      'q','status','key_type','site_id','holder_user_id','holder_employee_id','bundle_id','location','sort','dir','page','pageSize',
+    ]));
+    expect(paths['/keys'].get.responses?.['200']?.description).toContain('X-Total-Count');
+  });
+
+  it('removes the stale keys/bundles paths and keeps the key-bundles paths', () => {
+    expect(paths['/keys/bundles']).toBeUndefined();
+    expect(paths['/keys/bundles/{id}/return']).toBeUndefined();
+    expect(paths['/key-bundles']).toBeDefined();
+  });
+
+  it('documents that QR tokens carry no secrets and history endpoints are paginated', () => {
+    expect(paths['/keys/{id}/qr'].get.summary).toMatch(/no secret/i);
+    expect((paths['/keys/{id}/history'].get as unknown as {parameters:Array<{name:string}>}).parameters.map(parameter=>parameter.name)).toEqual(
+      expect.arrayContaining(['page','pageSize']),
+    );
+  });
+});

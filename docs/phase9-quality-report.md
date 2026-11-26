@@ -37,23 +37,41 @@ aus den Vertragsbedingungen abgeleitet und über `contractId:code` dedupliziert.
 Aufgaben nutzen die eigenen Rechte `customer_tasks:read`/`customer_tasks:write`;
 Migration 053 ergänzt Indizes, Priorität und Rollen-Grants nicht-destruktiv.
 
+Die Schlüsselverwaltung bleibt im bestehenden Modul `/keys` und nutzt die
+vorhandenen Tabellen, RLS-Regeln und Bewegungshistorien. Das Cockpit zeigt sechs
+echte Kennzahlen, aufklappbare Zusatzwerte und A/B/C-Vorgänge mit Deep-Links zur
+konkreten Schlüsselakte; Liste, Filter, Sortierung und Pagination laufen
+serverseitig (`pageSize` 1–100). Die Akte `/keys/:keyId/:section` gibt nur die
+durch `visible_sections` erlaubten Bereiche frei. Ausgabe und Rücknahme erfolgen
+über Mitarbeiter-/Objektauswahl, prüfen die Verfügbarkeit erneut unter
+`SELECT … FOR UPDATE` und buchen Bewegung, Beleg (DMS), Audit und Benachrichtigung
+in einer Transaktion. Verlustmeldungen erfassen Risiko, Sofortmaßnahmen, Status
+und optional einen bestehenden oder neuen Vorfall; Bund-Vorgänge unterstützen
+Teil-/Vollrückgabe, Deaktivierung und unveränderliche Historie. QR-Referenzen
+enthalten nur einen HMAC-Hash, Rückgabeerinnerungen werden über
+`KEY_REMINDER_DAYS` konfiguriert und pro Mandant/Schlüssel/Fälligkeit/Tag
+dedupliziert. Migration 054 ergänzt Spalten, Tabellen, Indizes, RLS-Richtlinien
+und Rechte und erweitert die alten CHECK-Constraint-Werte um die neuen Status/
+Typen; bestehende Schlüssel- und Bund-Zeilen behalten IDs und Historie.
+
 ## Verifizierte Checks
 
 | Check | Ergebnis |
 |---|---|
 | TypeScript Backend + Frontend | bestanden |
 | ESLint (`npm run lint`) | bestanden |
-| Backend Jest/Supertest | ohne PG-Variable: 44 Suites / 258 Tests bestanden, 3 Suites / 8 Tests übersprungen; mit `POSTGRES_TEST_DATABASE_URL`: 47 Suites / 266 Tests bestanden |
-| Frontend Vitest/Testing Library | 7 Dateien / 57 Tests bestanden |
-| PostgreSQL-Integration (RLS, CRM, Watchbook) | 3 Suites / 8 Tests gegen eine frisch migrierte, disposable Testdatenbank bestanden |
-| Production build | bestanden; größtes JS-Chunk 276 kB, keine Vite-Chunk-Warnung |
+| Backend Jest/Supertest | ohne PG-Variable: 46 Suites / 320 Tests bestanden, 4 Suites / 12 Tests übersprungen; mit `POSTGRES_TEST_DATABASE_URL`: 50 Suites / 332 Tests bestanden |
+| Frontend Vitest/Testing Library | 9 Dateien / 78 Tests bestanden |
+| PostgreSQL-Integration (RLS, CRM, Watchbook, Schlüssel 054) | alle Suites gegen eine frisch migrierte, disposable Testdatenbank bestanden |
+| Production build | bestanden; größtes JS-Chunk 337,41 kB, keine Vite-Chunk-Warnung |
 | `npm audit --audit-level=high` | keine Findings |
 | `git diff --check` | sauber |
-| Echtes Browser-E2E (Playwright) | 10 Tests bestanden, inkl. vollständigem CRM-Workflow und eingeschränktem Viewer |
-| Visuelle Browserprüfung | Desktop 1440×900, Tablet 820×1180, Smartphone 390×844; je Übersicht/Akte/Ansprechpartner/Verträge/Aufgaben/Viewer: keine horizontale Überbreite, KPIs, A/B/C-Board, Tabs und Formulare gerendert (Screenshots + OCR-Textauszug geprüft) |
+| Echtes Browser-E2E (Playwright) | 11 Tests, inkl. vollständigem CRM- und Schlüssel-Workflow sowie eingeschränktem Viewer |
+| Visuelle Browserprüfung | Desktop 1440×900, Tablet 820×1180, Smartphone 390×844; CRM und Schlüssel: keine horizontale Überbreite (`scrollWidth === innerWidth`), sechs KPIs, Zusatzkennzahlen, A/B/C-Board, Suche, Akten-Tabs, Ausgabedialog mit Mitarbeiterauswahl, Verlust-/Objektbereich und Deep-Link gerendert (Screenshots + DOM-Messungen geprüft) |
 | `npm run test:production-compose` | bestanden |
 | Isolierter Restore-Drill | bestanden |
-| GitHub Actions PR #54 | `verify`, `postgres-integration`, `production-compose`, `restore-drill`, `browser-e2e` alle erfolgreich für Commit `f53928a` |
+| GitHub Actions PR #54 | `verify`, `postgres-integration`, `production-compose`, `restore-drill`, `browser-e2e` alle erfolgreich für den CRM-Commit `f53928a` |
+| Auslieferung der Schlüsselerweiterung | direkter Push auf `master`; PR #54 bleibt der abgeschlossene CRM-PR (Merge `f0bcd1c`) |
 
 Die Coverage-Messung ist mit `npm run test:coverage` reproduzierbar. Die
 bisher im Bericht genannten festen Prozentwerte stammten aus einem früheren
@@ -105,7 +123,7 @@ dedizierte Migrationen bleiben Betriebsaufgaben.
 1. NFC-/Barcode-Hardwaretest auf Zielgeräten sowie echter Offline/Online-Drill.
 2. Staging-Lastlauf für Alarm-Ingest, WebSocket-Fanout und Report-Export.
 3. Produktionsseitiger Restore-Drill, TLS-/Monitoring-Abnahme und Push-Provider.
-4. PR #54 (https://github.com/Xonni-star/SecurityOps-Platform/pull/54, Commit `f53928a`) hat alle fünf CI-Jobs grün und wartet auf Review/Merge.
+4. PR #54 (https://github.com/Xonni-star/SecurityOps-Platform/pull/54, CRM-Commit `f53928a`) wurde als `f0bcd1c` gemerged; die Schlüsselerweiterung wird direkt auf `master` ausgeliefert und dort per CI geprüft.
 
 Diese Punkte blockieren nicht die Codequalität, blockieren aber eine vollständige
 fachliche Produktionsabnahme, solange die Zielinfrastruktur nicht bereitgestellt ist.

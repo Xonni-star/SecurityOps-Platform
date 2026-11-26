@@ -1,19 +1,400 @@
 import {useEffect,useState} from 'react';
-import {api} from '../lib/api';
-import {uuid} from "../lib/uuid";
+import {Link,useNavigate} from 'react-router-dom';
+import {api,csrf,hasPermission,storedUser} from '../lib/api';
+import {uuid} from '../lib/uuid';
+import {
+  ActionEntry,ActionList,BundleDetail,BundleRow,Dashboard,DocumentOption,EmployeeOption,IncidentOption,KeyRow,PriorityOption,SiteOption,StatusBadge,
+  BundleCreateDialog,BundleDeactivateDialog,BundleIssueDialog,BundleReturnDialog,BlockDialog,
+  CreateKeyDialog,InventoryDialog,IssueDialog,LossDialog,QrDialog,ReturnDialog,displayDate,keyTypeLabels,
+} from './keyParts';
 
-type KeyRecord={id:string;key_code:string;label:string;key_type:string;status:string;site_id:string|null;holder_user_id:string|null;holder_employee_id:string|null;created_at:string};
-type BundleRecord={id:string;name:string;status:string;site_id:string|null;item_count:number;issued_count:number;holder_user_id:string|null;holder_employee_id:string|null};
+type SortKey='key_code'|'label'|'status'|'key_type'|'site_name'|'holder_name'|'due_at'|'last_movement_at';
+type DialogState=
+  |{kind:'create'}|{kind:'issue';item:KeyRow}|{kind:'return';item:KeyRow}|{kind:'loss';item:KeyRow}
+  |{kind:'block'|'reactivate';item:KeyRow}|{kind:'qr';item:KeyRow}|{kind:'inventory'}
+  |{kind:'bundle-create'}|{kind:'bundle-issue';bundle:BundleRow}
+  |{kind:'bundle-return';bundle:BundleRow;items:KeyRow[];partial:boolean}
+  |{kind:'bundle-deactivate';bundle:BundleRow}|null;
+
+const apiBase='/api/v1';
+const pageSize=10;
+const bucketLabels:Record<'A'|'B'|'C',string>={A:'Sofort handeln',B:'Zeitnah klären',C:'Beobachten'};
+
+async function fetchKeyPage(query:string){
+  const response=await fetch(`${apiBase}/keys?${query}`,{credentials:'include',headers:{'Content-Type':'application/json'}});
+  if(!response.ok){
+    let message='Schlüssel konnten nicht geladen werden.';
+    try{const body=await response.json() as {error?:string};if(body?.error)message=body.error;}catch{/* response has no JSON body */}
+    throw new Error(message);
+  }
+  const rows=await response.json() as KeyRow[];
+  const totalHeader=Number(response.headers.get('X-Total-Count'));
+  const pagesHeader=Number(response.headers.get('X-Page-Count'));
+  const total=Number.isFinite(totalHeader)?totalHeader:(Array.isArray(rows)?rows.length:0);
+  const pageCount=Number.isFinite(pagesHeader)&&pagesHeader>0?pagesHeader:Math.max(1,Math.ceil(total/pageSize));
+  return {rows:Array.isArray(rows)?rows:[],total,pageCount};
+}
+
+function actionTarget(entry:ActionEntry){
+  if(entry.url)return entry.url;
+  if(entry.target)return entry.target;
+  if(entry.key_id)return `/keys/${entry.key_id}`;
+  if(entry.subject_type==='key'&&entry.subject_id)return `/keys/${entry.subject_id}`;
+  if(entry.subject_type==='bundle'&&entry.subject_id)return `/keys#bundle-${entry.subject_id}`;
+  return '/keys';
+}
 
 export function Keys(){
-  const [keys,setKeys]=useState<KeyRecord[]>([]);const [bundles,setBundles]=useState<BundleRecord[]>([]);const [label,setLabel]=useState('');const [keyCode,setKeyCode]=useState('');const [siteId,setSiteId]=useState('');const [holder,setHolder]=useState('');const [bundleName,setBundleName]=useState('');const [bundleKeyId,setBundleKeyId]=useState('');const [bundleHolder,setBundleHolder]=useState('');const [error,setError]=useState('');
-  const load=async()=>{try{const [keyRows,bundleRows]=await Promise.all([api<KeyRecord[]>('/keys'),api<BundleRecord[]>('/key-bundles')]);setKeys(keyRows??[]);setBundles(bundleRows??[]);}catch(e){setError((e as Error).message);}};
-  useEffect(()=>{void load();},[]);
-  const create=async(event:React.FormEvent)=>{event.preventDefault();try{await api('/keys',{method:'POST',body:JSON.stringify({label,key_code:keyCode,site_id:siteId||null,key_type:'physical',client_mutation_id:uuid()})});setLabel('');setKeyCode('');setSiteId('');await load();}catch(e){setError((e as Error).message);}};
-  const createBundle=async(event:React.FormEvent)=>{event.preventDefault();try{await api('/key-bundles',{method:'POST',body:JSON.stringify({name:bundleName,site_id:siteId||null,client_mutation_id:uuid()})});setBundleName('');await load();}catch(e){setError((e as Error).message);}};
-  const addBundleItem=async(bundleId:string)=>{try{await api(`/key-bundles/${bundleId}/items`,{method:'POST',body:JSON.stringify({key_id:bundleKeyId,client_mutation_id:uuid()})});setBundleKeyId('');await load();}catch(e){setError((e as Error).message);}};
-  const issueBundle=async(bundleId:string)=>{try{await api(`/key-bundles/${bundleId}/issue`,{method:'POST',body:JSON.stringify({holder_user_id:bundleHolder||null,holder_employee_id:null,client_mutation_id:uuid()})});setBundleHolder('');await load();}catch(e){setError((e as Error).message);}};
-  const returnBundle=async(bundleId:string)=>{try{const bundle=await api<BundleRecord&{items:KeyRecord[]}>(`/key-bundles/${bundleId}`);if(!bundle)throw new Error('Schlüsselbund konnte nicht geladen werden');const keyIds=bundle.items.filter(item=>item.status==='issued').map(item=>item.id);if(!keyIds.length)throw new Error('Keine ausgegebenen Schlüssel im Bund');await api(`/key-bundles/${bundleId}/return`,{method:'POST',body:JSON.stringify({key_ids:keyIds,client_mutation_id:uuid()})});await load();}catch(e){setError((e as Error).message);}};
-  const mutate=async(id:string,action:string,body:Record<string,unknown>={})=>{try{await api(`/keys/${id}/${action}`,{method:'POST',body:JSON.stringify({...body,client_mutation_id:uuid()})});setHolder('');await load();}catch(e){setError((e as Error).message);}};
-  return <section><h1>Schlüsselverwaltung</h1><p>Ausgabe, Rückgabe, Verlust und Deaktivierung werden tenant-/standortbezogen und revisionssicher protokolliert.</p>{error&&<p role="alert">{error}</p>}<form onSubmit={create}><label>Kennziffer<input required value={keyCode} onChange={event=>setKeyCode(event.target.value)}/></label><label>Bezeichnung<input required value={label} onChange={event=>setLabel(event.target.value)}/></label><label>Standort-ID<input value={siteId} onChange={event=>setSiteId(event.target.value)}/></label><button>Anlegen</button></form><label>Halter-UUID für Ausgabe<input value={holder} onChange={event=>setHolder(event.target.value)}/></label><ul>{keys.map(key=><li key={key.id}><strong>{key.label}</strong> ({key.key_code}) – {key.status}{key.status==='available'&&<button onClick={()=>void mutate(key.id,'issue',{holder_user_id:holder||null,holder_employee_id:holder?null:null})}>Ausgeben</button>}{key.status==='issued'&&<button onClick={()=>void mutate(key.id,'return')}>Rückgabe</button>}{key.status==='issued'&&<button onClick={()=>void mutate(key.id,'lost')}>Verlust</button>}{key.status!=='deactivated'&&<button onClick={()=>void mutate(key.id,'deactivate')}>Deaktivieren</button>}</li>)}</ul><h2>Schlüsselbunde</h2><form onSubmit={createBundle}><label>Name<input required value={bundleName} onChange={event=>setBundleName(event.target.value)}/></label><button>Anlegen</button></form><label>Halter-UUID für Bundausgabe<input value={bundleHolder} onChange={event=>setBundleHolder(event.target.value)}/></label><label>Schlüssel-UUID für Bund<input value={bundleKeyId} onChange={event=>setBundleKeyId(event.target.value)}/></label><ul>{bundles.map(bundle=><li key={bundle.id}><strong>{bundle.name}</strong> – {bundle.status} ({bundle.issued_count}/{bundle.item_count} ausgegeben){bundle.status==='available'&&<><button onClick={()=>void addBundleItem(bundle.id)}>Schlüssel hinzufügen</button><button onClick={()=>void issueBundle(bundle.id)}>Bund ausgeben</button></>}{(bundle.status==='issued'||bundle.status==='partial')&&<button onClick={()=>void returnBundle(bundle.id)}>Ausgabe zurücknehmen</button>}</li>)}</ul></section>;
+  const navigate=useNavigate();
+  const [keys,setKeys]=useState<KeyRow[]>([]);
+  const [bundles,setBundles]=useState<BundleRow[]>([]);
+  const [sites,setSites]=useState<SiteOption[]>([]);
+  const [employees,setEmployees]=useState<EmployeeOption[]>([]);
+  const [documents,setDocuments]=useState<DocumentOption[]>([]);
+  const [incidents,setIncidents]=useState<IncidentOption[]>([]);
+  const [priorities,setPriorities]=useState<PriorityOption[]>([]);
+  const [pickKeys,setPickKeys]=useState<KeyRow[]>([]);
+  const [dashboard,setDashboard]=useState<Dashboard|null>(null);
+  const [actions,setActions]=useState<ActionList>({A:[],B:[],C:[],generated_at:''});
+  const [search,setSearch]=useState('');
+  const [status,setStatus]=useState('all');
+  const [keyType,setKeyType]=useState('all');
+  const [siteFilter,setSiteFilter]=useState('all');
+  const [holderFilter,setHolderFilter]=useState('all');
+  const [bundleFilter,setBundleFilter]=useState('all');
+  const [location,setLocation]=useState('');
+  const [sortKey,setSortKey]=useState<SortKey>('key_code');
+  const [direction,setDirection]=useState<'asc'|'desc'>('asc');
+  const [page,setPage]=useState(1);
+  const [total,setTotal]=useState(0);
+  const [pageCount,setPageCount]=useState(1);
+  const [reloadToken,setReloadToken]=useState(0);
+  const [selected,setSelected]=useState<string[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState('');
+  const [dialog,setDialog]=useState<DialogState>(null);
+  const [bundleItems,setBundleItems]=useState<Record<string,KeyRow[]>>({});
+  const [bundleHistory,setBundleHistory]=useState<Record<string,{id:string;created_at:string;movement_type?:string;label?:string;description?:string}[]>>({});
+  const [bundleKeySearch,setBundleKeySearch]=useState('');
+  const [bundleKeySelection,setBundleKeySelection]=useState<Record<string,string>>({});
+
+  const canRead=hasPermission('keys:read');
+  const canCreate=hasPermission('keys:create')||hasPermission('keys:write');
+  const canUpdate=hasPermission('keys:update');
+  const canIssue=hasPermission('keys:issue');
+  const canReturn=hasPermission('keys:return');
+  const canManage=hasPermission('keys:manage')||hasPermission('keys:report_loss');
+  const canExport=hasPermission('keys:export');
+  const canQr=hasPermission('keys:qr:read');
+  const canInventory=hasPermission('keys:inventory:write');
+  const canBundleRead=hasPermission('keys:bundle_read');
+  const canBundleWrite=hasPermission('keys:bundle_write');
+  const canBundleIssue=hasPermission('keys:bundle_issue');
+  const canBundleReturn=hasPermission('keys:bundle_return');
+  const canBundleDeactivate=hasPermission('keys:bundle_deactivate');
+  const canBundleHistory=hasPermission('keys:bundle_history_read');
+
+  const query=new URLSearchParams();
+  if(search.trim())query.set('q',search.trim());
+  if(status!=='all')query.set('status',status);
+  if(keyType!=='all')query.set('key_type',keyType);
+  if(siteFilter!=='all')query.set('site_id',siteFilter);
+  if(holderFilter!=='all'){
+    if(holderFilter.startsWith('user:'))query.set('holder_user_id',holderFilter.slice(5));
+    else query.set('holder_employee_id',holderFilter);
+  }
+  if(bundleFilter!=='all')query.set('bundle_id',bundleFilter);
+  if(location.trim())query.set('location',location.trim());
+  query.set('sort',sortKey);query.set('dir',direction);query.set('page',String(page));query.set('pageSize',String(pageSize));
+  const queryString=query.toString();
+  const reload=()=>setReloadToken(token=>token+1);
+
+  useEffect(()=>{
+    if(!canRead)return;
+    let cancelled=false;
+    setLoading(true);
+    void fetchKeyPage(queryString).then(result=>{
+      if(cancelled)return;
+      setKeys(result.rows);setTotal(result.total);setPageCount(result.pageCount);setError('');
+    }).catch(cause=>{if(!cancelled)setError((cause as Error).message);})
+      .finally(()=>{if(!cancelled)setLoading(false);});
+    return ()=>{cancelled=true;};
+  },[queryString,reloadToken,canRead]);
+
+  useEffect(()=>{
+    let cancelled=false;
+    const loadExtras=async()=>{
+      const [metrics,list,siteRows,employeeRows,documentRows,incidentRows,priorityRows,allKeys,bundleRows]=await Promise.all([
+        api<Dashboard>('/keys/dashboard').catch(()=>null),
+        api<ActionList>('/keys/action-list').catch(()=>({A:[],B:[],C:[],generated_at:''})),
+        hasPermission('sites:read')?api<SiteOption[]>('/sites').catch(()=>[]):Promise.resolve([]),
+        hasPermission('employees:read')?api<EmployeeOption[]>('/employees').catch(()=>[]):Promise.resolve([]),
+        hasPermission('dms:read')?api<DocumentOption[]>('/dms/documents').catch(()=>[]):Promise.resolve([]),
+        hasPermission('incidents:read')?api<IncidentOption[]>('/incidents').catch(()=>[]):Promise.resolve([]),
+        hasPermission('alarm_priorities:read')?api<PriorityOption[]>('/alarm-priorities').catch(()=>[]):Promise.resolve([]),
+        canRead?api<KeyRow[]>('/keys?pageSize=100').catch(()=>[]):Promise.resolve([]),
+        canBundleRead?api<BundleRow[]>('/key-bundles').catch(()=>[]):Promise.resolve([]),
+      ]);
+      if(cancelled)return;
+      setDashboard(metrics&&typeof metrics.total==='number'?metrics:null);
+      setActions({A:list?.A??[],B:list?.B??[],C:list?.C??[],generated_at:list?.generated_at??''});
+      setSites(Array.isArray(siteRows)?siteRows:[]);
+      setEmployees(Array.isArray(employeeRows)?employeeRows:[]);
+      setDocuments(Array.isArray(documentRows)?documentRows:[]);
+      setIncidents(Array.isArray(incidentRows)?incidentRows:[]);
+      setPriorities(Array.isArray(priorityRows)?priorityRows:[]);
+      setPickKeys(Array.isArray(allKeys)?allKeys:[]);
+      setBundles(Array.isArray(bundleRows)?bundleRows:[]);
+    };
+    void loadExtras();
+    return ()=>{cancelled=true;};
+  },[reloadToken,canRead,canBundleRead]);
+
+  const resetFilters=()=>{
+    setSearch('');setStatus('all');setKeyType('all');setSiteFilter('all');setHolderFilter('all');setBundleFilter('all');setLocation('');
+    setSortKey('key_code');setDirection('asc');setPage(1);
+  };
+  const toggleSort=(key:SortKey)=>{
+    if(key===sortKey)setDirection(value=>value==='asc'?'desc':'asc');
+    else{setSortKey(key);setDirection('asc');}
+    setPage(1);
+  };
+  const toggleSelected=(id:string)=>setSelected(rows=>rows.includes(id)?rows.filter(row=>row!==id):[...rows,id]);
+
+  const exportCsv=async()=>{
+    try{
+      const exportQuery=new URLSearchParams(queryString);
+      if(selected.length)exportQuery.set('ids',selected.join(','));
+      const response=await fetch(`${apiBase}/keys/export?${exportQuery.toString()}`,{
+        credentials:'include',headers:{'Content-Type':'application/json','x-csrf-token':typeof csrf==='function'?csrf():''},
+      });
+      if(!response.ok)throw new Error('Schlüsselexport fehlgeschlagen.');
+      const disposition=response.headers.get('Content-Disposition')??'';
+      const filename=/filename="?([^";]+)"?/i.exec(disposition)?.[1]??'schluessel.csv';
+      const url=URL.createObjectURL(await response.blob());
+      const link=document.createElement('a');link.href=url;link.download=filename;link.click();URL.revokeObjectURL(url);
+      setError('');
+    }catch(cause){setError((cause as Error).message);}
+  };
+
+  const openBundleReturn=async(bundle:BundleRow,partial:boolean)=>{
+    try{
+      const detail=await api<BundleDetail>(`/key-bundles/${bundle.id}`);
+      setDialog({kind:'bundle-return',bundle,items:detail?.items??[],partial});
+    }catch(cause){setError((cause as Error).message);}
+  };
+  const loadBundleItems=async(bundle:BundleRow)=>{
+    try{
+      const detail=await api<BundleDetail>(`/key-bundles/${bundle.id}`);
+      setBundleItems(current=>({...current,[bundle.id]:detail?.items??[]}));
+    }catch(cause){setError((cause as Error).message);}
+  };
+  const loadBundleHistory=async(bundle:BundleRow)=>{
+    try{
+      const history=await api<{id:string;created_at:string;movement_type?:string;label?:string;description?:string}[]>(`/key-bundles/${bundle.id}/history`);
+      setBundleHistory(current=>({...current,[bundle.id]:Array.isArray(history)?history:[]}));
+    }catch(cause){setError((cause as Error).message);}
+  };
+  const addBundleKey=async(bundle:BundleRow)=>{
+    const keyId=bundleKeySelection[bundle.id];if(!keyId)return;
+    try{
+      await api(`/key-bundles/${bundle.id}/items`,{method:'POST',body:JSON.stringify({key_id:keyId,client_mutation_id:uuid()})});
+      setBundleKeySelection(current=>({...current,[bundle.id]:''}));reload();
+    }catch(cause){setError((cause as Error).message);}
+  };
+  const removeBundleKey=async(bundle:BundleRow,keyId:string)=>{
+    try{
+      await api(`/key-bundles/${bundle.id}/items/${keyId}`,{method:'DELETE',body:JSON.stringify({client_mutation_id:uuid()})});
+      await loadBundleItems(bundle);reload();
+    }catch(cause){setError((cause as Error).message);}
+  };
+
+  const dialogNode=(()=>{
+    if(!dialog)return null;
+    const done=()=>{setDialog(null);reload();};
+    const close=()=>setDialog(null);
+    switch(dialog.kind){
+      case 'create':return <CreateKeyDialog sites={sites} employees={employees} onClose={close} onDone={done}/>;
+      case 'issue':return <IssueDialog item={dialog.item} employees={employees} documents={documents} onClose={close} onDone={done}/>;
+      case 'return':return <ReturnDialog item={dialog.item} documents={documents} onClose={close} onDone={done}/>;
+      case 'loss':return <LossDialog item={dialog.item} employees={employees} sites={sites} incidents={incidents} priorities={priorities} onClose={close} onDone={done}/>;
+      case 'block':case 'reactivate':return <BlockDialog item={dialog.item} action={dialog.kind} onClose={close} onDone={done}/>;
+      case 'qr':return <QrDialog item={dialog.item} onClose={close}/>;
+      case 'inventory':return <InventoryDialog keys={pickKeys.length?pickKeys:keys} sites={sites} bundles={bundles} onClose={close} onDone={done}/>;
+      case 'bundle-create':return <BundleCreateDialog sites={sites} onClose={close} onDone={done}/>;
+      case 'bundle-issue':return <BundleIssueDialog bundle={dialog.bundle} employees={employees} onClose={close} onDone={done}/>;
+      case 'bundle-return':return <BundleReturnDialog bundle={dialog.bundle} items={dialog.items} partial={dialog.partial} onClose={close} onDone={done}/>;
+      case 'bundle-deactivate':return <BundleDeactivateDialog bundle={dialog.bundle} onClose={close} onDone={done}/>;
+    }
+  })();
+
+  if(!canRead)return <section className="employee-management customer-management key-management"><p role="status">Keine Berechtigung zum Anzeigen von Schlüsseln.</p></section>;
+
+  const criticalActions=(dashboard?.lost??0)+(dashboard?.overdue??0)+(dashboard?.blocked??0)+(actions.A?.length??0);
+  const primaryCards:[number,string][]=[
+    [dashboard?.total??0,'Gesamt'],[dashboard?.available??0,'Verfügbar'],[dashboard?.issued??0,'Ausgegeben'],
+    [dashboard?.overdue??0,'Überfällig'],[dashboard?.lost??0,'Verloren'],[criticalActions,'Kritische Vorgänge'],
+  ];
+  const detailCards:[number,string][]=[
+    [dashboard?.blocked??0,'Gesperrt'],[dashboard?.deactivated??0,'Deaktiviert'],[dashboard?.without_site??0,'Ohne Objekt'],
+    [dashboard?.without_holder??0,'Ohne Halter'],[dashboard?.partial_bundles??0,'Unvollständige Bunde'],
+    [dashboard?.due_today??0,'Heute fällig'],[dashboard?.due_7_days??0,'In 7 Tagen fällig'],[dashboard?.due_30_days??0,'In 30 Tagen fällig'],
+  ];
+  const bundleKeys=(bundle:BundleRow)=>bundleItems[bundle.id]??pickKeys.filter(key=>key.bundle_id===bundle.id);
+  const selectableBundleKeys=(bundle:BundleRow)=>pickKeys.filter(key=>key.status==='available'&&(!key.bundle_id||key.bundle_id===bundle.id))
+    .filter(key=>!bundle.site_id||!key.site_id||key.site_id===bundle.site_id)
+    .filter(key=>`${key.key_code} ${key.label}`.toLowerCase().includes(bundleKeySearch.trim().toLowerCase()));
+
+  return <section className="employee-management customer-management key-management">
+    <div className="employee-page-title">
+      <div><h1>Schlüsselverwaltung</h1><p>Ausgabe, Rückgabe, Verlust, Bund und Bestandskontrolle revisionssicher im Blick.</p></div>
+      <div className="employee-page-actions">
+        {canInventory&&<button type="button" onClick={()=>setDialog({kind:'inventory'})}>Bestandskontrolle</button>}
+        {canExport&&<button type="button" onClick={()=>void exportCsv()}>Export{selected.length?` (${selected.length})`:''}</button>}
+        {canCreate&&<button type="button" onClick={()=>setDialog({kind:'create'})}>+ Schlüssel anlegen</button>}
+        {canBundleWrite&&<button type="button" onClick={()=>setDialog({kind:'bundle-create'})}>+ Bund anlegen</button>}
+      </div>
+    </div>
+    {error&&<p role="alert" className="error">{error}</p>}
+    {dashboard&&<>
+      <div className="stats-grid employee-metrics key-metrics">
+        {primaryCards.map(([value,label])=><article key={label}><strong>{value}</strong><span>{label}</span></article>)}
+      </div>
+      <details className="key-more-metrics"><summary>Weitere Kennzahlen</summary>
+        <div className="stats-grid employee-metrics">{detailCards.map(([value,label])=><article key={label}><strong>{value}</strong><span>{label}</span></article>)}</div>
+        {dashboard.recent_movements?.length>0&&<ul className="key-recent-movements">{dashboard.recent_movements.slice(0,6).map(movement=><li key={movement.id}>
+          <Link to={`/keys/${movement.key_id}`}>{movement.key_code||movement.key_label||'Schlüssel'}</Link> · {movement.movement_type} · {displayDate(movement.created_at)}
+        </li>)}</ul>}
+      </details>
+    </>}
+    <section className="customer-action-board key-action-board" aria-label="Handlungsübersicht">
+      <h2>Handlungsübersicht</h2>
+      <div className="customer-action-columns">{(['A','B','C'] as const).map(bucket=><article key={bucket} className={`customer-action-column bucket-${bucket}`}>
+        <h3>{bucket} · {bucketLabels[bucket]} <small>{actions[bucket]?.length??0}</small></h3>
+        <ul>{(actions[bucket]??[]).length?(actions[bucket]??[]).map(entry=><li key={entry.id}>
+          <Link to={actionTarget(entry)}><strong>{entry.label}</strong><small>{entry.key_code||entry.site_name||''}</small></Link>
+          {entry.due_at&&<small className="customer-action-due">Fällig {displayDate(entry.due_at)}</small>}
+        </li>):<li className="employee-empty">Keine Einträge</li>}</ul>
+      </article>)}</div>
+    </section>
+
+    {canBundleRead&&<section className="key-bundle-section" aria-label="Schlüsselbunde">
+      <div className="key-section-heading"><h2>Schlüsselbunde</h2><span>{bundles.length} Bunde</span></div>
+      {bundles.length===0&&<p className="employee-empty">Keine Schlüsselbunde erfasst.</p>}
+      <div className="key-bundle-grid">{bundles.map(bundle=>{
+        const partial=bundle.issued_count>0&&bundle.issued_count<bundle.item_count;
+        const items=bundleKeys(bundle);
+        return <article key={bundle.id} id={`bundle-${bundle.id}`} className={`key-bundle-card${partial?' inconsistent':''}`}>
+          <header><div><h3>{bundle.name}</h3><p>{siteLabelForBundle(bundle)} · {bundle.description||'Keine Beschreibung'}</p></div><StatusBadge status={bundle.status}/></header>
+          <dl><dt>Schlüssel</dt><dd>{bundle.item_count}</dd><dt>Ausgegeben</dt><dd>{bundle.issued_count}</dd><dt>Halter</dt><dd>{bundle.holder_name||'–'}</dd></dl>
+          {partial&&<p role="status" className="key-partial-warning">Teilweise ausgegeben – {bundle.item_count-bundle.issued_count} Schlüssel verfügbar.</p>}
+          {bundle.item_count===0&&<p role="status" className="key-partial-warning">Leerer Bund – bitte Schlüssel zuordnen.</p>}
+          <div className="key-bundle-actions">
+            <button type="button" onClick={()=>void loadBundleItems(bundle)}>Schlüssel anzeigen</button>
+            {canBundleHistory&&<button type="button" onClick={()=>void loadBundleHistory(bundle)}>Historie</button>}
+            {canBundleIssue&&bundle.status==='available'&&<button type="button" onClick={()=>setDialog({kind:'bundle-issue',bundle})}>Bund ausgeben</button>}
+            {canBundleReturn&&bundle.issued_count>0&&<button type="button" onClick={()=>void openBundleReturn(bundle,true)}>Teilweise Rückgabe</button>}
+            {canBundleReturn&&bundle.issued_count>0&&<button type="button" onClick={()=>void openBundleReturn(bundle,false)}>Vollständige Rückgabe</button>}
+            {canBundleDeactivate&&bundle.status!=='deactivated'&&<button type="button" onClick={()=>setDialog({kind:'bundle-deactivate',bundle})}>Deaktivieren</button>}
+          </div>
+          {bundleHistory[bundle.id]&&<div className="key-history"><h4>Historie</h4>{bundleHistory[bundle.id].length?bundleHistory[bundle.id].map(entry=><p key={entry.id}>{displayDate(entry.created_at)} · {entry.movement_type||entry.label||'Ereignis'} {entry.description?`· ${entry.description}`:''}</p>):<p className="employee-empty">Keine Ereignisse erfasst.</p>}</div>}
+          {bundleItems[bundle.id]&&<div className="bundle-member-list">
+            {items.length?items.map(item=><div key={item.id}><Link to={`/keys/${item.id}`}>{item.key_code} · {item.label}</Link><StatusBadge status={item.status}/>{canBundleWrite&&<button type="button" onClick={()=>void removeBundleKey(bundle,item.id)}>Entfernen</button>}</div>):<p className="employee-empty">Keine Schlüssel im Bund.</p>}
+            {canBundleWrite&&<div className="key-bundle-add">
+              <input aria-label="Schlüssel im Bund suchen" placeholder="Schlüssel suchen" value={bundleKeySearch} onChange={event=>setBundleKeySearch(event.target.value)}/>
+              <select aria-label="Schlüssel für Bund" value={bundleKeySelection[bundle.id]||''} onChange={event=>setBundleKeySelection(current=>({...current,[bundle.id]:event.target.value}))}>
+                <option value="">Schlüssel auswählen</option>
+                {selectableBundleKeys(bundle).map(key=><option key={key.id} value={key.id}>{`${key.key_code} · ${key.label}`}</option>)}
+              </select>
+              <button type="button" disabled={!bundleKeySelection[bundle.id]} onClick={()=>void addBundleKey(bundle)}>Hinzufügen</button>
+            </div>}
+          </div>}
+        </article>;
+      })}</div>
+    </section>}
+
+    <div className="employee-overview">
+      <div className="employee-filterbar key-filterbar">
+        <input className="employee-search" aria-label="Schlüssel suchen" placeholder="Schlüssel, Kennziffer, Objekt oder Halter suchen" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}}/>
+        <select aria-label="Schlüsselstatus" value={status} onChange={event=>{setStatus(event.target.value);setPage(1);}}>
+          <option value="all">Alle Status</option>{Object.entries({available:'Verfügbar',issued:'Ausgegeben',overdue:'Überfällig',lost:'Verloren',blocked:'Gesperrt',deactivated:'Deaktiviert'}).map(([value,label])=><option key={value} value={value}>{label}</option>)}
+        </select>
+        <select aria-label="Schlüsseltyp" value={keyType} onChange={event=>{setKeyType(event.target.value);setPage(1);}}>
+          <option value="all">Alle Typen</option>{Object.entries(keyTypeLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}
+        </select>
+        <select aria-label="Objekt" value={siteFilter} onChange={event=>{setSiteFilter(event.target.value);setPage(1);}}>
+          <option value="all">Alle Objekte</option>{sites.map(site=><option key={site.id} value={site.id}>{site.site_number?`${site.site_number} · ${site.name}`:site.name}</option>)}
+        </select>
+        <select aria-label="Halter" value={holderFilter} onChange={event=>{setHolderFilter(event.target.value);setPage(1);}}>
+          <option value="all">Alle Halter</option>
+          {(()=>{const self=selfFilterOption();return self?<option value={self.value}>{self.label}</option>:null;})()}
+          {employees.map(employee=><option key={employee.id} value={employee.id}>{[employee.first_name,employee.last_name].filter(Boolean).join(' ')||employee.name||employee.email||employee.id}{employee.employee_number?` (${employee.employee_number})`:''}</option>)}
+        </select>
+        <select aria-label="Schlüsselbund" value={bundleFilter} onChange={event=>{setBundleFilter(event.target.value);setPage(1);}}>
+          <option value="all">Alle Bunde</option>{bundles.map(bundle=><option key={bundle.id} value={bundle.id}>{bundle.name}</option>)}
+        </select>
+        <input aria-label="Ort" placeholder="Ort / Gebäude" value={location} onChange={event=>{setLocation(event.target.value);setPage(1);}}/>
+        <button type="button" onClick={resetFilters}>Filter zurücksetzen</button>
+      </div>
+      <div className="employee-table key-table">
+        <table><thead><tr>
+          <th><input type="checkbox" aria-label="Alle Schlüssel dieser Seite auswählen" checked={keys.length>0&&keys.every(row=>selected.includes(row.id))} onChange={event=>setSelected(rows=>event.target.checked?Array.from(new Set([...rows,...keys.map(row=>row.id)])):rows.filter(id=>!keys.some(row=>row.id===id)))}/></th>
+          <th><button type="button" onClick={()=>toggleSort('key_code')}>Kennziffer</button></th>
+          <th><button type="button" onClick={()=>toggleSort('label')}>Bezeichnung</button></th>
+          <th><button type="button" onClick={()=>toggleSort('status')}>Status</button></th>
+          <th><button type="button" onClick={()=>toggleSort('key_type')}>Typ</button></th>
+          <th><button type="button" onClick={()=>toggleSort('site_name')}>Objekt</button></th>
+          <th><button type="button" onClick={()=>toggleSort('holder_name')}>Halter</button></th>
+          <th><button type="button" onClick={()=>toggleSort('due_at')}>Fällig</button></th>
+          <th><button type="button" onClick={()=>toggleSort('last_movement_at')}>Letzte Bewegung</button></th>
+          <th>Aktion</th>
+        </tr></thead><tbody>
+          {keys.map(key=><tr key={key.id} className={selected.includes(key.id)?'selected-row':''}>
+            <td><input type="checkbox" aria-label={`${key.label} auswählen`} checked={selected.includes(key.id)} onChange={()=>toggleSelected(key.id)}/></td>
+            <td><Link to={`/keys/${key.id}`}><strong>{key.key_code}</strong></Link></td>
+            <td><button type="button" className="employee-name-link" onClick={()=>navigate(`/keys/${key.id}`)}><strong>{key.label}</strong><small>{key.location||key.building||'Kein Standort erfasst'}</small></button></td>
+            <td><StatusBadge status={key.status}/></td>
+            <td>{keyTypeLabels[key.key_type]||key.key_type}</td>
+            <td>{key.site_name||'Ohne Objekt'}</td>
+            <td>{key.holder_name||'Kein Halter'}{key.bundle_name&&<small className="key-bundle-tag"> · {key.bundle_name}</small>}</td>
+            <td>{displayDate(key.due_at)}</td>
+            <td>{key.last_movement_type?`${movementText(key.last_movement_type)} · ${displayDate(key.last_movement_at)}`:'–'}</td>
+            <td><div className="key-row-actions">
+              <Link to={`/keys/${key.id}`}>Öffnen</Link>
+              {key.bundle_id?<span className="key-bundled-hint">Nur über Bund verwaltbar</span>:<>
+                {canIssue&&key.status==='available'&&<button type="button" onClick={()=>setDialog({kind:'issue',item:key})}>Ausgabe vorbereiten</button>}
+                {canReturn&&key.status==='issued'&&<button type="button" onClick={()=>setDialog({kind:'return',item:key})}>Rückgabe erfassen</button>}
+                {canManage&&(key.status==='issued'||key.status==='overdue')&&<button type="button" onClick={()=>setDialog({kind:'loss',item:key})}>Verlust melden</button>}
+                {canManage&&key.status!=='blocked'&&key.status!=='deactivated'&&<button type="button" onClick={()=>setDialog({kind:'block',item:key})}>Sperren</button>}
+                {canManage&&key.status==='blocked'&&<button type="button" onClick={()=>setDialog({kind:'reactivate',item:key})}>Reaktivieren</button>}
+                {canQr&&<button type="button" onClick={()=>setDialog({kind:'qr',item:key})}>QR-Code</button>}
+              </>}
+              {canUpdate&&key.status!=='deactivated'&&<Link to={`/keys/${key.id}/stammdaten`}>Bearbeiten</Link>}
+            </div></td>
+          </tr>)}
+        </tbody></table>
+        {loading&&<p className="employee-empty">Schlüssel werden geladen …</p>}
+        {!loading&&keys.length===0&&<p className="employee-empty">Keine Schlüssel entsprechen den aktiven Filtern.</p>}
+        {total>0&&<div className="employee-pagination"><span>{total} Schlüssel · Seite {page} von {pageCount}</span><button type="button" disabled={page===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={page>=pageCount} onClick={()=>setPage(value=>value+1)}>Weiter</button></div>}
+      </div>
+    </div>
+    {!canUpdate&&<p className="key-permission-note" role="status">Stammdaten und Statusänderungen sind nur mit entsprechenden Schlüsselberechtigungen verfügbar.</p>}
+    {dialogNode}
+  </section>;
+}
+
+function selfFilterOption(){
+  try{
+    const user=typeof storedUser==='function'?storedUser():null;
+    return user?.id?{value:`user:${user.id}`,label:`Mich selbst${user.email?` (${user.email})`:''}`}:null;
+  }catch{return null;}
+}
+
+function siteLabelForBundle(bundle:BundleRow){
+  return bundle.site_name||'Kein Objekt';
+}
+
+function movementText(type:string){
+  const labels:Record<string,string>={issued:'Ausgabe',returned:'Rückgabe',lost:'Verlust',blocked:'Sperre',reactivated:'Reaktivierung',created:'Anlage',inventory_check:'Bestandskontrolle'};
+  return labels[type]||type;
 }

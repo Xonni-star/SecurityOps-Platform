@@ -244,6 +244,7 @@ objectManagementRouter.get(
       const watchbookSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('watchbook:read',siteId));
       const scheduleSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('scheduling:read',siteId));
       const deviceSiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('devices:read',siteId));
+      const keySiteIds=visibleSiteIds.filter(siteId=>canReadSiteData('keys:read',siteId));
       const taskSiteIds=customerSiteIds;
       const hasContractRead=effectivePermissionScope(grants,'contracts:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
       const hasDocumentRead=effectivePermissionScope(grants,'dms:read',{role:user.role,isSystemAdmin:user.isSystemAdmin===true})!==null;
@@ -422,6 +423,29 @@ objectManagementRouter.get(
         open_maintenance:sum('open_maintenance_count',deviceSiteIds.length>0),
         overdue_maintenance:sum('overdue_maintenance_count',deviceSiteIds.length>0),
       };
+      const keyMetrics=keySiteIds.length?(await query<Record<string,number>>(
+        `SELECT COUNT(*)::int total_keys,
+          COUNT(*) FILTER (WHERE k.status='available')::int available_keys,
+          COUNT(*) FILTER (WHERE k.status='issued')::int issued_keys,
+          COUNT(*) FILTER (WHERE k.status='issued' AND k.due_at<now())::int overdue_keys,
+          COUNT(*) FILTER (WHERE k.status='lost')::int lost_keys,
+          COUNT(*) FILTER (WHERE k.status='blocked')::int blocked_keys,
+          COUNT(*) FILTER (WHERE k.status='deactivated')::int deactivated_keys,
+          COUNT(*) FILTER (WHERE k.due_at>=now() AND k.due_at<now()+INTERVAL '7 days')::int due_7_days_keys,
+          COUNT(*) FILTER (WHERE k.due_at>=now() AND k.due_at<now()+INTERVAL '30 days')::int due_30_days_keys
+         FROM keys k WHERE k.tenant_id=$1 AND k.site_id=ANY($2::uuid[])`,
+        [user.tenantId,keySiteIds],
+      )).rows[0]??null:null;
+      if(keyMetrics)Object.assign(metrics,keyMetrics);
+      const keyActionRows=keySiteIds.length?(await query<{id:string;site_id:string;label:string;status:string;due_at:string|null;holder_user_id:string|null;holder_employee_id:string|null;location:string|null}>(
+        `SELECT k.id,k.site_id,k.label,k.status,k.due_at,k.holder_user_id,k.holder_employee_id,k.location
+         FROM keys k WHERE k.tenant_id=$1 AND k.site_id=ANY($2::uuid[])
+           AND (k.status IN ('lost','blocked') OR (k.status='issued' AND k.due_at<now())
+             OR (k.status='issued' AND k.holder_user_id IS NULL AND k.holder_employee_id IS NULL)
+             OR (k.due_at>=now() AND k.due_at<now()+INTERVAL '7 days') OR k.location IS NULL)
+         ORDER BY k.status,k.due_at NULLS LAST LIMIT 40`,
+        [user.tenantId,keySiteIds],
+      )).rows:[];
       const priorityActions=(await query<PriorityAction>(
         `WITH action_source AS (
           SELECT h.site_id,
@@ -571,7 +595,26 @@ objectManagementRouter.get(
         [user.tenantId,visibleSiteIds,watchbookSiteIds,documentSiteIds,deviceSiteIds,taskSiteIds,scheduleSiteIds,
           qualificationSiteIds,employeeSiteIds.filter(siteId=>watchbookSiteIds.includes(siteId))],
       )).rows;
-      res.json({sites,metrics,priorityActions:sortPriorityActions(priorityActions).map(action=>({...action,priority:action.priority??priorityForSeverity(action.severity)}))});
+      const siteNames=new Map(sites.map(site=>[site.id,site.name]));
+      const keyPriorityActions:PriorityAction[]=keyActionRows.map(row=>{
+        const missingHolder=!row.holder_user_id&&!row.holder_employee_id;
+        const overdue=row.status==='issued'&&row.due_at!==null&&new Date(row.due_at).getTime()<Date.now();
+        const severity:PriorityAction['severity']=row.status==='lost'||overdue||row.status==='issued'&&missingHolder
+          ?'critical':row.status==='blocked'||row.due_at!==null?'high':'medium';
+        const detail=row.status==='lost'?'Schlüssel als verloren gemeldet'
+          :overdue?`Rückgabe überfällig seit ${row.due_at?.slice(0,10)}`
+          :row.status==='blocked'?'Schlüssel technisch gesperrt'
+          :missingHolder?'Ausgegebener Schlüssel ohne Halter'
+          :row.due_at!==null?`Rückgabe fällig am ${row.due_at.slice(0,10)}`
+          :'Kein Standort hinterlegt';
+        return {
+          id:`key:${row.id}`,site_id:row.site_id,site_name:siteNames.get(row.site_id)??null,entity_id:row.id,
+          employee_id:null,severity,priority:priorityForSeverity(severity),category:'Schlüssel',
+          title:`Schlüssel prüfen: ${row.label}`,detail,due_on:row.due_at?row.due_at.slice(0,10):null,
+          tab:'schluessel',permission:'keys:read',target:`/sites/${row.site_id}/schluessel?key=${row.id}`,
+        };
+      });
+      res.json({sites,metrics,priorityActions:sortPriorityActions([...priorityActions,...keyPriorityActions]).map(action=>({...action,priority:action.priority??priorityForSeverity(action.severity)}))});
     }catch(error){next(error);}
   },
 );

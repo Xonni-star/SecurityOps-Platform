@@ -64,6 +64,31 @@ rows; task priorities use `customer_tasks:read`/`customer_tasks:write`.
 The object file's customer-link form searches the same server-side customer list
 by name or number, so recently created customers remain linkable in large tenants.
 
+Key management is centered on `/keys` and uses the existing `keys`, `key_movements`,
+`key_bundles` and `key_bundle_movements` records; there is no second key store or
+navigation entry. `GET /api/v1/keys` searches, filters, sorts and paginates on the
+server (`q`, `status`, `key_type`, site/holder/bundle/location filters, `sort`, `dir`,
+`page`, bounded `pageSize` 1–100, `X-Total-Count`/`X-Page-Count`). The cockpit's six
+KPIs, expandable metrics and `A – Sofort handeln`, `B – Zeitnah bearbeiten`,
+`C – Schlüsselinformationen` actions come from live key, holder, due-date and
+movement data; every action deep-links to `/keys/:keyId` or its history section.
+`GET /keys/:id` returns `visible_sections`, and the file at `/keys/:keyId/:section`
+shows master data, object/standort linkage, holders, immutable history, loss
+reports, inventory and a short-lived QR reference. Issue and return are guided by
+employee/site pickers rather than UUID text fields, re-check availability with
+`SELECT … FOR UPDATE`, can attach a tenant/site-matching DMS receipt, and store the
+receipt, movement, audit and notification in one transaction. Loss reports support
+risk assessment, immediate measures, status tracking and an optional existing or
+new incident. Bundles support creation, membership, issue, partial/full return,
+deactivation and immutable history. CSV export, history, QR, inventory and loss
+processing are gated by dedicated `keys:*` permissions; the existing `keys:read`,
+`keys:write`, `keys:issue`, `keys:return`, `keys:manage` and bundle scopes remain
+valid. Migration 054 adds columns, tables, indexes, RLS policies and grants and
+widens legacy CHECK constraints for the new values; existing key rows keep their
+IDs and histories. Configure `KEY_QR_SECRET`, `KEY_REMINDER_DAYS` (a subset of `7,3,1,0`) and
+`KEY_REMINDER_INTERVAL_MS`; overdue (`-1`) reminders are always queued once and
+deduplicated by tenant, key, due date and day.
+
 When the isolated E2E fixture is enabled, a viewer account
 `e2e-viewer@example.invalid` with the same `E2E_PASSWORD` is created alongside
 the operator account so read-only file access and denied mutations can be tested
