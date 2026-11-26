@@ -67,8 +67,9 @@ export function Layout(){
   const description=meta.description;
   const breadcrumb=`SECURITYOPS / ${meta.group.toUpperCase()} / ${title.toUpperCase()}`;
   const isDetailPath=location.pathname!==currentPath;
+  const darkPage=isDetailPath||['/employees','/customers','/keys','/sites'].includes(currentPath);
 
-  return <div className="app-shell">
+  return <div className="app-shell theme-dark">
     <aside className={open?'sidebar open':'sidebar'}>
       <div className="brand"><span className="brand-mark">S</span><span>Security<strong>Ops</strong></span></div>
       <div className="workspace"><span className="status-dot"/> Leitstelle <small>PRODUKTIVBETRIEB</small></div>
@@ -88,7 +89,7 @@ export function Layout(){
       }}>Abmelden</button>
     </aside>
     <div className="app-content">
-      <header className="topbar">
+      <header className={darkPage?'topbar topbar-dark':'topbar'}>
         <button className="menu-toggle" onClick={()=>setOpen(!open)} aria-label="Navigation öffnen">☰</button>
         <div>
           <div className="breadcrumb">{breadcrumb}</div>
@@ -97,7 +98,7 @@ export function Layout(){
         </div>
         <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzerkonto'}</span></div>
       </header>
-      <main className={isDetailPath?'page-content employee-page':'page-content'}><Outlet/></main>
+      <main className={darkPage?'page-content employee-page':'page-content'}><Outlet/></main>
     </div>
   </div>;
 }

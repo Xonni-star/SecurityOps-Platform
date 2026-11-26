@@ -828,3 +828,40 @@
   .key-detail-site dl{grid-template-columns:1fr}
   .key-table{overflow-x:auto}
 }
+
+/* Randlose dunkle Verwaltungsseiten ohne weißen Rahmen */
+.topbar-dark{background:#0b1b33!important;border-bottom-color:#1d3b5c!important;box-shadow:none!important;color:#dbe7f7!important}
+.topbar-dark h1{color:#eef5ff!important}
+.topbar-dark .breadcrumb,.topbar-dark .page-description,.topbar-dark .user-menu{color:#91a8c2!important}
+.topbar-dark .menu-toggle{background:#17395a!important;color:#dbe7f7!important}
+@media(max-width:600px){.page-content.employee-page{min-height:calc(100vh - 74px)}}
+
+/* Durchgängig dunkle Oberfläche: keine hellen Ränder, Karten oder Tabellen */
+html:has(.theme-dark),body:has(.theme-dark){background:#0b1b33!important}
+.theme-dark{background:#0b1b33!important}
+.theme-dark .app-content{background:#0b1b33!important}
+.theme-dark .topbar{background:#0b1b33!important;border-bottom:1px solid #1d3b5c!important;box-shadow:none!important;color:#dbe7f7!important}
+.theme-dark .topbar h1{color:#eef5ff!important}
+.theme-dark .breadcrumb,.theme-dark .page-description,.theme-dark .user-menu{color:#91a8c2!important}
+.theme-dark .menu-toggle{background:#17395a!important;color:#dbe7f7!important}
+.theme-dark .page-content{min-height:calc(100vh - 96px);background:#0b1b33!important}
+.theme-dark .page-content>section,.theme-dark .page-content section,.theme-dark .page-content form{background:#102745!important;border-color:#1d3b5c!important;box-shadow:none!important;color:#dbe7f7!important}
+.theme-dark .page-content h1,.theme-dark .page-content h2,.theme-dark .page-content h3,.theme-dark .page-content h4{color:#eef5ff!important}
+.theme-dark .page-content p,.theme-dark .page-content label,.theme-dark .page-content li,.theme-dark .page-content td,.theme-dark .page-content th,.theme-dark .page-content small{color:#c8d8eb!important}
+.theme-dark .page-content input,.theme-dark .page-content select,.theme-dark .page-content textarea{background:#0b1d35!important;border-color:#294966!important;color:#dbe7f7!important}
+.theme-dark .page-content input::placeholder,.theme-dark .page-content textarea::placeholder{color:#7892af!important}
+.theme-dark .page-content table,.theme-dark .page-content thead,.theme-dark .page-content tbody{background:#102745!important}
+.theme-dark .page-content th{background:#17395a!important;color:#9cb1ca!important;text-transform:none}
+.theme-dark .page-content td,.theme-dark .page-content th{border-bottom-color:#183653!important}
+.theme-dark .page-content tbody tr:hover{background:#163452!important}
+.theme-dark .page-content li:not([class]),.theme-dark .page-content li[class=""]{background:#0d2038!important}
+.theme-dark .dashboard-grid article,.theme-dark .stats-grid article,.theme-dark .board>div,.theme-dark .board article{background:#102745!important;border-color:#1d3b5c!important;box-shadow:none!important}
+.theme-dark .page-content .employee-profile,.theme-dark .page-content .employee-data-cards article{background:#0d2038!important;border-color:#203d5a!important}
+.theme-dark .key-qr-panel img{background:#fff!important}
+.theme-dark .page-content p.error{color:#ff9b9b!important;background:#301a1a!important;border:1px solid #6b3b4b!important;border-radius:6px!important;padding:8px 10px!important}
+.theme-dark .page-content .field-error,.theme-dark .page-content .eligibility-ineligible,.theme-dark .page-content .qualification-status.expired{color:#ff9b9b!important}
+.theme-dark .page-content .object-alerts p,.theme-dark .page-content .object-warning,.theme-dark .page-content .key-partial-warning,.theme-dark .page-content .eligibility-restricted,.theme-dark .page-content .qualification-status.warning{color:#ffd27f!important}
+.theme-dark .page-content .employee-empty,.theme-dark .page-content .object-chronicle-unavailable,.theme-dark .page-content .qualification-mini.muted{color:#91a8c2!important}
+.theme-dark .page-content .qualification-mini,.theme-dark .page-content .qualification-status.ok,.theme-dark .page-content .online{color:#75dda9!important}
+@media(max-width:900px){.theme-dark .page-content{min-height:calc(100vh - 88px)}}
+@media(max-width:600px){.theme-dark .page-content,.theme-dark .page-content.employee-page{min-height:calc(100vh - 74px)}}
