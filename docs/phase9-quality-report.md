@@ -53,7 +53,7 @@ Migration 053 ergänzt Indizes, Priorität und Rollen-Grants nicht-destruktiv.
 | Visuelle Browserprüfung | Desktop 1440×900, Tablet 820×1180, Smartphone 390×844; je Übersicht/Akte/Ansprechpartner/Verträge/Aufgaben/Viewer: keine horizontale Überbreite, KPIs, A/B/C-Board, Tabs und Formulare gerendert (Screenshots + OCR-Textauszug geprüft) |
 | `npm run test:production-compose` | bestanden |
 | Isolierter Restore-Drill | bestanden |
-| GitHub Actions PR #53 | Jobs `verify`, `postgres-integration`, `production-compose`, `restore-drill`, `browser-e2e` definiert; Ergebnisse im jeweiligen PR-Check-Run |
+| GitHub Actions PR #54 | `verify`, `postgres-integration`, `production-compose`, `restore-drill`, `browser-e2e` alle erfolgreich für Commit `f53928a` |
 
 Die Coverage-Messung ist mit `npm run test:coverage` reproduzierbar. Die
 bisher im Bericht genannten festen Prozentwerte stammten aus einem früheren
@@ -105,7 +105,7 @@ dedizierte Migrationen bleiben Betriebsaufgaben.
 1. NFC-/Barcode-Hardwaretest auf Zielgeräten sowie echter Offline/Online-Drill.
 2. Staging-Lastlauf für Alarm-Ingest, WebSocket-Fanout und Report-Export.
 3. Produktionsseitiger Restore-Drill, TLS-/Monitoring-Abnahme und Push-Provider.
-4. PR #53 ist gemerged; der CRM-PR wartet auf Review/Merge.
+4. PR #54 (https://github.com/Xonni-star/SecurityOps-Platform/pull/54, Commit `f53928a`) hat alle fünf CI-Jobs grün und wartet auf Review/Merge.
 
 Diese Punkte blockieren nicht die Codequalität, blockieren aber eine vollständige
 fachliche Produktionsabnahme, solange die Zielinfrastruktur nicht bereitgestellt ist.
