@@ -106,25 +106,65 @@ describe('key list, dashboard and actions',()=>{
     expect((await request(app).get('/api/v1/keys').set(csrf)).status).toBe(403);
   });
 
-  it('serves more than 100 keys from the server-side picker with scoped filters',async()=>{
-    const rows=Array.from({length:150},(_,index)=>({...keyRow,id:`00000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,key_code:`K-${index+1}`,total_count:150}));
+  it('paginates more than 1,000 picker keys with cursors, filters and tenant scope',async()=>{
+    const all=Array.from({length:1200},(_,index)=>({
+      ...keyRow,id:`00000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,
+      key_code:`K-${String(index+1).padStart(4,'0')}`,total_count:1200,
+    }));
+    const seenOffsets:number[]=[];
     install(['keys:read'],(sql,values)=>{
       const text=String(sql);
       if(text.includes('WITH latest_movement AS')){
         expect(values[0]).toBe(tenant);
         expect(text).toContain('NOT EXISTS (SELECT 1 FROM key_bundle_items');
         expect(values).toContain('00000000-0000-4000-8000-000000000099');
-        expect(values.at(-2)).toBe(500);
-        expect(values.at(-1)).toBe(0);
-        return result(rows);
+        expect(values).toContain('available');
+        expect(values.at(-2)).toBe(100);
+        const offset=Number(values.at(-1));
+        seenOffsets.push(offset);
+        return result(all.slice(offset,offset+100));
       }
       return undefined;
     });
-    const response=await request(app).get('/api/v1/keys/picker').query({limit:500,status:'available',exclude_bundle_id:'00000000-0000-4000-8000-000000000099'}).set(csrf);
+    const first=await request(app).get('/api/v1/keys/picker').query({pageSize:100,cursor:0,status:'available',exclude_bundle_id:'00000000-0000-4000-8000-000000000099'}).set(csrf);
+    expect(first.status).toBe(200);
+    expect(first.body.items).toHaveLength(100);
+    expect(first.body.items[0].key_code).toBe('K-0001');
+    expect(first.body.total).toBe(1200);
+    expect(first.body.next_cursor).toBe('100');
+    expect(first.headers['x-total-count']).toBe('1200');
+    expect(first.headers['x-next-cursor']).toBe('100');
+
+    const last=await request(app).get('/api/v1/keys/picker').query({pageSize:100,cursor:1100,status:'available',exclude_bundle_id:'00000000-0000-4000-8000-000000000099'}).set(csrf);
+    expect(last.status).toBe(200);
+    expect(last.body.items).toHaveLength(100);
+    expect(last.body.items.at(-1).key_code).toBe('K-1200');
+    expect(last.body.next_cursor).toBeNull();
+    expect(seenOffsets).toEqual([0,1100]);
+    expect((await request(app).get('/api/v1/keys/picker').query({pageSize:201}).set(csrf)).status).toBe(400);
+    expect((await request(app).get('/api/v1/keys/picker').query({cursor:'x'}).set(csrf)).status).toBe(400);
+  });
+
+  it('scopes each picker page for site-limited readers',async()=>{
+    const site='00000000-0000-4000-8000-000000000077';
+    const siteSession=sessionWith(['keys:read'],'viewer',[site]);
+    siteSession.permission_grants=[{code:'keys:read',scope:'site'}];
+    queryMock.mockReset();
+    queryMock.mockImplementation(async(sql:string,values:unknown[])=>{
+      if(String(sql).includes('FROM sessions'))return result([siteSession]);
+      const text=String(sql);
+      if(text.includes('WITH latest_movement AS')){
+        expect(values[0]).toBe(tenant);
+        expect(text).toContain('k.site_id=ANY(');
+        expect(values[1]).toEqual([site]);
+        return result([{...keyRow,total_count:1}]);
+      }
+      return result([]);
+    });
+    const response=await request(app).get('/api/v1/keys/picker').query({cursor:0,pageSize:100}).set(csrf);
     expect(response.status).toBe(200);
-    expect(response.body).toHaveLength(150);
-    expect(response.headers['x-total-count']).toBe('150');
-    expect((await request(app).get('/api/v1/keys/picker').query({limit:501}).set(csrf)).status).toBe(400);
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.next_cursor).toBeNull();
   });
 
   it('derives live dashboard metrics and caps recent movements at eight',async()=>{
@@ -144,14 +184,20 @@ describe('key list, dashboard and actions',()=>{
     expect(response.body.recent_movements).toHaveLength(1);
   });
 
-  it('returns fully prioritized A/B/C buckets with stable deep links and totals',async()=>{
+  it('ranks and caps A/B/C in SQL while keeping full counts and stable deep links',async()=>{
     install(['keys:read'],(sql,values)=>{
       const text=String(sql);
       if(text.includes('WITH candidates AS')){
         expect(values[0]).toBe(tenant);
+        expect(text).toContain('dedupe_key');
+        expect(text).toContain('ROW_NUMBER() OVER (PARTITION BY bucket');
+        expect(text).toContain('COUNT(*) OVER (PARTITION BY bucket)::int bucket_total');
+        expect(text).toContain(`display_rank<=$${values.length}`);
+        expect(values.at(-1)).toBe(50);
         return result([
-          {bucket:'A',severity:10,code:'key_lost',label:'Schlüssel verloren: Haupteingang',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'loss_report',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false},
-          {bucket:'B',severity:30,code:'incomplete_master_data',label:'Stammdaten unvollständig: Haupteingang',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'master_data',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false},
+          {bucket:'A',severity:10,code:'key_lost',label:'Schlüssel verloren: Haupteingang',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'loss_report',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false,bucket_total:137},
+          {bucket:'B',severity:30,code:'incomplete_master_data',label:'Stammdaten unvollständig: Haupteingang',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'master_data',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false,bucket_total:900},
+          {bucket:'C',severity:10,code:'key_created',label:'Neu angelegter Schlüssel',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'key',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false,bucket_total:4},
         ]);
       }
       return undefined;
@@ -160,7 +206,7 @@ describe('key list, dashboard and actions',()=>{
     expect(response.status).toBe(200);
     expect(response.body.A).toHaveLength(1);
     expect(response.body.B).toHaveLength(1);
-    expect(response.body.totals).toEqual({A:1,B:1,C:0});
+    expect(response.body.totals).toEqual({A:137,B:900,C:4});
     expect(response.body.generated_at).toBeTruthy();
     const all=[...response.body.A,...response.body.B,...response.body.C];
     for(const entry of all){
@@ -211,6 +257,45 @@ describe('key list, dashboard and actions',()=>{
     expect(complete.text).not.toContain('begrenzt');
     expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('WITH latest_movement AS'))).toHaveLength(12);
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('audit_events')&&JSON.stringify(values).includes('"truncated":false'))).toBe(true);
+  });
+
+  it('writes CSV in bounded chunks instead of one large response body',async()=>{
+    install(['keys:export'],(sql,values)=>{
+      if(String(sql).includes('WITH latest_movement AS')){
+        const offset=Number(values.at(-1));
+        const batch=Array.from({length:1000},(_,index)=>({...keyRow,key_code:`K-${offset+index}`,label:`Zeile ${offset+index}`,total_count:2500}));
+        return result(batch);
+      }
+      return defaultMutations(sql);
+    });
+    const writeSpy=jest.spyOn(app.response,'write');
+    try{
+      const response=await request(app).get('/api/v1/keys/export').query({full:true}).set(csrf);
+      expect(response.status).toBe(200);
+      expect(response.headers['x-key-export-count']).toBe('2500');
+      expect(response.text).toContain('K-2499');
+      const csvWrites=writeSpy.mock.calls.map(call=>String(call[0])).filter(chunk=>chunk.includes('"K-'));
+      expect(csvWrites.length).toBe(3);
+      expect(Math.max(...csvWrites.map(chunk=>chunk.length))).toBeLessThan(500_000);
+    }finally{writeSpy.mockRestore();}
+  });
+
+  it('closes the stream cleanly when a database batch fails after headers',async()=>{
+    let calls=0;
+    install(['keys:export'],(sql,values)=>{
+      if(String(sql).includes('WITH latest_movement AS')){
+        calls+=1;
+        if(calls===2)throw new Error('simulated batch failure');
+        const offset=Number(values.at(-1));
+        return result(Array.from({length:1000},(_,index)=>({...keyRow,key_code:`K-${offset+index}`,label:`Zeile ${offset+index}`,total_count:2500})));
+      }
+      return defaultMutations(sql);
+    });
+    const response=await request(app).get('/api/v1/keys/export').query({full:true}).set(csrf);
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('K-999');
+    expect(response.text).not.toContain('K-1000');
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('audit_events')&&JSON.stringify(values).includes('"error":true'))).toBe(true);
   });
 });
 
@@ -470,7 +555,10 @@ describe('key history, QR and inventory',()=>{
     expect(valid.body).toMatchObject({valid:true,key_id:keyId,key_code:keyRow.key_code});
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='keys.qr.verified')).toBe(true);
 
-    const manipulated=`${token.slice(0,-1)}${token.at(-1)==='A'?'B':'A'}`;
+    // Flip a full leading signature character: the final base64url character only
+    // carries padding bits and can decode to the same HMAC bytes.
+    const [payloadPart,signaturePart]=token.split('.');
+    const manipulated=`${payloadPart}.${signaturePart[0]==='A'?'B':'A'}${signaturePart.slice(1)}`;
     expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:manipulated}).set(csrf)).status).toBe(400);
     const wrongTenant=buildKeyQrToken(keyQrSecret,'99999999-9999-4999-8999-999999999999',keyId,expiresAt);
     expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:wrongTenant}).set(csrf)).body.code).toBe('KEY_QR_INVALID');

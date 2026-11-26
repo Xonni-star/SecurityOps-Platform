@@ -1,4 +1,4 @@
-import {FormEvent,ReactNode,useEffect,useState} from 'react';
+import {FormEvent,ReactNode,useEffect,useRef,useState} from 'react';
 import {api,storedUser} from '../lib/api';
 import {uuid} from '../lib/uuid';
 
@@ -112,39 +112,78 @@ export function SitePicker({label,value,onChange,sites,required=false}:{label:st
   </select></label>;
 }
 
-export function useKeyOptions({q='',siteId='',bundleId='',excludeBundleId='',status='',limit=500}:{q?:string;siteId?:string;bundleId?:string;excludeBundleId?:string;status?:string;limit?:number}={}){
+type KeyPickerPage={items:KeyRow[];total:number;next_cursor:string|null};
+export function useKeyOptions({q='',siteId='',bundleId='',excludeBundleId='',status='',pageSize=100}:{
+  q?:string;siteId?:string;bundleId?:string;excludeBundleId?:string;status?:string;pageSize?:number;
+}={}){
   const [keys,setKeys]=useState<KeyRow[]>([]);
   const [loading,setLoading]=useState(false);
-  useEffect(()=>{
-    let cancelled=false;
-    const params=new URLSearchParams({limit:String(limit)});
+  const [loadingMore,setLoadingMore]=useState(false);
+  const [total,setTotal]=useState(0);
+  const [nextCursor,setNextCursor]=useState<string|null>(null);
+  const generation=useRef(0);
+  const paramsFor=(cursor:string)=>{
+    const params=new URLSearchParams({pageSize:String(pageSize),cursor});
     if(q)params.set('q',q);
     if(siteId)params.set('site_id',siteId);
     if(bundleId)params.set('bundle_id',bundleId);
     if(excludeBundleId)params.set('exclude_bundle_id',excludeBundleId);
     if(status)params.set('status',status);
+    return params;
+  };
+  useEffect(()=>{
+    generation.current+=1;
+    const own=generation.current;
     setLoading(true);
-    void api<KeyRow[]>(`/keys/picker?${params.toString()}`)
-      .then(rows=>{if(!cancelled)setKeys(Array.isArray(rows)?rows:[]);})
-      .catch(()=>{if(!cancelled)setKeys([]);})
-      .finally(()=>{if(!cancelled)setLoading(false);});
-    return()=>{cancelled=true;};
-  },[q,siteId,bundleId,excludeBundleId,status,limit]);
-  return {keys,loading};
+    void api<KeyPickerPage>(`/keys/picker?${paramsFor('0').toString()}`)
+      .then(page=>{
+        if(generation.current!==own)return;
+        setKeys(Array.isArray(page?.items)?page.items:[]);
+        setTotal(Number(page?.total)||0);
+        setNextCursor(page?.next_cursor??null);
+      })
+      .catch(()=>{if(generation.current!==own)return;setKeys([]);setTotal(0);setNextCursor(null);})
+      .finally(()=>{if(generation.current===own)setLoading(false);});
+    return()=>{generation.current+=1;};
+  },[q,siteId,bundleId,excludeBundleId,status,pageSize]);
+  const loadMore=()=>{
+    if(!nextCursor||loading||loadingMore)return;
+    const own=generation.current;
+    setLoadingMore(true);
+    void api<KeyPickerPage>(`/keys/picker?${paramsFor(nextCursor).toString()}`)
+      .then(page=>{
+        if(generation.current!==own)return;
+        setKeys(current=>[...current,...(Array.isArray(page?.items)?page.items:[])]);
+        setTotal(Number(page?.total)||0);
+        setNextCursor(page?.next_cursor??null);
+      })
+      .catch(()=>{if(generation.current===own)setNextCursor(null);})
+      .finally(()=>{if(generation.current===own)setLoadingMore(false);});
+  };
+  return {keys,loading,loadingMore,total,hasMore:nextCursor!==null,loadMore};
 }
 
 export function KeySearchSelect({label,searchLabel,value,onChange,siteId='',bundleId='',excludeBundleId='',status='',placeholder='Schlüssel suchen',required=false}:{
   label:string;searchLabel?:string;value:string;onChange:(value:string)=>void;siteId?:string;bundleId?:string;excludeBundleId?:string;status?:string;placeholder?:string;required?:boolean;
 }){
   const [query,setQuery]=useState('');
-  const {keys,loading}=useKeyOptions({q:query,siteId,bundleId,excludeBundleId,status});
+  const {keys,loading,loadingMore,total,hasMore,loadMore}=useKeyOptions({q:query,siteId,bundleId,excludeBundleId,status});
+  const [selectedLabel,setSelectedLabel]=useState('');
+  useEffect(()=>{
+    const selected=keys.find(key=>key.id===value);
+    if(selected)setSelectedLabel(`${selected.key_code} · ${selected.label}`);
+  },[keys,value]);
+  const selectionMissing=!!value&&!keys.some(key=>key.id===value);
   return <div className="key-search-select">
     <label>{searchLabel??`${label} suchen`}<input aria-label={searchLabel??`${label} suchen`} placeholder={placeholder} value={query} onChange={event=>setQuery(event.target.value)}/></label>
     <label>{label} auswählen<select aria-label={label} value={value} required={required} onChange={event=>onChange(event.target.value)}>
       <option value="">{required?'Bitte auswählen':'Schlüssel auswählen'}</option>
+      {selectionMissing&&<option value={value}>{selectedLabel||'Ausgewählter Schlüssel'}</option>}
       {keys.map(key=><option key={key.id} value={key.id}>{`${key.key_code} · ${key.label}`}</option>)}
     </select></label>
     {loading&&<small role="status">Schlüssel werden gesucht …</small>}
+    {!loading&&!keys.length&&<small role="status">Keine Schlüssel gefunden.</small>}
+    {hasMore&&<button type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore?'Weitere werden geladen …':`Weitere Schlüssel laden (${keys.length}/${total})`}</button>}
   </div>;
 }
 
@@ -374,7 +413,7 @@ export function InventoryDialog({sites,bundles,onClose,onDone}:{sites:SiteOption
   const [siteId,setSiteId]=useState('');const [bundleId,setBundleId]=useState('');const [checkedAt,setCheckedAt]=useState(toDateTimeLocal(new Date().toISOString()));
   const [checker,setChecker]=useState('');const [notes,setNotes]=useState('');const [error,setError]=useState('');
   const [keyQuery,setKeyQuery]=useState('');
-  const {keys:scopedKeys,loading}=useKeyOptions({q:keyQuery,siteId,bundleId});
+  const {keys:scopedKeys,loading,hasMore,total}=useKeyOptions({q:keyQuery,siteId,bundleId});
   const [results,setResults]=useState<Record<string,{expected_present:boolean;actual_condition:string}>>({});
   const entryFor=(key:KeyRow)=>results[key.id]??{expected_present:true,actual_condition:'good'};
   const valid=!!checkedAt&&!!checker.trim()&&scopedKeys.length>0;
@@ -399,7 +438,8 @@ export function InventoryDialog({sites,bundles,onClose,onDone}:{sites:SiteOption
     <div className="span-2 key-inventory-results">{scopedKeys.length?scopedKeys.map(key=><div key={key.id} className="key-inventory-row">
       <label><input type="checkbox" checked={entryFor(key).expected_present} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:event.target.checked,actual_condition:current[key.id]?.actual_condition??'good'}}))}/> {`${key.key_code} · ${key.label}`} erwartet</label>
       <label>Zustand<select aria-label={`Zustand ${key.key_code}`} value={entryFor(key).actual_condition} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:current[key.id]?.expected_present??true,actual_condition:event.target.value}}))}>{Object.entries(conditionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
-    </div>):<p className="employee-empty">{loading?'Schlüssel werden geladen …':'Keine Schlüssel für diese Auswahl vorhanden.'}</p>}</div>
+    </div>):<p className="employee-empty">{loading?'Schlüssel werden geladen …':'Keine Schlüssel für diese Auswahl vorhanden.'}</p>}
+      {hasMore&&<small role="status">{`${scopedKeys.length} von ${total} Schlüsseln erfasst. Bitte die Suche eingrenzen (maximal 100 pro Bestandskontrolle).`}</small>}</div>
     <label className="span-2">Notizen<textarea value={notes} onChange={event=>setNotes(event.target.value)}/></label>
     <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Bestandskontrolle speichern</button></div>
   </form></Dialog>;

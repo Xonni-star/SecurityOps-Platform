@@ -150,7 +150,8 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
 
   await page.goto(`/keys/${key.id}/qr?ref=${encodeURIComponent(token)}`);
   await expect(page.locator('.key-qr-check-valid')).toContainText('QR-Verweis gültig');
-  const tampered=`${token.slice(0,-1)}${token.endsWith('A')?'B':'A'}`;
+  const [payloadPart,signaturePart]=token.split('.');
+  const tampered=`${payloadPart}.${signaturePart[0]==='A'?'B':'A'}${signaturePart.slice(1)}`;
   await page.goto(`/keys/${key.id}/qr?ref=${encodeURIComponent(tampered)}`);
   await expect(page.locator('.key-qr-check-invalid')).toContainText('QR-Verweis ungültig');
 
@@ -267,6 +268,9 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
 test('key cockpit stays usable at desktop, laptop, tablet and phone widths',async({page})=>{
   test.setTimeout(120_000);
   await login(page,email!);
+  // The PWA service worker claims clients on activation; let it settle before
+  // the first navigation so it cannot abort it with net::ERR_ABORTED.
+  await page.evaluate(()=>navigator.serviceWorker?.ready.then(()=>undefined));
   for(const [width,height] of [[1920,1080],[1440,900],[1024,768],[390,844]] as const){
     await page.setViewportSize({width,height});
     await page.goto('/keys');
