@@ -50,13 +50,14 @@ const defaultApi=async(path:string)=>{
   if(path===`/keys/${keyId}/qr`)return {token:'hidden-token',url:'https://example.invalid/key/qr',expires_at:'2026-12-01T00:00:00Z'};
   return {};
 };
-const renderDetail=(section='uebersicht',data=profile)=>{
-  apiMock.mockImplementation(async(path:string,options?:RequestInit)=>{
+type ApiHandler=(path:string,options?:RequestInit)=>Promise<unknown>;
+const renderDetail=(section='uebersicht',data=profile,query='',apiHandler?:ApiHandler)=>{
+  apiMock.mockImplementation(apiHandler??(async(path:string,options?:RequestInit)=>{
     if(path===`/keys/${keyId}`&&options?.method==='PATCH')return {};
     if(path.startsWith(`/keys/${keyId}/loss-reports/`))return {};
     return path===`/keys/${keyId}`?data:defaultApi(path);
-  });
-  return render(<MemoryRouter initialEntries={[`${section==='root'?'/keys':`/keys/${keyId}/${section}`}`]}><Routes>
+  }));
+  return render(<MemoryRouter initialEntries={[`${section==='root'?'/keys':`/keys/${keyId}/${section}`}${query}`]}><Routes>
     <Route path="/keys" element={<p>Schlüsselübersicht</p>}/>
     <Route path="/keys/:keyId" element={<KeyDetail/>}/>
     <Route path="/keys/:keyId/:section" element={<KeyDetail/>}/>
@@ -186,6 +187,20 @@ describe('Schlüsselakte',()=>{
     expect(document.body.textContent).not.toContain('hidden-token');
     fireEvent.click(screen.getByRole('button',{name:'Etikett drucken'}));
     expect(window.print).toHaveBeenCalled();
+  });
+
+  it('verifies a QR reference from the key file link',async()=>{
+    const verifyApi=async(path:string)=>{
+      if(path===`/keys/${keyId}/qr/verify?ref=valid-ref`)return {valid:true,expires_at:'2026-12-01T00:00:00Z'};
+      if(path===`/keys/${keyId}/qr/verify?ref=bad-ref`)throw new Error('Invalid QR reference');
+      return path===`/keys/${keyId}`?profile:defaultApi(path);
+    };
+    renderDetail('qr',profile,'?ref=valid-ref',verifyApi);
+    expect(await screen.findByText(/QR-Verweis gültig bis/)).toBeTruthy();
+    expect(apiMock).toHaveBeenCalledWith(`/keys/${keyId}/qr/verify?ref=valid-ref`);
+    cleanup();
+    renderDetail('qr',profile,'?ref=bad-ref',verifyApi);
+    expect(await screen.findByText('QR-Verweis ungültig oder abgelaufen.')).toBeTruthy();
   });
 
   it('offers employees returned with employment_status as holders',()=>{

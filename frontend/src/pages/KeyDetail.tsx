@@ -1,5 +1,5 @@
 import {FormEvent,useEffect,useState} from 'react';
-import {Link,useNavigate,useParams} from 'react-router-dom';
+import {Link,useNavigate,useParams,useSearchParams} from 'react-router-dom';
 import {api,hasPermission} from '../lib/api';
 import {
   BundleRow,DocumentOption,EmployeeOption,HolderInfo,IncidentOption,KeyProfile,KeyRow,PriorityOption,RecordedMovement,SiteOption,StatusBadge,
@@ -34,6 +34,8 @@ const masterFromKey=(key:KeyRow):MasterForm=>({
 export function KeyDetail(){
   const {keyId,section}=useParams<{keyId:string;section?:string}>();
   const navigate=useNavigate();
+  const [searchParams]=useSearchParams();
+  const qrReference=searchParams.get('ref');
   const [profile,setProfile]=useState<KeyProfile|null>(null);
   const [form,setForm]=useState<MasterForm|null>(null);
   const [sites,setSites]=useState<SiteOption[]>([]);
@@ -42,8 +44,8 @@ export function KeyDetail(){
   const [incidents,setIncidents]=useState<IncidentOption[]>([]);
   const [priorities,setPriorities]=useState<PriorityOption[]>([]);
   const [bundles,setBundles]=useState<BundleRow[]>([]);
-  const [allKeys,setAllKeys]=useState<KeyRow[]>([]);
   const [history,setHistory]=useState<HistoryResponse|null>(null);
+  const [qrCheck,setQrCheck]=useState<{valid:boolean;message:string}|null>(null);
   const [historyPage,setHistoryPage]=useState(1);
   const [lossDrafts,setLossDrafts]=useState<Record<string,LossDraft>>({});
   const [dialog,setDialog]=useState<DialogState>(null);
@@ -65,7 +67,7 @@ export function KeyDetail(){
     if(!keyId||!canRead)return;
     setLoading(true);
     try{
-      const [data,siteRows,employeeRows,documentRows,incidentRows,priorityRows,bundleRows,keyRows]=await Promise.all([
+      const [data,siteRows,employeeRows,documentRows,incidentRows,priorityRows,bundleRows]=await Promise.all([
         api<KeyProfile>(`/keys/${keyId}`),
         hasPermission('sites:read')?api<SiteOption[]>('/sites').catch(()=>[]):Promise.resolve([]),
         hasPermission('employees:read')?api<EmployeeOption[]>('/employees').catch(()=>[]):Promise.resolve([]),
@@ -73,7 +75,6 @@ export function KeyDetail(){
         hasPermission('incidents:read')?api<IncidentOption[]>('/incidents').catch(()=>[]):Promise.resolve([]),
         hasPermission('alarm_priorities:read')?api<PriorityOption[]>('/alarm-priorities').catch(()=>[]):Promise.resolve([]),
         hasPermission('keys:bundle_read')?api<BundleRow[]>('/key-bundles').catch(()=>[]):Promise.resolve([]),
-        api<KeyRow[]>('/keys?pageSize=100').catch(()=>[]),
       ]);
       if(!data?.key)throw new Error('Schlüsselakte konnte nicht gefunden werden.');
       setProfile(data);setForm(masterFromKey(data.key));
@@ -83,7 +84,6 @@ export function KeyDetail(){
       setIncidents(Array.isArray(incidentRows)?incidentRows:[]);
       setPriorities(Array.isArray(priorityRows)?priorityRows:[]);
       setBundles(Array.isArray(bundleRows)?bundleRows:[]);
-      setAllKeys(Array.isArray(keyRows)&&keyRows.length?keyRows:[data.key]);
       setError('');
     }catch(cause){setError((cause as Error).message);setProfile(null);}
     finally{setLoading(false);}
@@ -109,6 +109,21 @@ export function KeyDetail(){
     })();
     return ()=>{cancelled=true;};
   },[keyId,active,historyPage,reloadToken,canHistory]);
+
+  useEffect(()=>{
+    if(!keyId||!qrReference||!canQr)return;
+    let cancelled=false;
+    void (async()=>{
+      try{
+        const result=await api<{valid:boolean;expires_at:string}>(`/keys/${keyId}/qr/verify?ref=${encodeURIComponent(qrReference)}`);
+        if(!result)throw new Error('QR verification returned no result');
+        if(!cancelled)setQrCheck(result.valid===true
+          ?{valid:true,message:`QR-Verweis gültig bis ${displayDateTime(result.expires_at)}`}
+          :{valid:false,message:'QR-Verweis ungültig.'});
+      }catch{if(!cancelled)setQrCheck({valid:false,message:'QR-Verweis ungültig oder abgelaufen.'});}
+    })();
+    return ()=>{cancelled=true;};
+  },[keyId,qrReference,canQr]);
 
   const reload=()=>{setReloadToken(token=>token+1);setHistory(null);};
   const closeDialog=()=>setDialog(null);
@@ -169,7 +184,7 @@ export function KeyDetail(){
       case 'block':return <BlockDialog item={key} action="block" onClose={closeDialog} onDone={done}/>;
       case 'reactivate':return <BlockDialog item={key} action="reactivate" onClose={closeDialog} onDone={done}/>;
       case 'qr':return <QrDialogDetail item={key} onClose={closeDialog}/>;
-      case 'inventory':return <InventoryDialog keys={allKeys.length?allKeys:[key]} sites={sites} bundles={bundles} onClose={closeDialog} onDone={done}/>;
+      case 'inventory':return <InventoryDialog sites={sites} bundles={bundles} onClose={closeDialog} onDone={done}/>;
     }
   })();
 
@@ -192,6 +207,7 @@ export function KeyDetail(){
       </div>
     </div>
     {bundled&&<p role="status" className="key-bundled-hint">Dieser Schlüssel gehört zum Bund {profile.bundle?.name||key.bundle_name}. Einzelaktionen sind im Schlüsselbund zu steuern.</p>}
+    {qrCheck&&active!=='qr'&&<p role="status" className={qrCheck.valid?'key-qr-check-valid':'key-qr-check-invalid'}>{qrCheck.message}</p>}
     <nav className="employee-tabs key-detail-tabs" aria-label="Schlüsselbereiche">
       {tabs.map(([tab,label])=><button type="button" key={tab} className={active===tab?'active':''} onClick={()=>navigate(`/keys/${key.id}/${tab}`)}>{label}</button>)}
     </nav>
@@ -280,7 +296,9 @@ export function KeyDetail(){
         </article>)}
       </>)}
 
-      {active==='qr'&&(!canSee('qr')?denied('qr'):canQr?<article className="key-detail-qr"><h3>QR-Code & Etikett</h3><QrCodeView keyId={key.id} label={`${key.key_code} ${key.label}`}/></article>:<p className="employee-empty" role="status">Keine Berechtigung zum Anzeigen des QR-Codes.</p>)}
+      {active==='qr'&&(!canSee('qr')?denied('qr'):canQr?<article className="key-detail-qr"><h3>QR-Code & Etikett</h3>
+        {qrCheck&&<p role="status" className={qrCheck.valid?'key-qr-check-valid':'key-qr-check-invalid'}>{qrCheck.message}</p>}
+        <QrCodeView keyId={key.id} label={`${key.key_code} ${key.label}`} reference={qrReference}/></article>:<p className="employee-empty" role="status">Keine Berechtigung zum Anzeigen des QR-Codes.</p>)}
     </div>
     {dialogNode}
   </section>;

@@ -5,7 +5,7 @@ import {uuid} from '../lib/uuid';
 import {
   ActionEntry,ActionList,BundleDetail,BundleRow,Dashboard,DocumentOption,EmployeeOption,IncidentOption,KeyRow,PriorityOption,SiteOption,StatusBadge,
   BundleCreateDialog,BundleDeactivateDialog,BundleIssueDialog,BundleReturnDialog,BlockDialog,
-  CreateKeyDialog,InventoryDialog,IssueDialog,LossDialog,QrDialog,ReturnDialog,displayDate,keyTypeLabels,
+  CreateKeyDialog,InventoryDialog,IssueDialog,LossDialog,QrDialog,ReturnDialog,KeySearchSelect,displayDate,keyTypeLabels,
 } from './keyParts';
 
 type SortKey='key_code'|'label'|'status'|'key_type'|'site_name'|'holder_name'|'due_at'|'last_movement_at';
@@ -53,7 +53,6 @@ export function Keys(){
   const [documents,setDocuments]=useState<DocumentOption[]>([]);
   const [incidents,setIncidents]=useState<IncidentOption[]>([]);
   const [priorities,setPriorities]=useState<PriorityOption[]>([]);
-  const [pickKeys,setPickKeys]=useState<KeyRow[]>([]);
   const [dashboard,setDashboard]=useState<Dashboard|null>(null);
   const [actions,setActions]=useState<ActionList>({A:[],B:[],C:[],generated_at:''});
   const [search,setSearch]=useState('');
@@ -70,12 +69,12 @@ export function Keys(){
   const [pageCount,setPageCount]=useState(1);
   const [reloadToken,setReloadToken]=useState(0);
   const [selected,setSelected]=useState<string[]>([]);
+  const [exportFull,setExportFull]=useState(false);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [dialog,setDialog]=useState<DialogState>(null);
   const [bundleItems,setBundleItems]=useState<Record<string,KeyRow[]>>({});
   const [bundleHistory,setBundleHistory]=useState<Record<string,{id:string;created_at:string;movement_type?:string;label?:string;description?:string}[]>>({});
-  const [bundleKeySearch,setBundleKeySearch]=useState('');
   const [bundleKeySelection,setBundleKeySelection]=useState<Record<string,string>>({});
 
   const canRead=hasPermission('keys:read');
@@ -124,26 +123,24 @@ export function Keys(){
   useEffect(()=>{
     let cancelled=false;
     const loadExtras=async()=>{
-      const [metrics,list,siteRows,employeeRows,documentRows,incidentRows,priorityRows,allKeys,bundleRows]=await Promise.all([
+      const [metrics,list,siteRows,employeeRows,documentRows,incidentRows,priorityRows,bundleRows]=await Promise.all([
         api<Dashboard>('/keys/dashboard').catch(()=>null),
-        api<ActionList>('/keys/action-list').catch(()=>({A:[],B:[],C:[],generated_at:''})),
+        api<ActionList>('/keys/action-list').catch(():ActionList=>({A:[],B:[],C:[],generated_at:''})),
         hasPermission('sites:read')?api<SiteOption[]>('/sites').catch(()=>[]):Promise.resolve([]),
         hasPermission('employees:read')?api<EmployeeOption[]>('/employees').catch(()=>[]):Promise.resolve([]),
         hasPermission('dms:read')?api<DocumentOption[]>('/dms/documents').catch(()=>[]):Promise.resolve([]),
         hasPermission('incidents:read')?api<IncidentOption[]>('/incidents').catch(()=>[]):Promise.resolve([]),
         hasPermission('alarm_priorities:read')?api<PriorityOption[]>('/alarm-priorities').catch(()=>[]):Promise.resolve([]),
-        canRead?api<KeyRow[]>('/keys?pageSize=100').catch(()=>[]):Promise.resolve([]),
         canBundleRead?api<BundleRow[]>('/key-bundles').catch(()=>[]):Promise.resolve([]),
       ]);
       if(cancelled)return;
       setDashboard(metrics&&typeof metrics.total==='number'?metrics:null);
-      setActions({A:list?.A??[],B:list?.B??[],C:list?.C??[],generated_at:list?.generated_at??''});
+      setActions({A:list?.A??[],B:list?.B??[],C:list?.C??[],totals:list?.totals??{A:list?.A?.length??0,B:list?.B?.length??0,C:list?.C?.length??0},generated_at:list?.generated_at??''});
       setSites(Array.isArray(siteRows)?siteRows:[]);
       setEmployees(Array.isArray(employeeRows)?employeeRows:[]);
       setDocuments(Array.isArray(documentRows)?documentRows:[]);
       setIncidents(Array.isArray(incidentRows)?incidentRows:[]);
       setPriorities(Array.isArray(priorityRows)?priorityRows:[]);
-      setPickKeys(Array.isArray(allKeys)?allKeys:[]);
       setBundles(Array.isArray(bundleRows)?bundleRows:[]);
     };
     void loadExtras();
@@ -165,6 +162,7 @@ export function Keys(){
     try{
       const exportQuery=new URLSearchParams(queryString);
       if(selected.length)exportQuery.set('ids',selected.join(','));
+      if(exportFull)exportQuery.set('full','true');
       const response=await fetch(`${apiBase}/keys/export?${exportQuery.toString()}`,{
         credentials:'include',headers:{'Content-Type':'application/json','x-csrf-token':typeof csrf==='function'?csrf():''},
       });
@@ -173,7 +171,10 @@ export function Keys(){
       const filename=/filename="?([^";]+)"?/i.exec(disposition)?.[1]??'schluessel.csv';
       const url=URL.createObjectURL(await response.blob());
       const link=document.createElement('a');link.href=url;link.download=filename;link.click();URL.revokeObjectURL(url);
-      setError('');
+      const count=response.headers.get('X-Key-Export-Count');
+      const total=response.headers.get('X-Key-Export-Total');
+      if(response.headers.get('X-Key-Export-Truncated')==='true')setError(`Export auf ${count??'?'} von ${total??'?'} Treffern begrenzt. Für alle Treffer „Vollständig exportieren“ aktivieren.`);
+      else setError('');
     }catch(cause){setError((cause as Error).message);}
   };
 
@@ -220,7 +221,7 @@ export function Keys(){
       case 'loss':return <LossDialog item={dialog.item} employees={employees} sites={sites} incidents={incidents} priorities={priorities} onClose={close} onDone={done}/>;
       case 'block':case 'reactivate':return <BlockDialog item={dialog.item} action={dialog.kind} onClose={close} onDone={done}/>;
       case 'qr':return <QrDialog item={dialog.item} onClose={close}/>;
-      case 'inventory':return <InventoryDialog keys={pickKeys.length?pickKeys:keys} sites={sites} bundles={bundles} onClose={close} onDone={done}/>;
+      case 'inventory':return <InventoryDialog sites={sites} bundles={bundles} onClose={close} onDone={done}/>;
       case 'bundle-create':return <BundleCreateDialog sites={sites} onClose={close} onDone={done}/>;
       case 'bundle-issue':return <BundleIssueDialog bundle={dialog.bundle} employees={employees} onClose={close} onDone={done}/>;
       case 'bundle-return':return <BundleReturnDialog bundle={dialog.bundle} items={dialog.items} partial={dialog.partial} onClose={close} onDone={done}/>;
@@ -230,7 +231,7 @@ export function Keys(){
 
   if(!canRead)return <section className="employee-management customer-management key-management"><p role="status">Keine Berechtigung zum Anzeigen von Schlüsseln.</p></section>;
 
-  const criticalActions=(dashboard?.lost??0)+(dashboard?.overdue??0)+(dashboard?.blocked??0)+(actions.A?.length??0);
+  const criticalActions=dashboard?.critical_count??0;
   const primaryCards:[number,string][]=[
     [dashboard?.total??0,'Gesamt'],[dashboard?.available??0,'Verfügbar'],[dashboard?.issued??0,'Ausgegeben'],
     [dashboard?.overdue??0,'Überfällig'],[dashboard?.lost??0,'Verloren'],[criticalActions,'Kritische Vorgänge'],
@@ -240,17 +241,17 @@ export function Keys(){
     [dashboard?.without_holder??0,'Ohne Halter'],[dashboard?.partial_bundles??0,'Unvollständige Bunde'],
     [dashboard?.due_today??0,'Heute fällig'],[dashboard?.due_7_days??0,'In 7 Tagen fällig'],[dashboard?.due_30_days??0,'In 30 Tagen fällig'],
   ];
-  const bundleKeys=(bundle:BundleRow)=>bundleItems[bundle.id]??pickKeys.filter(key=>key.bundle_id===bundle.id);
-  const selectableBundleKeys=(bundle:BundleRow)=>pickKeys.filter(key=>key.status==='available'&&(!key.bundle_id||key.bundle_id===bundle.id))
-    .filter(key=>!bundle.site_id||!key.site_id||key.site_id===bundle.site_id)
-    .filter(key=>`${key.key_code} ${key.label}`.toLowerCase().includes(bundleKeySearch.trim().toLowerCase()));
+  const bundleKeys=(bundle:BundleRow)=>bundleItems[bundle.id]??[];
 
   return <section className="employee-management customer-management key-management">
     <div className="employee-page-title">
       <div><h1>Schlüsselverwaltung</h1><p>Ausgabe, Rückgabe, Verlust, Bund und Bestandskontrolle revisionssicher im Blick.</p></div>
       <div className="employee-page-actions">
         {canInventory&&<button type="button" onClick={()=>setDialog({kind:'inventory'})}>Bestandskontrolle</button>}
-        {canExport&&<button type="button" onClick={()=>void exportCsv()}>Export{selected.length?` (${selected.length})`:''}</button>}
+        {canExport&&<>
+          <label className="key-export-full"><input type="checkbox" checked={exportFull} onChange={event=>setExportFull(event.target.checked)}/> Vollständig exportieren</label>
+          <button type="button" onClick={()=>void exportCsv()}>Export{selected.length?` (${selected.length})`:''}</button>
+        </>}
         {canCreate&&<button type="button" onClick={()=>setDialog({kind:'create'})}>+ Schlüssel anlegen</button>}
         {canBundleWrite&&<button type="button" onClick={()=>setDialog({kind:'bundle-create'})}>+ Bund anlegen</button>}
       </div>
@@ -269,13 +270,18 @@ export function Keys(){
     </>}
     <section className="customer-action-board key-action-board" aria-label="Handlungsübersicht">
       <h2>Handlungsübersicht</h2>
-      <div className="customer-action-columns">{(['A','B','C'] as const).map(bucket=><article key={bucket} className={`customer-action-column bucket-${bucket}`}>
-        <h3>{bucket} · {bucketLabels[bucket]} <small>{actions[bucket]?.length??0}</small></h3>
-        <ul>{(actions[bucket]??[]).length?(actions[bucket]??[]).map(entry=><li key={entry.id}>
-          <Link to={actionTarget(entry)}><strong>{entry.label}</strong><small>{entry.key_code||entry.site_name||''}</small></Link>
-          {entry.due_at&&<small className="customer-action-due">Fällig {displayDate(entry.due_at)}</small>}
-        </li>):<li className="employee-empty">Keine Einträge</li>}</ul>
-      </article>)}</div>
+      <div className="customer-action-columns">{(['A','B','C'] as const).map(bucket=>{
+        const total=actions.totals?.[bucket]??actions[bucket]?.length??0;
+        const shown=actions[bucket]?.length??0;
+        return <article key={bucket} className={`customer-action-column bucket-${bucket}`}>
+          <h3>{bucket} · {bucketLabels[bucket]} <small>{total}</small></h3>
+          <ul>{shown?actions[bucket].map(entry=><li key={entry.id}>
+            <Link to={actionTarget(entry)}><strong>{entry.label}</strong><small>{entry.key_code||entry.site_name||''}</small></Link>
+            {entry.due_at&&<small className="customer-action-due">Fällig {displayDate(entry.due_at)}</small>}
+          </li>):<li className="employee-empty">Keine Einträge</li>}</ul>
+          {total>shown&&<p className="key-action-more" role="status">Weitere {total-shown} Vorgänge sind in der Gesamtzahl enthalten.</p>}
+        </article>;
+      })}</div>
     </section>
 
     {canBundleRead&&<section className="key-bundle-section" aria-label="Schlüsselbunde">
@@ -301,11 +307,8 @@ export function Keys(){
           {bundleItems[bundle.id]&&<div className="bundle-member-list">
             {items.length?items.map(item=><div key={item.id}><Link to={`/keys/${item.id}`}>{item.key_code} · {item.label}</Link><StatusBadge status={item.status}/>{canBundleWrite&&<button type="button" onClick={()=>void removeBundleKey(bundle,item.id)}>Entfernen</button>}</div>):<p className="employee-empty">Keine Schlüssel im Bund.</p>}
             {canBundleWrite&&<div className="key-bundle-add">
-              <input aria-label="Schlüssel im Bund suchen" placeholder="Schlüssel suchen" value={bundleKeySearch} onChange={event=>setBundleKeySearch(event.target.value)}/>
-              <select aria-label="Schlüssel für Bund" value={bundleKeySelection[bundle.id]||''} onChange={event=>setBundleKeySelection(current=>({...current,[bundle.id]:event.target.value}))}>
-                <option value="">Schlüssel auswählen</option>
-                {selectableBundleKeys(bundle).map(key=><option key={key.id} value={key.id}>{`${key.key_code} · ${key.label}`}</option>)}
-              </select>
+              <KeySearchSelect label="Schlüssel für Bund" searchLabel="Schlüssel im Bund suchen" siteId={bundle.site_id??''} excludeBundleId={bundle.id} status="available"
+                value={bundleKeySelection[bundle.id]||''} onChange={value=>setBundleKeySelection(current=>({...current,[bundle.id]:value}))}/>
               <button type="button" disabled={!bundleKeySelection[bundle.id]} onClick={()=>void addBundleKey(bundle)}>Hinzufügen</button>
             </div>}
           </div>}

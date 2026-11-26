@@ -7,8 +7,8 @@ import {runIdempotentMutation} from '../services/offline-sync.js';
 import type {SyncMutationAction} from '../services/offline-sync.js';
 import {recordAudit} from '../services/audit.js';
 import {queueNotificationEvent} from '../services/notifications.js';
-import {keyQrSecret} from '../services/key-reminders.js';
-import {bundleStatus,buildKeyQrToken,canReturnKey,hashKeyQrToken,holderIsValid,transitionKeyStatus,validateBundleReturn} from '../services/keys-domain.js';
+import {keyQrSecret} from '../config/env.js';
+import {bundleStatus,buildKeyQrToken,canReturnKey,hashKeyQrToken,holderIsValid,transitionKeyStatus,validateBundleReturn,verifyKeyQrToken} from '../services/keys-domain.js';
 
 const uuid=z.string().uuid();
 const text=(max:number)=>z.string().trim().max(max).nullable().optional();
@@ -18,6 +18,10 @@ const returnConditions=['good','damaged','incomplete','nonfunctional','suspiciou
 const lossStatuses=['reported','review','security_measure_required','replacement_required','closed'] as const;
 const movementBody=z.object({client_mutation_id:uuid,reason:text(1000)}).strict();
 const derivedStatusSql="CASE WHEN k.status='issued' AND k.due_at<now() THEN 'overdue' ELSE k.status END";
+const openCriticalLossSql="EXISTS (SELECT 1 FROM key_loss_reports l WHERE l.tenant_id=k.tenant_id AND l.key_id=k.id AND l.status IN ('review','security_measure_required','replacement_required'))";
+const criticalKeySql=`(k.status IN ('lost','blocked') OR (${derivedStatusSql})='overdue'
+  OR (k.status='issued' AND k.holder_user_id IS NULL AND k.holder_employee_id IS NULL)
+  OR ${openCriticalLossSql})`;
 type Client=Parameters<Parameters<typeof withTransaction>[0]>[0];
 type QueryLike={query:(text:string,values?:unknown[])=>Promise<{rows:any[]}>};
 type Row=Record<string,any>;
@@ -81,12 +85,21 @@ const listQuerySchema=z.object({
   page:z.coerce.number().int().min(1).max(100000).default(1),pageSize:z.coerce.number().int().min(1).max(100).default(10),
 });
 type KeyFilters=z.infer<typeof listQuerySchema>;
+const pickerQuerySchema=listQuerySchema.extend({
+  exclude_bundle_id:uuid.optional(),
+  limit:z.coerce.number().int().min(1).max(500).default(200),
+});
+const exportQuerySchema=listQuerySchema.extend({
+  full:z.enum(['true','false']).default('false').transform(value=>value==='true'),
+});
+const exportDefaultLimit=10000;
+const exportBatchSize=1000;
 const orderExpressions:Record<typeof sortFields[number],string>={
   key_code:'lower(k.key_code)',label:'lower(k.label)',key_type:'k.key_type',status:derivedStatusSql,
   site_name:'lower(s.name)',holder_name:'lower(COALESCE(hu.email,he.name))',issued_at:'k.issued_at',
   due_at:'k.due_at',last_movement_at:'lm.created_at',created_at:'k.created_at',
 };
-function keyListQuery(req:Request,filters:KeyFilters,codes:string[],options:{limit?:number;offset?:number;ids?:string[]}={}){
+function keyListQuery(req:Request,filters:KeyFilters,codes:string[],options:{limit?:number;offset?:number;ids?:string[];excludeBundleId?:string}={}){
   const tenantId=req.user!.tenantId;
   const values:unknown[]=[tenantId];
   const conditions=['k.tenant_id=$1'];
@@ -105,6 +118,7 @@ function keyListQuery(req:Request,filters:KeyFilters,codes:string[],options:{lim
   if(filters.location)conditions.push(add("k.location ILIKE $P ESCAPE '\\'",`%${filters.location.replace(/[\\%_]/g,'\\$&')}%`));
   if(filters.bundle_id)conditions.push(add('EXISTS (SELECT 1 FROM key_bundle_items i WHERE i.tenant_id=k.tenant_id AND i.key_id=k.id AND i.bundle_id=$P)',filters.bundle_id));
   if(options.ids?.length)conditions.push(add('k.id=ANY($P::uuid[])',options.ids));
+  if(options.excludeBundleId)conditions.push(add('NOT EXISTS (SELECT 1 FROM key_bundle_items i WHERE i.tenant_id=k.tenant_id AND i.key_id=k.id AND i.bundle_id=$P)',options.excludeBundleId));
   const limitIndex=values.length+1;const offsetIndex=values.length+2;
   values.push(options.limit??filters.pageSize,options.offset??(filters.page-1)*filters.pageSize);
   const direction=filters.dir.toUpperCase();
@@ -148,6 +162,19 @@ keysRouter.get('/keys',requirePermission('keys:read',{allowedScopes:['tenant','s
   }catch(error){if(error instanceof z.ZodError)return badRequest(res);next(error);}
 });
 
+// Reusable server-side search for pickers. Unlike the paginated list this is
+// intentionally allowed to return up to 500 matching keys so bundle and
+// inventory selections keep working beyond the first 100 records.
+keysRouter.get('/keys/picker',requirePermission('keys:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const filters=parseQuery(req,pickerQuerySchema);
+    const {sql,values}=keyListQuery(req,filters,['keys:read'],{limit:filters.limit,offset:0,excludeBundleId:filters.exclude_bundle_id});
+    const result=await query(sql,values);
+    setPageHeaders(res,result.rows[0]?.total_count??result.rows.length,1,filters.limit);
+    res.json(result.rows);
+  }catch(error){if(error instanceof z.ZodError)return badRequest(res);next(error);}
+});
+
 keysRouter.get('/keys/dashboard',requirePermission('keys:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const scope=permissionScope(req,'keys:read');
@@ -161,6 +188,7 @@ keysRouter.get('/keys/dashboard',requirePermission('keys:read',{allowedScopes:['
         COUNT(*) FILTER(WHERE (${derivedStatusSql})='overdue')::int overdue,
         COUNT(*) FILTER(WHERE k.status='lost')::int lost,
         COUNT(*) FILTER(WHERE k.status='blocked')::int blocked,
+        COUNT(DISTINCT k.id) FILTER(WHERE ${criticalKeySql})::int critical_count,
         COUNT(*) FILTER(WHERE k.status='deactivated')::int deactivated,
         COUNT(*) FILTER(WHERE k.site_id IS NULL)::int without_site,
         COUNT(*) FILTER(WHERE k.holder_user_id IS NULL AND k.holder_employee_id IS NULL)::int without_holder,
@@ -179,85 +207,158 @@ keysRouter.get('/keys/dashboard',requirePermission('keys:read',{allowedScopes:['
 });
 
 type ActionEntry={id:string;bucket:'A'|'B'|'C';code:string;label:string;key_id:string;key_code:string;site_id:string|null;site_name:string|null;subject_type:string;subject_id:string|null;due_at:string|null;url:string;target:string};
-async function keyActions(req:Request){
+type ActionBuckets={A:ActionEntry[];B:ActionEntry[];C:ActionEntry[]};
+const actionDisplayLimits={A:50,B:50,C:50} as const;
+async function keyActions(req:Request):Promise<ActionBuckets&{totals:Record<'A'|'B'|'C',number>;generated_at:string}>{
   const tenantId=req.user!.tenantId;
   const scope=permissionScope(req,'keys:read');
-  const siteCondition=scope==='site'?' AND k.site_id=ANY($2::uuid[])':'';
+  const keyScope=scope==='site'?' AND k.site_id=ANY($2::uuid[])':'';
+  const bundleScope=scope==='site'?' AND b.site_id=ANY($2::uuid[])':'';
   const values=scope==='site'?[tenantId,req.user!.siteIds??[]]:[tenantId];
-  const [keys,lossReports,bundles,movements]=await Promise.all([
-    query(`SELECT k.id,k.key_code,k.label,k.site_id,k.status,k.holder_user_id,k.holder_employee_id,k.due_at,k.created_at,
-        k.site_id IS NULL OR (k.location IS NULL AND k.building IS NULL AND k.area IS NULL) incomplete_master,
-        s.name site_name,COALESCE(hu.email,he.name) holder_name,
-        ${derivedStatusSql} display_status
-      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
-      LEFT JOIN users hu ON hu.tenant_id=k.tenant_id AND hu.id=k.holder_user_id
-      LEFT JOIN employees he ON he.tenant_id=k.tenant_id AND he.id=k.holder_employee_id
-      WHERE k.tenant_id=$1${siteCondition} ORDER BY k.created_at DESC LIMIT 500`,values),
-    query(`SELECT l.id,l.key_id,l.status,l.description,l.immediate_measures,k.key_code,k.label,k.site_id,s.name site_name
+  // Candidates are derived in SQL from the live state instead of slicing the newest
+  // keys/movements first. That keeps old but still open A/B cases visible and makes
+  // ordering deterministic across pages and reloads.
+  const candidates=(await query(`
+    WITH candidates AS (
+      SELECT 'A'::text bucket,5 severity,'critical_loss_report' code,
+        'Verlustmeldung prüfen: '||k.label label,k.id key_id,k.key_code,k.site_id,s.name site_name,
+        'loss_report' subject_type,l.id subject_id,NULL::timestamptz due_at,l.created_at sort_at,true history
       FROM key_loss_reports l JOIN keys k ON k.tenant_id=l.tenant_id AND k.id=l.key_id
       LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
-      WHERE l.tenant_id=$1 AND l.status IN ('review','security_measure_required','replacement_required')${siteCondition}
-      ORDER BY l.created_at DESC LIMIT 100`,values),
-    query(`SELECT b.id,b.name,b.site_id,b.status,s.name site_name,
-        (SELECT i.key_id FROM key_bundle_items i WHERE i.tenant_id=b.tenant_id AND i.bundle_id=b.id LIMIT 1) key_id,
-        (SELECT k.key_code FROM key_bundle_items i JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
-          WHERE i.tenant_id=b.tenant_id AND i.bundle_id=b.id LIMIT 1) key_code
-      FROM key_bundles b LEFT JOIN sites s ON s.tenant_id=b.tenant_id AND s.id=b.site_id
-      WHERE b.tenant_id=$1${scope==='site'?' AND b.site_id=ANY($2::uuid[])':''} AND b.status='partial'`,values),
-    query(`SELECT m.id,m.key_id,m.movement_type,m.created_at,m.holder_user_id,m.holder_employee_id,
-        k.key_code,k.label,k.site_id,s.name site_name
+      WHERE l.tenant_id=$1${keyScope} AND l.status IN ('review','security_measure_required','replacement_required')
+      UNION ALL
+      SELECT 'A',10,'key_lost','Schlüssel verloren: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'loss_report',NULL::uuid,NULL::timestamptz,k.created_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope} AND k.status='lost'
+      UNION ALL
+      SELECT 'A',20,'return_overdue','Überfällige Rückgabe: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'due',NULL::uuid,k.due_at,k.due_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope} AND (${derivedStatusSql})='overdue'
+      UNION ALL
+      SELECT 'A',30,'missing_holder','Ausgegebener Schlüssel ohne Halter: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'holder',NULL::uuid,NULL::timestamptz,k.issued_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope} AND k.status='issued' AND k.holder_user_id IS NULL AND k.holder_employee_id IS NULL
+      UNION ALL
+      SELECT 'A',40,'untraceable_movement','Bewegung ohne Halter: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'movement',m.id,NULL::timestamptz,m.created_at,true
       FROM key_movements m JOIN keys k ON k.tenant_id=m.tenant_id AND k.id=m.key_id
       LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
-      WHERE m.tenant_id=$1${siteCondition} AND m.created_at>now()-INTERVAL '30 days'
-      ORDER BY m.created_at DESC LIMIT 300`,values),
-  ]);
-  const entries:ActionEntry[]=[];
-  const push=(bucket:'A'|'B'|'C',code:string,label:string,row:Row,subjectType:string,subjectId:string|null=null,dueAt:string|null=null,history=false)=>{
-    const url=`/keys/${row.key_id}${history?'/historie':''}`;
-    const entry={id:`${code}:${subjectId??row.key_id}`,bucket,code,label,key_id:row.key_id,key_code:row.key_code,
-      site_id:row.site_id??null,site_name:row.site_name??null,subject_type:subjectType,subject_id:subjectId,
-      due_at:dueAt,url,target:url};
-    if(!entries.some(item=>item.id===entry.id))entries.push(entry);
-  };
-  const now=Date.now();
-  for(const row of keys.rows){
-    const base={key_id:row.id,key_code:row.key_code,site_id:row.site_id,site_name:row.site_name};
-    if(row.status==='lost')push('A','key_lost',`Schlüssel verloren: ${row.label}`,base,'loss_report');
-    if(row.display_status==='overdue')push('A','return_overdue',`Überfällige Rückgabe: ${row.label}`,base,'due',null,row.due_at);
-    if(row.status==='issued'&&!row.holder_user_id&&!row.holder_employee_id)push('A','missing_holder',`Ausgegebener Schlüssel ohne Halter: ${row.label}`,base,'holder');
-    if(row.incomplete_master||!row.site_id)push('B','incomplete_master_data',`Stammdaten unvollständig: ${row.label}`,base,'master_data');
-    if(row.due_at){
-      const due=Date.parse(row.due_at);
-      if(due>=now&&due<=now+7*86_400_000)push('B','return_due_7',`Rückgabe in 7 Tagen: ${row.label}`,base,'due',null,row.due_at);
-      else if(due>now+7*86_400_000&&due<=now+30*86_400_000)push('B','return_due_30',`Rückgabe in 30 Tagen: ${row.label}`,base,'due',null,row.due_at);
-    }
-    if(Date.parse(row.created_at)>=now-14*86_400_000)push('C','key_created',`Neu angelegter Schlüssel: ${row.label}`,base,'key');
+      WHERE m.tenant_id=$1${keyScope} AND m.movement_type IN ('issued','lost')
+        AND m.holder_user_id IS NULL AND m.holder_employee_id IS NULL
+      UNION ALL
+      SELECT 'B',10,'return_due_7','Rückgabe in 7 Tagen: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'due',NULL::uuid,k.due_at,k.due_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope} AND k.due_at>=now() AND k.due_at<now()+INTERVAL '7 days'
+      UNION ALL
+      SELECT 'B',20,'return_due_30','Rückgabe in 30 Tagen: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'due',NULL::uuid,k.due_at,k.due_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope} AND k.due_at>=now()+INTERVAL '7 days' AND k.due_at<now()+INTERVAL '30 days'
+      UNION ALL
+      SELECT 'B',30,'incomplete_master_data','Stammdaten unvollständig: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'master_data',NULL::uuid,NULL::timestamptz,k.updated_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope}
+        AND (k.site_id IS NULL OR (k.location IS NULL AND k.building IS NULL AND k.area IS NULL))
+      UNION ALL
+      SELECT 'B',40,'partial_bundle_return','Teilweise zurückgegebenes Bündel: '||b.name,
+        item.key_id,item.key_code,b.site_id,s.name,'bundle',b.id,NULL::timestamptz,b.updated_at,false
+      FROM key_bundles b LEFT JOIN sites s ON s.tenant_id=b.tenant_id AND s.id=b.site_id
+      CROSS JOIN LATERAL (
+        SELECT i.key_id,k.key_code FROM key_bundle_items i JOIN keys k ON k.tenant_id=i.tenant_id AND k.id=i.key_id
+        WHERE i.tenant_id=b.tenant_id AND i.bundle_id=b.id ORDER BY k.key_code LIMIT 1
+      ) item
+      WHERE b.tenant_id=$1${bundleScope} AND b.status='partial'
+      UNION ALL
+      SELECT 'B',50,'handover_confirmation','Übergabe bestätigen: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'receipt',m.id,NULL::timestamptz,m.created_at,false
+      FROM key_movements m JOIN keys k ON k.tenant_id=m.tenant_id AND k.id=m.key_id
+      LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE m.tenant_id=$1${keyScope} AND m.movement_type='issued'
+        AND NOT EXISTS (SELECT 1 FROM key_receipts r WHERE r.tenant_id=m.tenant_id AND r.key_id=m.key_id
+          AND r.kind='issue' AND r.created_at BETWEEN m.created_at-INTERVAL '5 minutes' AND m.created_at+INTERVAL '5 minutes')
+      UNION ALL
+      SELECT 'C',10,'key_created','Neu angelegter Schlüssel: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'key',NULL::uuid,NULL::timestamptz,k.created_at,false
+      FROM keys k LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE k.tenant_id=$1${keyScope} AND k.created_at>=now()-INTERVAL '14 days'
+      UNION ALL
+      SELECT 'C',20,'recent_return','Kürzlich zurückgegeben: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'movement',m.id,NULL::timestamptz,m.created_at,true
+      FROM key_movements m JOIN keys k ON k.tenant_id=m.tenant_id AND k.id=m.key_id
+      LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE m.tenant_id=$1${keyScope} AND m.movement_type='returned' AND m.created_at>=now()-INTERVAL '30 days'
+      UNION ALL
+      SELECT 'C',30,'stock_change','Bestandsänderung: '||k.label,k.id,k.key_code,k.site_id,s.name,
+        'movement',m.id,NULL::timestamptz,m.created_at,true
+      FROM key_movements m JOIN keys k ON k.tenant_id=m.tenant_id AND k.id=m.key_id
+      LEFT JOIN sites s ON s.tenant_id=k.tenant_id AND s.id=k.site_id
+      WHERE m.tenant_id=$1${keyScope} AND m.movement_type IN ('created','blocked','reactivated')
+        AND m.created_at>=now()-INTERVAL '30 days'
+    )
+    SELECT * FROM candidates
+    ORDER BY bucket,severity,due_at ASC NULLS LAST,sort_at DESC,key_id,code,subject_id
+  `,values)).rows as Row[];
+  const buckets:ActionBuckets={A:[],B:[],C:[]};
+  const seen=new Set<string>();
+  const totals:Record<'A'|'B'|'C',number>={A:0,B:0,C:0};
+  for(const row of candidates){
+    const bucket=row.bucket as 'A'|'B'|'C';
+    if(bucket!=='A'&&bucket!=='B'&&bucket!=='C')continue;
+    const url=`/keys/${row.key_id}${row.history?'/historie':''}`;
+    const entry:ActionEntry={id:`${row.code}:${row.subject_id??row.key_id}`,bucket,code:row.code,label:row.label,
+      key_id:row.key_id,key_code:row.key_code,site_id:row.site_id??null,site_name:row.site_name??null,
+      subject_type:row.subject_type,subject_id:row.subject_id??null,due_at:row.due_at??null,url,target:url};
+    if(seen.has(entry.id))continue;
+    seen.add(entry.id);totals[bucket]+=1;
+    if(buckets[bucket].length<actionDisplayLimits[bucket])buckets[bucket].push(entry);
   }
-  for(const row of lossReports.rows)push('A','critical_loss_report',`Verlustmeldung prüfen: ${row.label}`,row,'loss_report',row.id,null,true);
-  for(const row of bundles.rows)if(row.key_id)push('B','partial_bundle_return',`Teilweise zurückgegebenes Bündel: ${row.name}`,row,'bundle',row.id);
-  for(const row of movements.rows){
-    const base={key_id:row.key_id,key_code:row.key_code,site_id:row.site_id,site_name:row.site_name};
-    if(!row.holder_user_id&&!row.holder_employee_id&&['issued','lost'].includes(row.movement_type))push('A','untraceable_movement',`Bewegung ohne Halter: ${row.label}`,base,'movement',row.id,null,true);
-    if(row.movement_type==='issued')push('B','handover_confirmation',`Übergabe bestätigen: ${row.label}`,base,'receipt',row.id);
-    if(row.movement_type==='returned')push('C','recent_return',`Kürzlich zurückgegeben: ${row.label}`,base,'movement',row.id,null,true);
-    if(['created','blocked','reactivated'].includes(row.movement_type))push('C','stock_change',`Bestandsänderung: ${row.label}`,base,'movement',row.id,null,true);
-  }
-  const limits={A:20,B:30,C:30};
-  return {A:entries.filter(item=>item.bucket==='A').slice(0,limits.A),B:entries.filter(item=>item.bucket==='B').slice(0,limits.B),C:entries.filter(item=>item.bucket==='C').slice(0,limits.C),generated_at:new Date().toISOString()};
+  return {...buckets,totals,generated_at:new Date().toISOString()};
 }
 
 keysRouter.get('/keys/action-list',requirePermission('keys:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{res.json(await keyActions(req));}catch(error){next(error);}
 });
 
-const csvCell=(value:unknown)=>`"${String(value??'').split('"').join('""')}"`;
+// Spreadsheet applications execute cells starting with these characters as
+// formulas. Prefixing them with an apostrophe keeps the visible value intact
+// while preventing CSV injection.
+const csvCell=(value:unknown)=>{
+  const text=String(value??'');
+  const safe=/^[=+\-@\t\r]/.test(text)?`'${text}`:text;
+  return `"${safe.split('"').join('""')}"`;
+};
 keysRouter.get('/keys/export',requirePermission('keys:export',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
-    const filters=parseQuery(req,listQuerySchema);
+    const filters=parseQuery(req,exportQuerySchema);
     const rawIds=typeof req.query.ids==='string'?req.query.ids.split(',').filter(Boolean):[];
     const ids=z.array(uuid).max(100).parse(rawIds);
-    const {sql,values}=keyListQuery(req,{...filters,page:1},['keys:export'],{limit:ids.length||10000,offset:0,ids});
-    const rows=(await query(sql,values)).rows as Row[];
+    const rows:Row[]=[];
+    let total=0;
+    if(ids.length){
+      const {sql,values}=keyListQuery(req,{...filters,page:1},['keys:export'],{limit:ids.length,offset:0,ids});
+      const result=await query(sql,values);
+      rows.push(...result.rows as Row[]);
+      total=result.rows[0]?.total_count??rows.length;
+    }else{
+      // The default export is deliberately capped; full=true pages through all
+      // matching rows until the server-reported total is reached.
+      const cap=filters.full?Number.MAX_SAFE_INTEGER:exportDefaultLimit;
+      for(let offset=0;offset<cap;offset+=exportBatchSize){
+        const batchLimit=Math.min(exportBatchSize,cap-offset);
+        const {sql,values}=keyListQuery(req,{...filters,page:1},['keys:export'],{limit:batchLimit,offset});
+        const result=await query(sql,values);
+        const batch=result.rows as Row[];
+        total=result.rows[0]?.total_count??batch.length;
+        rows.push(...batch);
+        if(batch.length<batchLimit||rows.length>=total)break;
+      }
+    }
+    const truncated=total>rows.length;
     const columns:[string,(row:Row)=>unknown][]=[
       ['Schlüsselnummer',row=>row.key_code],['Bezeichnung',row=>row.label],['Schlüsseltyp',row=>row.key_type],
       ['Status',row=>row.status],['Objekt',row=>row.site_name],['Standort',row=>row.location],['Gebäude',row=>row.building],
@@ -267,9 +368,13 @@ keysRouter.get('/keys/export',requirePermission('keys:export',{allowedScopes:['t
       ['Zurückgegeben am',row=>row.returned_at],['Bündel',row=>row.bundle_name],['Letzte Bewegung',row=>row.last_movement_at],
       ['Angelegt am',row=>row.created_at],
     ];
-    const csv=[columns.map(([label])=>csvCell(label)).join(';'),...rows.map(row=>columns.map(([,get])=>csvCell(get(row))).join(';'))].join('\r\n');
-    await recordAudit(req.user!.tenantId,req.user!.id,'keys.exported','key',undefined,{count:rows.length,selected:ids.length>0});
+    const notice=truncated?[csvCell(`# Hinweis: Export auf ${rows.length} von ${total} Treffern begrenzt. Für den vollständigen Export full=true verwenden.`)]:[];
+    const csv=[...notice,columns.map(([label])=>csvCell(label)).join(';'),...rows.map(row=>columns.map(([,get])=>csvCell(get(row))).join(';'))].join('\r\n');
+    await recordAudit(req.user!.tenantId,req.user!.id,'keys.exported','key',undefined,{count:rows.length,total,selected:ids.length>0,truncated,full:filters.full});
     res.set('Content-Disposition','attachment; filename="schluessel.csv"');
+    res.set('X-Key-Export-Count',String(rows.length));
+    res.set('X-Key-Export-Total',String(total));
+    res.set('X-Key-Export-Truncated',String(truncated));
     res.status(200).type('text/csv; charset=utf-8').send(`\ufeff${csv}`);
   }catch(error){if(error instanceof z.ZodError)return badRequest(res);next(error);}
 });
@@ -654,14 +759,33 @@ keysRouter.get('/keys/:id/qr',requirePermission('keys:qr:read',{allowedScopes:['
   try{
     const key=await readKey({query},req,['keys:qr:read']);
     const expiresAt=new Date(Date.now()+15*60*1000);
-    const token=buildKeyQrToken(keyQrSecret(),req.user!.tenantId,key.id,expiresAt);
+    const token=buildKeyQrToken(keyQrSecret,req.user!.tenantId,key.id,expiresAt);
     await withTransaction(async client=>{
+      // Reissuing invalidates the previous reference of this key immediately.
+      await client.query('DELETE FROM key_qr_tokens WHERE tenant_id=$1 AND key_id=$2',[req.user!.tenantId,key.id]);
       await client.query(`INSERT INTO key_qr_tokens(tenant_id,key_id,token_hash,expires_at,created_by)
-        VALUES($1,$2,$3,$4,$5) ON CONFLICT (tenant_id,id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at,created_by=EXCLUDED.created_by,created_at=now()`,
+        VALUES($1,$2,$3,$4,$5)`,
         [req.user!.tenantId,key.id,hashKeyQrToken(token),expiresAt,req.user!.id]);
       await recordAudit(req.user!.tenantId,req.user!.id,'keys.qr.issued','key',key.id,{expires_at:expiresAt.toISOString()},client);
     });
-    res.json({token,url:`/keys/${key.id}?ref=${encodeURIComponent(token)}`,expires_at:expiresAt.toISOString()});
+    res.json({token,url:`/keys/${key.id}/qr?ref=${encodeURIComponent(token)}`,expires_at:expiresAt.toISOString()});
+  }catch(error){next(error);}
+});
+
+keysRouter.get('/keys/:id/qr/verify',requirePermission('keys:qr:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const key=await readKey({query},req,['keys:qr:read']);
+    const token=typeof req.query.ref==='string'?req.query.ref:'';
+    const verification=verifyKeyQrToken(keyQrSecret,token,{tenantId:req.user!.tenantId,keyId:key.id});
+    const stored=verification.valid?(await query('SELECT id FROM key_qr_tokens WHERE tenant_id=$1 AND key_id=$2 AND token_hash=$3 AND expires_at>now()',
+      [req.user!.tenantId,key.id,hashKeyQrToken(token)])).rows[0]:undefined;
+    if(!verification.valid||!stored){
+      const reason=verification.valid?'revoked':verification.reason;
+      await recordAudit(req.user!.tenantId,req.user!.id,'keys.qr.verify_failed','key',key.id,{reason});
+      return res.status(reason==='expired'?410:400).json({error:'Ungültiger QR-Verweis.',code:reason==='expired'?'KEY_QR_EXPIRED':'KEY_QR_INVALID'});
+    }
+    await recordAudit(req.user!.tenantId,req.user!.id,'keys.qr.verified','key',key.id,{expires_at:verification.expiresAt});
+    res.json({valid:true,key_id:key.id,key_code:key.key_code,label:key.label,expires_at:verification.expiresAt});
   }catch(error){next(error);}
 });
 

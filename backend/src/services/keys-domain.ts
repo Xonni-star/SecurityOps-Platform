@@ -74,3 +74,34 @@ export function buildKeyQrToken(secret:string,tenantId:string,keyId:string,expir
   return `${payload}.${signature}`;
 }
 export function hashKeyQrToken(token:string){return crypto.createHash('sha256').update(token).digest('hex');}
+
+export type QrTokenVerification=
+  {valid:true;tenantId:string;keyId:string;expiresAt:string}
+  |{valid:false;reason:'malformed'|'invalid_signature'|'expired'|'tenant_mismatch'|'key_mismatch'};
+
+/** Constant-time HMAC verification with tenant, key and expiry binding. */
+export function verifyKeyQrToken(
+  secret:string,
+  token:string,
+  expected:{tenantId:string;keyId?:string},
+  now=new Date(),
+):QrTokenVerification{
+  const fail=(reason:Exclude<QrTokenVerification,{valid:true}>['reason']):QrTokenVerification=>({valid:false,reason});
+  if(typeof token!=='string'||token.length<20||token.length>4096||token.split('.').length!==2)return fail('malformed');
+  const [payloadPart,signaturePart]=token.split('.');
+  if(!/^[A-Za-z0-9_-]+$/.test(payloadPart)||!/^[A-Za-z0-9_-]+$/.test(signaturePart))return fail('malformed');
+  let claims:unknown;
+  try{claims=JSON.parse(Buffer.from(payloadPart,'base64url').toString('utf8'));}catch{return fail('malformed');}
+  if(!claims||typeof claims!=='object')return fail('malformed');
+  const {tid,kid,exp}=claims as Record<string,unknown>;
+  if(typeof tid!=='string'||typeof kid!=='string'||typeof exp!=='string')return fail('malformed');
+  const expiresAt=new Date(exp);
+  if(!Number.isFinite(expiresAt.getTime()))return fail('malformed');
+  const expectedSignature=crypto.createHmac('sha256',secret).update(payloadPart).digest();
+  const providedSignature=Buffer.from(signaturePart,'base64url');
+  if(expectedSignature.length!==providedSignature.length||!crypto.timingSafeEqual(expectedSignature,providedSignature))return fail('invalid_signature');
+  if(tid!==expected.tenantId)return fail('tenant_mismatch');
+  if(expected.keyId&&kid!==expected.keyId)return fail('key_mismatch');
+  if(expiresAt.getTime()<=now.getTime())return fail('expired');
+  return {valid:true,tenantId:tid,keyId:kid,expiresAt:expiresAt.toISOString()};
+}
