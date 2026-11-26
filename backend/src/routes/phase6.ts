@@ -7,7 +7,6 @@ import {recordAudit} from '../services/audit.js';
 type Row=Record<string,unknown>;
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1).max(200);
-const status=z.enum(['active','lost','blocked','replaced']);
 const deviceType=z.enum(['tag','reader']);
 export const phase6Router=Router();
 phase6Router.use((req,res,next)=>/^\/nfc-devices/.test(req.path)
@@ -64,29 +63,34 @@ phase6Router.get('/nfc-devices',requirePermission('nfc_devices:read'),async(req,
 
 phase6Router.post('/nfc-devices',requirePermission('nfc_devices:write'),async(req,res,next)=>{
   try{
-    const body=z.object({identifier:nonempty,device_type:deviceType,manufacturer:nonempty,status:status.optional(),
+    // Der Status ist niemals direkt setzbar. Alle sicherheitsrelevanten
+    // Übergänge laufen über die dedizierten, begründungspflichtigen Endpunkte.
+    const body=z.object({identifier:nonempty,device_type:deviceType,manufacturer:nonempty,
       model:z.string().trim().max(200).optional(),serial_number:z.string().trim().max(200).optional(),
       description:z.string().trim().max(2000).optional(),
       employee_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),control_point_id:uuid.nullable().optional(),
       notes:z.string().max(2000).optional()}).strict().parse(req.body);
-    const queryRunner={query:(sql:string,values:unknown[])=>query(sql,values)};
-    const targets=Object.entries({employee_id:body.employee_id,site_id:body.site_id,control_point_id:body.control_point_id}).filter(([,value])=>value);
-    if(targets.length>1)return res.status(400).json({error:'Es ist nur ein NFC-Zuordnungsziel erlaubt'});
-    if(body.control_point_id&&body.device_type!=='tag')return res.status(400).json({error:'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden'});
-    if(targets[0]&&!(await targetExists(queryRunner,req.user!.tenantId,targets[0][0] as 'employee_id'|'site_id'|'control_point_id',String(targets[0][1]))))return res.status(404).json({error:'Zuordnungsziel nicht gefunden'});
-    if(body.control_point_id&&await controlPointOccupied(queryRunner,req.user!.tenantId,body.control_point_id)){
-      return res.status(409).json({error:'Dieser Kontrollpunkt ist bereits einem aktiven NFC-Tag zugeordnet'});
-    }
-    const duplicate=(await query('SELECT id FROM nfc_devices WHERE tenant_id=$1 AND identifier=$2',[req.user!.tenantId,body.identifier])).rows[0];
-    if(duplicate)throw duplicateError();
-    const siteId=body.control_point_id?await targetSiteId(req.user!.tenantId,body.control_point_id):null;
-    const device=(await query(`INSERT INTO nfc_devices
-      (tenant_id,identifier,device_type,manufacturer,model,serial_number,description,status,employee_id,site_id,control_point_id,notes)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [req.user!.tenantId,body.identifier,body.device_type,body.manufacturer,body.model??null,body.serial_number??null,
-        body.description??null,body.status??'active',body.employee_id??null,body.site_id??null,body.control_point_id??null,body.notes??''])).rows[0];
-    await recordAudit(req.user!.tenantId,req.user!.id,'nfc_device.created','nfc_device',String(device.id),
-      {identifier:body.identifier,device_type:body.device_type,assignment:assignmentOf(device as Row),site_id:siteId});
+    const device=await withTransaction(async client=>{
+      const runner={query:(sql:string,values:unknown[])=>client.query(sql,values)};
+      const targets=Object.entries({employee_id:body.employee_id,site_id:body.site_id,control_point_id:body.control_point_id}).filter(([,value])=>value);
+      if(targets.length>1)fail(400,'Es ist nur ein NFC-Zuordnungsziel erlaubt');
+      if(body.control_point_id&&body.device_type!=='tag')fail(400,'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden');
+      if(targets[0]&&!(await targetExists(runner,req.user!.tenantId,targets[0][0] as 'employee_id'|'site_id'|'control_point_id',String(targets[0][1]))))fail(404,'Zuordnungsziel nicht gefunden');
+      if(body.control_point_id&&await controlPointOccupied(runner,req.user!.tenantId,body.control_point_id)){
+        fail(409,'Dieser Kontrollpunkt ist bereits einem aktiven NFC-Tag zugeordnet');
+      }
+      const duplicate=(await client.query('SELECT id FROM nfc_devices WHERE tenant_id=$1 AND identifier=$2',[req.user!.tenantId,body.identifier])).rows[0];
+      if(duplicate)throw duplicateError();
+      const siteId=body.control_point_id?await targetSiteId(req.user!.tenantId,body.control_point_id):null;
+      const row=(await client.query(`INSERT INTO nfc_devices
+        (tenant_id,identifier,device_type,manufacturer,model,serial_number,description,status,employee_id,site_id,control_point_id,notes)
+        VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11) RETURNING *`,
+        [req.user!.tenantId,body.identifier,body.device_type,body.manufacturer,body.model??null,body.serial_number??null,
+          body.description??null,body.employee_id??null,body.site_id??null,body.control_point_id??null,body.notes??''])).rows[0];
+      await recordAudit(req.user!.tenantId,req.user!.id,'nfc_device.created','nfc_device',String(row.id),
+        {identifier:body.identifier,device_type:body.device_type,assignment:assignmentOf(row as Row),site_id:siteId},client);
+      return row;
+    });
     res.status(201).json(device);
   }catch(error){next(error);}
 });
@@ -128,7 +132,9 @@ phase6Router.patch('/nfc-devices/:id',requirePermission('nfc_devices:write'),asy
           VALUES($1,$2,$3,$4,$5,$6)`,[req.user!.tenantId,id,JSON.stringify(previous),JSON.stringify(next),req.user!.id,reason??null]);
       }
       await recordAudit(req.user!.tenantId,req.user!.id,'nfc_device.updated','nfc_device',id,
-        {changed_fields:keys,previous_assignment:previous,assignment:next,reason:reason??null},client);
+        {changed_fields:keys,previous_assignment:previous,assignment:next,reason:reason??null,
+          ...(body.identifier&&body.identifier!==current.identifier
+            ?{previous_identifier:String(current.identifier),identifier:body.identifier}:{})},client);
       return row;
     });
     res.json(device);

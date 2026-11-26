@@ -50,7 +50,7 @@ export function NfcDevices(){
   const [reason,setReason]=useState('');
   const [lostDate,setLostDate]=useState(today);
   const [replacement,setReplacement]=useState({identifier:'',device_type:'tag',manufacturer:'',mode:'new' as 'new'|'existing',
-    existing_device_id:'',reason:'',notes:'',copy_assignment:true});
+    existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
   const [recover,setRecover]=useState({found_at:today,identifier_confirmation:'',reason:''});
   const [dialogError,setDialogError]=useState('');
   const [busy,setBusy]=useState(false);
@@ -99,7 +99,7 @@ export function NfcDevices(){
     if(kind!=='create'&&kind!=='edit'&&device){
       setSelected(device);setReason('');setLostDate(today);
       setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,mode:'new',
-        existing_device_id:'',reason:'',notes:'',copy_assignment:true});
+        existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
       setRecover({found_at:today,identifier_confirmation:'',reason:''});
     }
   };
@@ -128,6 +128,26 @@ export function NfcDevices(){
   const runStatus=(action:string,body:Record<string,unknown>,successText:string)=>{
     if(!selected)return;
     void execute(async()=>{await api(`/nfc-devices/${selected.id}/${action}`,{method:'POST',body:JSON.stringify(body)});},successText);
+  };
+
+  const candidate=(options.devices??[]).find(item=>item.id===replacement.existing_device_id);
+  const candidateAssignment=candidate
+    ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
+    :'Noch kein Ersatzgerät ausgewählt';
+  const replacementPayload=()=>{
+    const payload:Record<string,unknown>={
+      reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment,
+    };
+    if(replacement.mode==='existing'){
+      payload.new_device_id=replacement.existing_device_id;
+      if(candidate?.employee_id||candidate?.site_id||candidate?.control_point_id)payload.acknowledge_existing_assignment=true;
+      if(candidate&&['lost','blocked'].includes(candidate.status))payload.acknowledge_restricted=true;
+    }else{
+      payload.identifier=replacement.identifier.trim();
+      payload.device_type=replacement.device_type;
+      payload.manufacturer=replacement.manufacturer.trim();
+    }
+    return payload;
   };
 
   if(!canRead)return <section className="object-management"><h2>NFC-Geräte</h2><p>{commonText.noPermission}</p></section>;
@@ -318,9 +338,14 @@ export function NfcDevices(){
       existingDeviceId={replacement.existing_device_id}
       onExistingDeviceId={value=>setReplacement(current=>({...current,existing_device_id:value}))}
       devices={(options.devices??[]).filter(device=>device.id!==selected.id)}
+      currentAssignment={nfcAssignmentLabel(selected)} candidateAssignment={candidateAssignment}
       reason={replacement.reason} onReason={value=>setReplacement(current=>({...current,reason:value}))}
       notes={replacement.notes} onNotes={value=>setReplacement(current=>({...current,notes:value}))}
       copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>setReplacement(current=>({...current,copy_assignment:value}))}
+      acknowledgeExisting={replacement.acknowledge_existing}
+      onAcknowledgeExisting={value=>setReplacement(current=>({...current,acknowledge_existing:value}))}
+      acknowledgeRestricted={replacement.acknowledge_restricted}
+      onAcknowledgeRestricted={value=>setReplacement(current=>({...current,acknowledge_restricted:value}))}
       error={dialogError} busy={busy}
       onConfirm={()=>{
         if(replacement.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
@@ -330,11 +355,7 @@ export function NfcDevices(){
         if(replacement.mode==='existing'&&!replacement.existing_device_id){
           setDialogError('Bitte ein vorhandenes Ersatzgerät auswählen.');return;
         }
-        const payload=replacement.mode==='existing'
-          ?{new_device_id:replacement.existing_device_id,reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment}
-          :{identifier:replacement.identifier.trim(),device_type:replacement.device_type,manufacturer:replacement.manufacturer.trim(),
-            reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment};
-        runStatus('replace',payload,'Austausch wurde dokumentiert.');
+        runStatus('replace',replacementPayload(),'Austausch wurde dokumentiert.');
       }} onClose={()=>setDialog(null)}/>}
   </section>;
 }

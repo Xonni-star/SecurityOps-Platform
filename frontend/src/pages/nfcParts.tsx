@@ -26,7 +26,9 @@ export type NfcOptions={
   sites:{id:string;name:string}[];
   control_points:{id:string;site_id:string;name:string;site_name?:string}[];
   employees:{id:string;name:string}[];
-  devices?:{id:string;identifier:string;device_type:string;manufacturer:string;status:string}[];
+  devices?:{id:string;identifier:string;device_type:string;manufacturer:string;status:string;
+    employee_id?:string|null;site_id?:string|null;control_point_id?:string|null;
+    employee_name?:string|null;site_name?:string|null;control_point_name?:string|null}[];
 };
 
 export type NfcAssignmentKind='none'|'site'|'control_point'|'employee';
@@ -48,14 +50,19 @@ export type NfcReplacement={
 };
 
 export type NfcScanRecord={
-  id:string;control_point_name?:string|null;site_name?:string|null;route_name?:string|null;employee_name?:string|null;
-  scanned_at?:string|null;server_received_at:string;deviation?:string|null;scan_authentication?:string|null;
-  outcome:'accepted'|'rejected';rejection_reason?:string|null;reason?:string|null;code?:string|null;
+  id:string;nfc_uid?:string|null;nfc_device_id?:string|null;
+  control_point_id?:string|null;control_point_name?:string|null;
+  site_id?:string|null;site_name?:string|null;route_id?:string|null;route_name?:string|null;
+  employee_id?:string|null;employee_name?:string|null;
+  scanned_at?:string|null;server_received_at:string;effective_at?:string|null;
+  deviation?:string|null;scan_authentication?:string|null;
+  outcome:'accepted'|'rejected';rejection_reason?:string|null;rejection_code?:string|null;
+  actor_email?:string|null;
 };
 
 export type NfcDocument={
   id:string;title:string;document_type?:string|null;document_number?:string|null;
-  approval_status?:string|null;created_at:string;versions:{id:string;version_no:number}[];
+  approval_status?:string|null;created_at:string;versions:{id:string;version_no:number;lifecycle_state?:string|null}[];
 };
 
 export type NfcHistoryEvent={
@@ -65,7 +72,7 @@ export type NfcHistoryEvent={
 
 export type NfcFileData={
   device:NfcDevice;assignment_history:NfcAssignmentEvent[];replacements:NfcReplacement[];
-  scans:NfcScanRecord[];documents:NfcDocument[];history:NfcHistoryEvent[];
+  documents:NfcDocument[];history:NfcHistoryEvent[];
 };
 
 export const emptyNfcForm:()=>NfcForm=()=>({
@@ -165,7 +172,7 @@ export function NfcSearchSelect({label,value,options,onChange,placeholder,requir
   </>;
 }
 
-export function nfcAssignmentLabel(device:NfcDevice):string{
+export function nfcAssignmentLabel(device:{control_point_name?:string|null;site_name?:string|null;employee_name?:string|null}):string{
   if(device.control_point_name)return `${device.control_point_name} · ${device.site_name??commonText.notAvailable}`;
   if(device.site_name)return device.site_name;
   if(device.employee_name)return device.employee_name;
@@ -183,10 +190,21 @@ export function nfcAssignmentDetail(assignment:Record<string,string|null>|undefi
   return commonText.notAssigned;
 }
 
+function hasReplacementAssignment(device:NonNullable<NfcOptions['devices']>[number]|undefined):boolean{
+  return !!device&&!!(device.employee_id||device.site_id||device.control_point_id);
+}
+
 export function nfcScanOutcome(scan:NfcScanRecord):string{
-  if(scan.outcome==='rejected')return `Abgelehnt${scan.reason?` · ${scan.reason}`:''}`;
+  if(scan.outcome==='rejected'){
+    const reason=scan.rejection_reason??scan.rejection_code;
+    return `Abgelehnt${reason?` · ${reason}`:''}`;
+  }
   if(scan.deviation&&scan.deviation!=='none')return `Erfolgreich · Abweichung: ${statusLabel(scan.deviation,'general')}`;
   return 'Erfolgreich';
+}
+
+export function nfcScanAuthenticationLabel(value:string|null|undefined):string{
+  return statusLabel(value??'','scanAuthentication')??commonText.notAvailable;
 }
 
 export function NfcDialog({title,onClose,children,wide=false}:{title:string;onClose:()=>void;children:ReactNode;wide?:boolean}){
@@ -327,21 +345,32 @@ export function NfcRecoverDialog({identifier,assignment,identifierConfirmation,o
 }
 
 export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceType,manufacturer,onManufacturer,
-  mode,onMode,existingDeviceId,onExistingDeviceId,devices,
-  reason,onReason,notes,onNotes,copyAssignment,onCopyAssignment,error,busy,onConfirm,onClose}:{
+  mode,onMode,existingDeviceId,onExistingDeviceId,devices,currentAssignment,candidateAssignment,
+  reason,onReason,notes,onNotes,copyAssignment,onCopyAssignment,
+  acknowledgeExisting,onAcknowledgeExisting,acknowledgeRestricted,onAcknowledgeRestricted,
+  error,busy,onConfirm,onClose}:{
   identifier:string;onIdentifier:(value:string)=>void;deviceType:string;onDeviceType:(value:string)=>void;
   manufacturer:string;onManufacturer:(value:string)=>void;
   mode:'new'|'existing';onMode:(value:'new'|'existing')=>void;
   existingDeviceId:string;onExistingDeviceId:(value:string)=>void;
-  devices:{id:string;identifier:string;device_type:string;manufacturer:string;status:string}[];
+  devices:NonNullable<NfcOptions['devices']>;
+  currentAssignment:string;candidateAssignment:string;
   reason:string;onReason:(value:string)=>void;notes:string;onNotes:(value:string)=>void;
   copyAssignment:boolean;onCopyAssignment:(value:boolean)=>void;
+  acknowledgeExisting:boolean;onAcknowledgeExisting:(value:boolean)=>void;
+  acknowledgeRestricted:boolean;onAcknowledgeRestricted:(value:boolean)=>void;
   error:string;busy:boolean;onConfirm:()=>void;onClose:()=>void;
 }){
   const submit=(event:FormEvent)=>{event.preventDefault();onConfirm();};
-  return <NfcDialog title="Ersatzgerät festlegen" onClose={onClose}>
+  const candidate=devices?.find(device=>device.id===existingDeviceId);
+  const restricted=!!candidate&&['lost','blocked'].includes(candidate.status);
+  return <NfcDialog title="Ersatzgerät festlegen" onClose={onClose} wide>
     <form className="object-inline-form" onSubmit={submit}>
       <p>Das bisherige Gerät wird als ersetzt markiert. Seine Historie bleibt vollständig erhalten.</p>
+      <div className="object-detail-content">
+        <p><strong>Bisheriges Gerät:</strong> {currentAssignment}</p>
+        <p><strong>Ersatzgerät:</strong> {candidateAssignment}</p>
+      </div>
       <label>Ersatzgerät
         <select aria-label="Ersatzgerät-Art" value={mode} onChange={event=>onMode(event.target.value as 'new'|'existing')}>
           <option value="new">Neues Gerät registrieren</option>
@@ -370,6 +399,16 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
       </label>
       <label>Notizen <input maxLength={2000} value={notes} onChange={event=>onNotes(event.target.value)}/></label>
       <label className="object-check"><input type="checkbox" checked={copyAssignment} onChange={event=>onCopyAssignment(event.target.checked)}/> Zuordnung übernehmen</label>
+      {mode==='existing'&&hasReplacementAssignment(candidate)&&<label className="object-check">
+        <input type="checkbox" required checked={acknowledgeExisting}
+          onChange={event=>onAcknowledgeExisting(event.target.checked)}/>
+        Bestehende Zuordnung des Ersatzgeräts geprüft; über die Übernahme wurde entschieden.
+      </label>}
+      {restricted&&<label className="object-check">
+        <input type="checkbox" required checked={acknowledgeRestricted}
+          onChange={event=>onAcknowledgeRestricted(event.target.checked)}/>
+        Gesperrten oder verlorenen Status, Kennung und Zuordnung des Ersatzgeräts ausdrücklich freigegeben.
+      </label>}
       {error&&<p className="object-warning" role="alert">{error}</p>}
       <div className="object-actions">
         <button type="submit" disabled={busy}>{busy?'Wird gespeichert …':'Austausch durchführen'}</button>

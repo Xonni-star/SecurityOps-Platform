@@ -48,6 +48,17 @@ describe('NFC device management',()=>{
     expect(response.body.fields.identifier).toContain('bereits vergeben');
   });
 
+  it('does not allow an initial security status on registration',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([session]):result([]));
+    for(const status of ['lost','blocked','replaced']){
+      const response=await request(app).post('/api/v1/nfc-devices').set(csrf).send({
+        identifier:`TAG-STATUS-${status}`,device_type:'tag',manufacturer:'Acme',status,
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO nfc_devices'))).toBe(false);
+  });
+
   it('refuses status changes through the generic patch endpoint',async()=>{
     queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([session]):result([]));
     const response=await request(app).patch('/api/v1/nfc-devices/00000000-0000-0000-0000-000000000020').set(csrf)

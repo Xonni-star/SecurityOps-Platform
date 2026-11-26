@@ -1,17 +1,18 @@
-import {useEffect,useState} from 'react';
+import {useCallback,useEffect,useState} from 'react';
 import {useNavigate,useParams} from 'react-router-dom';
-import {api,hasPermission} from '../lib/api';
-import {formatDateTime} from '../lib/format';
-import {statusLabel} from '../lib/status';
+import {api,csrf,hasPermission} from '../lib/api';
+import {formatDate,formatDateTime} from '../lib/format';
 import {auditEventLabel,commonText,historyDetailText} from '../lib/text';
 import {
   emptyNfcForm,nfcAssignmentDetail,nfcAssignmentLabel,nfcFormFromDevice,nfcMessage,nfcPayloadFromForm,
-  nfcScanOutcome,nfcStatusClass,nfcStatusText,nfcTypeLabel,NfcDialog,NfcFormFields,NfcReasonDialog,
+  nfcScanAuthenticationLabel,nfcScanOutcome,nfcStatusClass,nfcStatusLabel,nfcStatusText,nfcTypeLabel,NfcDialog,NfcFormFields,NfcReasonDialog,
   NfcAssignmentFields,NfcRecoverDialog,NfcReplaceDialog,NfcTimeline,validateNfcForm,
-  type NfcFileData,type NfcForm,type NfcOptions,
+  type NfcDocument,type NfcFileData,type NfcForm,type NfcOptions,type NfcScanRecord,
 } from './nfcParts';
 
 type Section='uebersicht'|'stammdaten'|'zuordnung'|'scans'|'verlauf'|'dokumente';
+type ScanFilters={from:string;to:string;control_point_id:string;site_id:string;employee_id:string;outcome:string};
+type ScanPage={rows:NfcScanRecord[];total:number;page:number;pageSize:number;totalPages:number};
 
 const sections:{id:Section;label:string}[]=[
   {id:'uebersicht',label:'Übersicht'},
@@ -23,6 +24,8 @@ const sections:{id:Section;label:string}[]=[
 ];
 
 const emptyOptions:NfcOptions={sites:[],control_points:[],employees:[]};
+const emptyScanFilters:ScanFilters={from:'',to:'',control_point_id:'',site_id:'',employee_id:'',outcome:''};
+const emptyScanPage:ScanPage={rows:[],total:0,page:1,pageSize:25,totalPages:1};
 const today=new Date().toISOString().slice(0,10);
 
 export function NfcDeviceFile(){
@@ -40,8 +43,13 @@ export function NfcDeviceFile(){
   const [reason,setReason]=useState('');
   const [lostDate,setLostDate]=useState(today);
   const [replacement,setReplacement]=useState({identifier:'',device_type:'tag',manufacturer:'',mode:'new' as 'new'|'existing',
-    existing_device_id:'',reason:'',notes:'',copy_assignment:true});
+    existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
   const [recover,setRecover]=useState({found_at:today,identifier_confirmation:'',reason:''});
+  const [scanFilters,setScanFilters]=useState<ScanFilters>(emptyScanFilters);
+  const [scanPage,setScanPage]=useState(1);
+  const [scanData,setScanData]=useState<ScanPage>(emptyScanPage);
+  const [scanLoading,setScanLoading]=useState(false);
+  const [scanError,setScanError]=useState('');
   const [error,setError]=useState('');
   const [success,setSuccess]=useState('');
   const [dialogError,setDialogError]=useState('');
@@ -56,6 +64,7 @@ export function NfcDeviceFile(){
         setForm(nfcFormFromDevice(value.device));
         setAssignment(nfcFormFromDevice(value.device));
       }
+      setError('');
     }catch(cause){setError(nfcMessage(cause));}
   };
 
@@ -64,11 +73,44 @@ export function NfcDeviceFile(){
     void api<NfcOptions>('/nfc-devices/filter-options').then(value=>setOptions(value??emptyOptions)).catch(()=>undefined);
   },[]);
 
+  const loadScans=useCallback(async()=>{
+    if(!deviceId)return;
+    setScanLoading(true);
+    try{
+      const params=new URLSearchParams({page:String(scanPage),pageSize:'25'});
+      for(const [key,value] of Object.entries(scanFilters))if(value)params.set(key,value);
+      const value=await api<ScanPage>(`/nfc-devices/${deviceId}/scan-history?${params.toString()}`);
+      setScanData(value??emptyScanPage);
+      setScanError('');
+    }catch(cause){setScanError(nfcMessage(cause));}
+    finally{setScanLoading(false);}
+  },[deviceId,scanPage,scanFilters]);
+
+  useEffect(()=>{
+    if(section==='scans')void loadScans();
+  },[section,loadScans]);
+
   const run=async(action:()=>Promise<void>,successText:string)=>{
     setError('');setSuccess('');setDialogError('');setBusy(true);
     try{await action();setSuccess(successText);setDialog(null);await load();}
     catch(cause){setDialogError(nfcMessage(cause));}
     finally{setBusy(false);}
+  };
+
+  const download=async(document:NfcDocument,versionId:string)=>{
+    try{
+      const response=await fetch(`/api/v1/dms/documents/${document.id}/versions/${versionId}/download`,{
+        credentials:'include',headers:{'x-csrf-token':csrf()},
+      });
+      if(!response.ok)throw new Error('Der Download ist fehlgeschlagen.');
+      const blob=await response.blob();
+      const url=URL.createObjectURL(blob);
+      const link=window.document.createElement('a');
+      link.href=url;
+      link.download=`${document.title}-v${document.versions.find(version=>version.id===versionId)?.version_no??1}`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }catch(cause){setError((cause as Error).message||'Der Download ist fehlgeschlagen.');}
   };
 
   if(!data)return <section className="object-management">
@@ -81,7 +123,7 @@ export function NfcDeviceFile(){
     setError('');setSuccess('');setDialogError('');setReason('');setLostDate(today);setDialog(kind);
     setForm(nfcFormFromDevice(device));
     setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,mode:'new',
-      existing_device_id:'',reason:'',notes:'',copy_assignment:true});
+      existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
     setRecover({found_at:today,identifier_confirmation:'',reason:''});
   };
 
@@ -104,6 +146,31 @@ export function NfcDeviceFile(){
 
   const runStatus=(action:string,body:Record<string,unknown>,successText:string)=>{
     void run(async()=>{await api(`/nfc-devices/${device.id}/${action}`,{method:'POST',body:JSON.stringify(body)});},successText);
+  };
+
+  const candidate=(options.devices??[]).find(item=>item.id===replacement.existing_device_id);
+  const candidateAssignment=candidate
+    ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
+    :'Noch kein Ersatzgerät ausgewählt';
+  const replacementPayload=()=>{
+    const payload:Record<string,unknown>={
+      reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment,
+    };
+    if(replacement.mode==='existing'){
+      payload.new_device_id=replacement.existing_device_id;
+      if(candidate?.employee_id||candidate?.site_id||candidate?.control_point_id)payload.acknowledge_existing_assignment=true;
+      if(candidate&&['lost','blocked'].includes(candidate.status))payload.acknowledge_restricted=true;
+    }else{
+      payload.identifier=replacement.identifier.trim();
+      payload.device_type=replacement.device_type;
+      payload.manufacturer=replacement.manufacturer.trim();
+    }
+    return payload;
+  };
+
+  const changeScanFilter=(key:keyof ScanFilters,value:string)=>{
+    setScanFilters(current=>({...current,[key]:value}));
+    setScanPage(1);
   };
 
   return <section className="object-management object-detail-page">
@@ -190,25 +257,64 @@ export function NfcDeviceFile(){
       </li>)}</ul>:<p>{commonText.noData}</p>}
     </div>}
 
-    {section==='scans'&&<div className="object-table">
-      <table>
-        <thead><tr><th>Scanzeitpunkt</th><th>Kontrollpunkt</th><th>Objekt</th><th>Kontrollgang</th>
-          <th>Mitarbeiter</th><th>Authentifizierung</th><th>Abweichung</th><th>Ergebnis</th><th>Servereingang</th></tr></thead>
-        <tbody>
-          {!data.scans.length&&<tr><td className="object-empty" colSpan={9}>Keine Scan-Ereignisse für dieses Gerät erfasst.</td></tr>}
-          {data.scans.map(scan=><tr key={scan.id}>
-            <td>{scan.scanned_at?formatDateTime(scan.scanned_at):commonText.notAvailable}</td>
-            <td>{scan.control_point_name??'–'}</td>
-            <td>{scan.site_name??'–'}</td>
-            <td>{scan.route_name??'–'}</td>
-            <td>{scan.employee_name??'–'}</td>
-            <td>{scan.scan_authentication??'–'}</td>
-            <td>{scan.deviation&&scan.deviation!=='none'?statusLabel(scan.deviation,'general'):'Keine'}</td>
-            <td>{nfcScanOutcome(scan)}</td>
-            <td>{formatDateTime(scan.server_received_at)}</td>
-          </tr>)}
-        </tbody>
-      </table>
+    {section==='scans'&&<div className="object-detail-content">
+      <h3>Scan-Historie</h3>
+      <div className="object-filterbar">
+        <label>Von <input type="date" aria-label="Scanzeit von" value={scanFilters.from}
+          onChange={event=>changeScanFilter('from',event.target.value)}/></label>
+        <label>Bis <input type="date" aria-label="Scanzeit bis" value={scanFilters.to}
+          onChange={event=>changeScanFilter('to',event.target.value)}/></label>
+        <label>Kontrollpunkt <select aria-label="Kontrollpunkt filtern" value={scanFilters.control_point_id}
+          onChange={event=>changeScanFilter('control_point_id',event.target.value)}>
+          <option value="">Alle Kontrollpunkte</option>
+          {options.control_points.map(point=><option key={point.id} value={point.id}>{point.name}</option>)}
+        </select></label>
+        <label>Objekt <select aria-label="Objekt filtern" value={scanFilters.site_id}
+          onChange={event=>changeScanFilter('site_id',event.target.value)}>
+          <option value="">Alle Objekte</option>
+          {options.sites.map(site=><option key={site.id} value={site.id}>{site.name}</option>)}
+        </select></label>
+        <label>Mitarbeiter <select aria-label="Mitarbeiter filtern" value={scanFilters.employee_id}
+          onChange={event=>changeScanFilter('employee_id',event.target.value)}>
+          <option value="">Alle Mitarbeiter</option>
+          {options.employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}
+        </select></label>
+        <label>Ergebnis <select aria-label="Ergebnis filtern" value={scanFilters.outcome}
+          onChange={event=>changeScanFilter('outcome',event.target.value)}>
+          <option value="">Alle Ergebnisse</option>
+          <option value="accepted">Erfolgreich</option>
+          <option value="rejected">Abgelehnt</option>
+        </select></label>
+        <button type="button" onClick={()=>{setScanFilters(emptyScanFilters);setScanPage(1);}}>Filter zurücksetzen</button>
+      </div>
+      {scanError&&<p className="object-warning" role="alert">{scanError}</p>}
+      <div className="object-table">
+        <table>
+          <thead><tr><th>Scanzeitpunkt</th><th>NFC-Kennung</th><th>Kontrollpunkt</th><th>Objekt</th><th>Kontrollgang</th>
+            <th>Mitarbeiter</th><th>Authentifizierung</th><th>Abweichung</th><th>Ergebnis / Grund</th><th>Servereingang</th></tr></thead>
+          <tbody>
+            {!scanLoading&&!scanData.rows.length&&<tr><td className="object-empty" colSpan={10}>Keine Scan-Ereignisse für diese Auswahl erfasst.</td></tr>}
+            {scanLoading&&<tr><td className="object-empty" colSpan={10}>Scan-Historie wird geladen …</td></tr>}
+            {!scanLoading&&scanData.rows.map(scan=><tr key={`${scan.outcome}-${scan.id}`}>
+              <td>{scan.scanned_at?formatDateTime(scan.scanned_at):commonText.notAvailable}</td>
+              <td>{scan.nfc_uid??commonText.notAvailable}</td>
+              <td>{scan.control_point_name??commonText.notAvailable}</td>
+              <td>{scan.site_name??commonText.notAvailable}</td>
+              <td>{scan.route_name??commonText.notAvailable}</td>
+              <td>{scan.employee_name??commonText.notAvailable}</td>
+              <td>{nfcScanAuthenticationLabel(scan.scan_authentication)}</td>
+              <td>{scan.deviation&&scan.deviation!=='none'?scan.deviation:'Keine'}</td>
+              <td>{nfcScanOutcome(scan)}</td>
+              <td>{formatDateTime(scan.server_received_at)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>
+      <div className="object-pagination">
+        <button type="button" disabled={scanPage<=1||scanLoading} onClick={()=>setScanPage(value=>value-1)}>← Zurück</button>
+        <span>Seite {scanPage} von {scanData.totalPages} · {scanData.total} Scan-Ereignisse</span>
+        <button type="button" disabled={scanPage>=scanData.totalPages||scanLoading} onClick={()=>setScanPage(value=>value+1)}>Weiter →</button>
+      </div>
     </div>}
 
     {section==='verlauf'&&<div className="object-detail-content">
@@ -236,8 +342,9 @@ export function NfcDeviceFile(){
         <strong>{document.title}</strong>
         {document.document_number?` · ${document.document_number}`:''}
         {document.document_type?` · ${document.document_type}`:''}
-        {' · '}Version {Math.max(...document.versions.map(version=>version.version_no))}
-        {' · '}Erstellt: {formatDateTime(document.created_at)}
+        {' · '}Erstellt: {formatDate(document.created_at)}
+        {document.versions.filter(version=>version.lifecycle_state==='available').map(version=><button key={version.id}
+          type="button" onClick={()=>void download(document,version.id)}>Version {version.version_no} herunterladen</button>)}
       </li>)}</ul>:<p>Keine freigegebenen Dokumente zu diesem NFC-Gerät.</p>}
       <p>Technische Unterlagen und Austauschdokumentationen werden zentral im Dokumentenmanagement verwaltet und hier mit dem Gerät verknüpft.</p>
     </div>}
@@ -286,7 +393,7 @@ export function NfcDeviceFile(){
         if(!confirmed){setDialogError('Bitte Identität und Zuordnung bestätigen.');return;}
         if(recover.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
         runStatus('recover',{found_at:recover.found_at,identifier_confirmation:recover.identifier_confirmation.trim(),
-          assignment_confirmed:true,reason:recover.reason.trim()},'Gerät wurde wieder in Betrieb genommen und ist zunächst gesperrt.');
+          assignment_confirmed:true,reason:recover.reason.trim()},'Gerät wurde zunächst in Quarantäne gesperrt.');
       }} onClose={()=>setDialog(null)}/>}
 
     {dialog==='archive'&&<NfcReasonDialog title="NFC-Gerät archivieren"
@@ -303,9 +410,14 @@ export function NfcDeviceFile(){
       existingDeviceId={replacement.existing_device_id}
       onExistingDeviceId={value=>setReplacement(current=>({...current,existing_device_id:value}))}
       devices={(options.devices??[]).filter(item=>item.id!==device.id)}
+      currentAssignment={nfcAssignmentLabel(device)} candidateAssignment={candidateAssignment}
       reason={replacement.reason} onReason={value=>setReplacement(current=>({...current,reason:value}))}
       notes={replacement.notes} onNotes={value=>setReplacement(current=>({...current,notes:value}))}
       copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>setReplacement(current=>({...current,copy_assignment:value}))}
+      acknowledgeExisting={replacement.acknowledge_existing}
+      onAcknowledgeExisting={value=>setReplacement(current=>({...current,acknowledge_existing:value}))}
+      acknowledgeRestricted={replacement.acknowledge_restricted}
+      onAcknowledgeRestricted={value=>setReplacement(current=>({...current,acknowledge_restricted:value}))}
       error={dialogError} busy={busy}
       onConfirm={()=>{
         if(replacement.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
@@ -315,11 +427,7 @@ export function NfcDeviceFile(){
         if(replacement.mode==='existing'&&!replacement.existing_device_id){
           setDialogError('Bitte ein vorhandenes Ersatzgerät auswählen.');return;
         }
-        const payload=replacement.mode==='existing'
-          ?{new_device_id:replacement.existing_device_id,reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment}
-          :{identifier:replacement.identifier.trim(),device_type:replacement.device_type,manufacturer:replacement.manufacturer.trim(),
-            reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment};
-        runStatus('replace',payload,'Austausch wurde dokumentiert.');
+        runStatus('replace',replacementPayload(),'Austausch wurde dokumentiert.');
       }} onClose={()=>setDialog(null)}/>}
   </section>;
 }

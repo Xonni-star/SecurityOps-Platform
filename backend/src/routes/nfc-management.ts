@@ -4,6 +4,7 @@ import type {PoolClient} from 'pg';
 import {query,withTransaction} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
+import {effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 type Row=Record<string,unknown>;
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -32,12 +33,24 @@ function deviceId(req:{params:Record<string,string|string[]>}):string{
   return parsed.data;
 }
 
-function assignmentOf(row:Row):Record<string,string|null>{
+function assignmentOf(row:Row):{employee_id:string|null;site_id:string|null;control_point_id:string|null}{
   return {
     employee_id:(row.employee_id as string|null)??null,
     site_id:(row.site_id as string|null)??null,
     control_point_id:(row.control_point_id as string|null)??null,
   };
+}
+
+function dateBoundary(value:unknown,endOfDay=false):string|null{
+  if(typeof value!=='string'||!value.trim())return null;
+  const input=value.trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(input))return `${input}T${endOfDay?'23:59:59.999':'00:00:00.000'}Z`;
+  const parsed=new Date(input);
+  return Number.isNaN(parsed.getTime())?null:parsed.toISOString();
+}
+
+function hasAssignment(value:Record<string,string|null>):boolean{
+  return Boolean(value.employee_id||value.site_id||value.control_point_id);
 }
 
 const targetTables:Record<TargetKey,string>={
@@ -57,7 +70,7 @@ async function assertControlPointAvailable(client:PoolClient,tenantId:string,con
 
 async function targetInfo(client:PoolClient|null,tenantId:string,key:TargetKey,id:string):Promise<Row>{
   const run=client?client.query.bind(client):query;
-  const column=key==='control_point_id'?'cp.site_id':'t.id';
+  const column=key==='control_point_id'?'cp.site_id':key==='site_id'?'t.id':'NULL';
   const join=key==='control_point_id'?'JOIN control_points cp ON cp.id=t.id AND cp.tenant_id=t.tenant_id':'';
   const result=await run(`SELECT t.id,${column} AS site_id FROM ${targetTables[key]} t ${join} WHERE t.tenant_id=$1 AND t.id=$2`,[tenantId,id]);
   const row=(result as {rows:Row[]}).rows[0];
@@ -108,8 +121,15 @@ nfcManagementRouter.get('/nfc-devices/filter-options',read,async(req,res,next)=>
         JOIN sites s ON s.tenant_id=cp.tenant_id AND s.id=cp.site_id
         WHERE cp.tenant_id=$1 ORDER BY s.name,cp.sequence,cp.name`,[tenantId]),
       query<Row>('SELECT id,name FROM employees WHERE tenant_id=$1 ORDER BY name',[tenantId]),
-      query<Row>(`SELECT id,identifier,device_type,manufacturer,status FROM nfc_devices
-        WHERE tenant_id=$1 AND archived_at IS NULL AND status<>'replaced' ORDER BY identifier`,[tenantId]),
+      query<Row>(`SELECT n.id,n.identifier,n.device_type,n.manufacturer,n.status,
+        n.employee_id,n.site_id,n.control_point_id,
+        e.name employee_name,COALESCE(s.name,cp_site.name) site_name,cp.name control_point_name
+        FROM nfc_devices n
+        LEFT JOIN employees e ON e.tenant_id=n.tenant_id AND e.id=n.employee_id
+        LEFT JOIN sites s ON s.tenant_id=n.tenant_id AND s.id=n.site_id
+        LEFT JOIN control_points cp ON cp.tenant_id=n.tenant_id AND cp.id=n.control_point_id
+        LEFT JOIN sites cp_site ON cp_site.tenant_id=n.tenant_id AND cp_site.id=cp.site_id
+        WHERE n.tenant_id=$1 AND n.archived_at IS NULL AND n.status<>'replaced' ORDER BY n.identifier`,[tenantId]),
     ]);
     res.json({sites:sites.rows,control_points:controlPoints.rows,employees:employees.rows,devices:devices.rows});
   }catch(error){next(error);}
@@ -163,64 +183,152 @@ nfcManagementRouter.get('/nfc-devices/inventory',read,async(req,res,next)=>{
   }catch(error){next(error);}
 });
 
+/**
+ * Vollständige, filter- und seitenweise Scan-Historie eines Geräts.
+ * Erfolgreiche Scans kommen aus patrol_scans, abgelehnte Scans aus den
+ * revisionssicheren patrol.scan.rejected-Auditereignissen. Es werden keine
+ * Ereignisse künstlich erzeugt.
+ */
+nfcManagementRouter.get('/nfc-devices/:id/scan-history',read,async(req,res,next)=>{
+  try{
+    const tenantId=req.user!.tenantId;
+    const id=deviceId(req);
+    if(!(await query<Row>('SELECT id FROM nfc_devices WHERE tenant_id=$1 AND id=$2',[tenantId,id])).rows[0]){
+      fail(404,'NFC-Gerät nicht gefunden');
+    }
+    const timestamp=(key:string)=>`CASE WHEN a.details->>'${key}' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+      THEN (a.details->>'${key}')::timestamptz ELSE NULL END`;
+    const eventsCte=`WITH events AS (
+      SELECT 'accepted'::text outcome,ps.id::text id,n.identifier nfc_uid,n.id::text nfc_device_id,
+        ps.control_point_id::text control_point_id,cp.name control_point_name,
+        cp.site_id::text site_id,s.name site_name,
+        ps.route_id::text route_id,r.name route_name,
+        ps.employee_id::text employee_id,e.name employee_name,
+        ps.scanned_at,ps.server_received_at,ps.scan_authentication,ps.deviation,
+        NULL::text rejection_reason,NULL::text rejection_code,NULL::text actor_email,
+        COALESCE(ps.scanned_at,ps.server_received_at) effective_at
+      FROM patrol_scans ps
+      JOIN nfc_devices n ON n.tenant_id=ps.tenant_id AND n.id=ps.nfc_device_id
+      LEFT JOIN control_points cp ON cp.tenant_id=ps.tenant_id AND cp.id=ps.control_point_id
+      LEFT JOIN sites s ON s.tenant_id=ps.tenant_id AND s.id=cp.site_id
+      LEFT JOIN patrol_routes r ON r.tenant_id=ps.tenant_id AND r.id=ps.route_id
+      LEFT JOIN employees e ON e.tenant_id=ps.tenant_id AND e.id=ps.employee_id
+      WHERE ps.tenant_id=$1 AND ps.nfc_device_id=$2
+      UNION ALL
+      SELECT 'rejected'::text,a.id::text,
+        COALESCE(NULLIF(a.details->>'nfc_uid',''),n.identifier),
+        COALESCE(NULLIF(a.details->>'nfc_device_id',''),n.id::text),
+        NULLIF(a.details->>'control_point_id',''),cp.name,
+        NULLIF(a.details->>'site_id',''),s.name,
+        NULLIF(a.details->>'route_id',''),r.name,
+        NULLIF(a.details->>'employee_id',''),e.name,
+        ${timestamp('scanned_at')},
+        COALESCE(${timestamp('server_received_at')},a.created_at),
+        NULL::text,NULL::text,
+        NULLIF(a.details->>'reason',''),NULLIF(a.details->>'code',''),
+        u.email,
+        COALESCE(${timestamp('scanned_at')},${timestamp('server_received_at')},a.created_at)
+      FROM audit_events a
+      LEFT JOIN nfc_devices n ON n.tenant_id=a.tenant_id AND n.id=$2 AND (
+        NULLIF(a.details->>'nfc_device_id','')=$2::text
+        OR NULLIF(a.details->>'nfc_uid','') IN (
+          SELECT identifier FROM nfc_devices WHERE tenant_id=$1 AND id=$2
+          UNION SELECT NULLIF(details->>'previous_identifier','') FROM audit_events
+            WHERE tenant_id=$1 AND entity_type='nfc_device' AND entity_id=$2))
+      LEFT JOIN control_points cp ON cp.tenant_id=a.tenant_id AND cp.id::text=NULLIF(a.details->>'control_point_id','')
+      LEFT JOIN sites s ON s.tenant_id=a.tenant_id AND s.id::text=NULLIF(a.details->>'site_id','')
+      LEFT JOIN patrol_routes r ON r.tenant_id=a.tenant_id AND r.id::text=NULLIF(a.details->>'route_id','')
+      LEFT JOIN employees e ON e.tenant_id=a.tenant_id AND e.id::text=NULLIF(a.details->>'employee_id','')
+      LEFT JOIN users u ON u.tenant_id=a.tenant_id AND u.id=a.actor_user_id
+      WHERE a.tenant_id=$1 AND a.event_type='patrol.scan.rejected'
+        AND (NULLIF(a.details->>'nfc_device_id','')=$2::text
+          OR NULLIF(a.details->>'nfc_uid','') IN (
+            SELECT identifier FROM nfc_devices WHERE tenant_id=$1 AND id=$2
+            UNION SELECT NULLIF(details->>'previous_identifier','') FROM audit_events
+              WHERE tenant_id=$1 AND entity_type='nfc_device' AND entity_id=$2))
+    )`;
+    const values:unknown[]=[tenantId,id];
+    const conditions:string[]=[];
+    const add=(condition:string,value:unknown)=>{values.push(value);conditions.push(condition.replace('__P__',`$${values.length}`));};
+    const from=dateBoundary(req.query.from,false);
+    const to=dateBoundary(req.query.to,true);
+    if(from)add('effective_at >= __P__::timestamptz',from);
+    if(to)add('effective_at <= __P__::timestamptz',to);
+    const controlPointId=uuid.safeParse(req.query.control_point_id);
+    if(controlPointId.success)add('control_point_id=__P__',controlPointId.data);
+    const siteId=uuid.safeParse(req.query.site_id);
+    if(siteId.success)add('site_id=__P__',siteId.data);
+    const employeeId=uuid.safeParse(req.query.employee_id);
+    if(employeeId.success)add('employee_id=__P__',employeeId.data);
+    const outcome=z.enum(['accepted','rejected']).safeParse(req.query.outcome);
+    if(outcome.success)add('outcome=__P__',outcome.data);
+    const where=conditions.length?`WHERE ${conditions.join(' AND ')}`:'';
+    const page=Math.max(Number.parseInt(String(req.query.page??'1'),10)||1,1);
+    const pageSize=Math.min(Math.max(Number.parseInt(String(req.query.pageSize??'25'),10)||25,5),100);
+    const count=(await query<Row>(`${eventsCte} SELECT count(*)::int total FROM events ${where}`,values)).rows[0];
+    const rows=(await query<Row>(`${eventsCte} SELECT * FROM events ${where}
+      ORDER BY effective_at DESC, id DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
+      [...values,pageSize,(page-1)*pageSize])).rows;
+    const total=Number(count?.total??0);
+    res.set('X-Total-Count',String(total));
+    res.json({rows,total,page,pageSize,totalPages:Math.max(1,Math.ceil(total/pageSize))});
+  }catch(error){next(error);}
+});
+
 nfcManagementRouter.get('/nfc-devices/:id/file',read,async(req,res,next)=>{
   try{
     const tenantId=req.user!.tenantId;
     const id=deviceId(req);
     const device=(await query<Row>(`${deviceSelect} WHERE n.tenant_id=$1 AND n.id=$2`,[tenantId,id])).rows[0];
     if(!device)fail(404,'NFC-Gerät nicht gefunden');
-    const [assignments,replacements,scans,documents,audit,scanRejections]=await Promise.all([
+    const user=req.user!;
+    const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
+    const context={role:user.role,isSystemAdmin:user.isSystemAdmin===true};
+    const dmsScope=effectivePermissionScope(grants,'dms:read',context);
+    const auditScope=effectivePermissionScope(grants,'audit:read',context);
+    // Scan-Nachweise werden ausschließlich über /scan-history mit Filtern und
+    // Pagination ausgeliefert. Die Geräteakte enthält nur Stammdaten und
+    // Historien; dadurch können keine Ereignisse durch ein LIMIT verloren gehen.
+    const [assignments,replacements,documents,audit]=await Promise.all([
       query<Row>(`SELECT h.*,u.email actor_email FROM nfc_device_assignment_history h
         LEFT JOIN users u ON u.tenant_id=h.tenant_id AND u.id=h.actor_user_id
         WHERE h.tenant_id=$1 AND h.device_id=$2 ORDER BY h.assigned_at DESC LIMIT 100`,[tenantId,id]),
       query<Row>(`SELECT r.*,u.email actor_email FROM nfc_device_replacements r
         LEFT JOIN users u ON u.tenant_id=r.tenant_id AND u.id=r.actor_user_id
         WHERE r.tenant_id=$1 AND (r.old_device_id=$2 OR r.new_device_id=$2) ORDER BY r.replaced_at DESC LIMIT 100`,[tenantId,id]),
-      query<Row>(`SELECT ps.id,ps.control_point_id,cp.name control_point_name,cp.site_id site_id,s.name site_name,
-        r.name route_name,ps.employee_id,e.name employee_name,ps.scanned_at,ps.server_received_at,
-        ps.deviation,ps.scan_authentication,'accepted' outcome,NULL::text rejection_reason
-        FROM patrol_scans ps
-        LEFT JOIN control_points cp ON cp.tenant_id=ps.tenant_id AND cp.id=ps.control_point_id
-        LEFT JOIN sites s ON s.tenant_id=ps.tenant_id AND s.id=cp.site_id
-        LEFT JOIN patrol_routes r ON r.tenant_id=ps.tenant_id AND r.id=ps.route_id
-        LEFT JOIN employees e ON e.tenant_id=ps.tenant_id AND e.id=ps.employee_id
-        WHERE ps.tenant_id=$1 AND ps.nfc_device_id=$2 ORDER BY ps.server_received_at DESC LIMIT 200`,[tenantId,id]),
-      query<Row>(`SELECT d.id,d.title,d.document_type,d.document_number,d.approval_status,d.created_at,
+      query<Row>(`SELECT d.id,d.title,d.document_type,d.document_number,d.approval_status,d.created_at,d.created_by,
         COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'lifecycle_state',v.lifecycle_state) ORDER BY v.version_no DESC)
           FILTER (WHERE v.id IS NOT NULL),'[]') versions
         FROM dms_documents d LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
-        WHERE d.tenant_id=$1 AND d.nfc_device_id=$2 GROUP BY d.id ORDER BY d.created_at DESC`,[tenantId,id]),
+          AND v.lifecycle_state='available'
+        WHERE d.tenant_id=$1 AND d.nfc_device_id=$2
+          AND d.document_status='active' AND d.deleted_at IS NULL AND d.approval_status='approved'
+          ${dmsScope==='site'?' AND d.site_id = ANY($3::uuid[])':dmsScope==='own'?' AND d.created_by=$3':''}
+        GROUP BY d.id ORDER BY d.created_at DESC`,
+        dmsScope==='site'?[tenantId,id,user.siteIds??[]]:dmsScope==='own'?[tenantId,id,user.id]:[tenantId,id]),
       query<Row>(`SELECT a.id,a.event_type,a.entity_type,a.details,a.created_at,a.actor_user_id,u.email actor_email
         FROM audit_events a LEFT JOIN users u ON u.tenant_id=a.tenant_id AND u.id=a.actor_user_id
-        WHERE a.tenant_id=$1 AND a.entity_type='nfc_device' AND a.entity_id=$2 ORDER BY a.created_at DESC LIMIT 200`,[tenantId,id]),
-      query<Row>(`SELECT id,event_type,details,created_at FROM audit_events
-        WHERE tenant_id=$1 AND event_type='patrol.scan.rejected'
-          AND (details->>'nfc_device_id'=$2 OR details->>'nfc_uid'=$3)
-        ORDER BY created_at DESC LIMIT 200`,[tenantId,id,String(device.identifier)]),
+        WHERE a.tenant_id=$1 AND a.entity_type='nfc_device' AND a.entity_id=$2 ORDER BY a.created_at DESC`,[tenantId,id]),
     ]);
-    const availableDocuments=documents.rows.map(row=>({
+    const availableDocuments=dmsScope?documents.rows.map(row=>({
       ...row,
       versions:((row.versions as Row[])??[]).filter(version=>version.lifecycle_state==='available'),
-    })).filter(row=>(row.versions as Row[]).length>0);
-    const rejections=scanRejections.rows.map(row=>{
-      const details=(row.details??{}) as Row;
-      return {
-        id:row.id,event_type:row.event_type,outcome:'rejected' as const,
-        reason:String(details.reason??'Scan abgelehnt'),
-        code:details.code??null,
-        route_id:details.route_id??null,
-        employee_id:details.employee_id??null,
-        scanned_at:details.scanned_at??null,
-        server_received_at:row.created_at,
-      };
-    });
+    })).filter(row=>(row.versions as Row[]).length>0):[];
+    const history=audit.rows.filter(row=>{
+      if(!auditScope)return false;
+      if(auditScope==='own')return row.actor_user_id===user.id;
+      if(auditScope==='site'){
+        const siteId=((row.details??{}) as Row).site_id;
+        return typeof siteId==='string'&&(user.siteIds??[]).includes(siteId);
+      }
+      return true;
+    }).map(row=>auditScope==='site'?{...row,actor_user_id:null,actor_email:null}:row);
     res.json({
       device,
       assignment_history:assignments.rows,
       replacements:replacements.rows,
-      scans:[...scans.rows,...rejections].sort((a,b)=>String(b.server_received_at??'').localeCompare(String(a.server_received_at??''))),
       documents:availableDocuments,
-      history:audit.rows,
+      history,
     });
   }catch(error){next(error);}
 });
@@ -344,6 +452,10 @@ nfcManagementRouter.post('/nfc-devices/:id/recover',security,async(req,res,next)
     const device=await withTransaction(async client=>{
       const current=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,id])).rows[0];
       if(!current)fail(404,'NFC-Gerät nicht gefunden');
+      // Ein ersetztes Gerät bleibt dauerhaft außer Betrieb – auch wenn es
+      // zusätzlich archiviert wurde. Der Umweg über recover darf es nicht
+      // wieder in die Quarantäne und anschließend nach active bringen.
+      if(current.status==='replaced'||current.replaced_at)fail(409,'Ersetzte NFC-Geräte können nicht wieder in Betrieb genommen werden');
       if(current.status!=='lost'&&!current.archived_at)fail(409,'Nur verlorene oder archivierte NFC-Geräte können wieder in Betrieb genommen werden');
       if(body.identifier_confirmation!==current.identifier)fail(409,'Die bestätigte NFC-Kennung stimmt nicht mit dem Gerät überein');
       const updated=(await client.query<Row>(`UPDATE nfc_devices
@@ -383,65 +495,117 @@ nfcManagementRouter.post('/nfc-devices/:id/replace',security,async(req,res,next)
   try{
     const tenantId=req.user!.tenantId;
     const id=deviceId(req);
+    // copy_assignment ist bewusst verpflichtend: die Übernahme darf nie eine
+    // stillschweigende Voreinstellung sein.
     const body=z.object({
       identifier:nonempty.optional(),new_device_id:uuid.optional(),
       device_type:deviceType.optional(),manufacturer:nonempty.optional(),
       model:z.string().trim().max(200).optional(),serial_number:z.string().trim().max(200).optional(),
       description:z.string().trim().max(2000).optional(),
-      reason,notes:z.string().trim().max(2000).optional(),copy_assignment:z.boolean().default(true),
+      reason,notes:z.string().trim().max(2000).optional(),copy_assignment:z.boolean(),
+      acknowledge_existing_assignment:z.literal(true).optional(),
+      acknowledge_restricted:z.literal(true).optional(),
     }).strict().parse(req.body);
     if(body.new_device_id&&body.new_device_id===id)fail(400,'Ein Gerät kann nicht durch sich selbst ersetzt werden');
+    if(body.new_device_id&&body.identifier)fail(400,'Bitte nur einen Ersatzgerät-Modus angeben');
     if(!body.new_device_id&&(!body.identifier||!body.device_type||!body.manufacturer)){
       fail(400,'Bitte Kennung, Gerätetyp und Hersteller des Ersatzgeräts angeben');
     }
     const result=await withTransaction(async client=>{
       const old=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,id])).rows[0];
       if(!old)fail(404,'NFC-Gerät nicht gefunden');
-      if(old.status==='replaced')fail(409,'NFC-Gerät ist bereits ersetzt');
+      if(old.status==='replaced'||old.replaced_at)fail(409,'NFC-Gerät ist bereits ersetzt');
       assertNotArchived(old);
+
+      const empty={employee_id:null as string|null,site_id:null as string|null,control_point_id:null as string|null};
       let replacement:Row;
+      let replacementAssignment=empty;
       let newlyCreated=false;
+      let previousReplacementStatus='active';
       if(body.new_device_id){
         const existing=(await client.query<Row>('SELECT * FROM nfc_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE',[tenantId,body.new_device_id])).rows[0];
         if(!existing)fail(404,'Ausgewähltes Ersatzgerät nicht gefunden');
-        if(existing.status==='replaced'||existing.archived_at)fail(409,'Das ausgewählte Ersatzgerät ist nicht verfügbar');
+        if(existing.status==='replaced'||existing.replaced_at||existing.archived_at){
+          fail(409,'Das ausgewählte Ersatzgerät ist bereits ersetzt oder archiviert');
+        }
+        const alreadyUsed=(await client.query<Row>(
+          'SELECT id FROM nfc_device_replacements WHERE tenant_id=$1 AND new_device_id=$2',
+          [tenantId,String(existing.id)])).rows[0];
+        if(alreadyUsed)fail(409,'Dieses Gerät wurde bereits als Ersatzgerät verwendet');
+        replacementAssignment=assignmentOf(existing);
+        previousReplacementStatus=String(existing.status);
+        // Bestehende Zuordnungen dürfen nie unbemerkt überschrieben werden.
+        if(hasAssignment(replacementAssignment)&&!body.acknowledge_existing_assignment){
+          fail(409,'Das Ersatzgerät ist bereits zugeordnet. Bitte die bestehende Zuordnung bestätigen und über die Übernahme entscheiden.');
+        }
+        // Gesperrte/verlorene Kandidaten benötigen eine ausdrückliche Freigabe.
+        if(['lost','blocked'].includes(String(existing.status))&&!body.acknowledge_restricted){
+          fail(409,'Das Ersatzgerät ist gesperrt oder verloren. Bitte Status, Kennung und Zuordnung ausdrücklich prüfen und freigeben.');
+        }
         replacement=existing;
       }else{
         const duplicate=(await client.query<Row>('SELECT id FROM nfc_devices WHERE tenant_id=$1 AND identifier=$2',[tenantId,body.identifier])).rows[0];
         if(duplicate)fail(409,'Diese NFC-Kennung ist bereits vergeben');
         replacement=(await client.query<Row>(`INSERT INTO nfc_devices
-          (tenant_id,identifier,device_type,manufacturer,model,serial_number,description,notes)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          (tenant_id,identifier,device_type,manufacturer,model,serial_number,description,notes,status)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,'active') RETURNING *`,
           [tenantId,body.identifier,body.device_type,body.manufacturer,body.model??null,body.serial_number??null,
             body.description??null,body.notes??''])).rows[0];
         newlyCreated=true;
       }
-      const previousAssignment=assignmentOf(old);
-      const next=body.copy_assignment?previousAssignment:{employee_id:null,site_id:null,control_point_id:null};
-      const replacementType=String(replacement.device_type);
-      if(next.control_point_id&&replacementType!=='tag')fail(400,'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden');
+
+      const oldAssignment=assignmentOf(old);
+      const takeOver=body.copy_assignment&&hasAssignment(oldAssignment);
+      const next=takeOver?oldAssignment:(newlyCreated?empty:replacementAssignment);
+      if(next.control_point_id&&String(replacement.device_type)!=='tag'){
+        fail(400,'Nur NFC-Tags können einem Kontrollpunkt zugeordnet werden');
+      }
       // Erst das alte Gerät außer Betrieb nehmen, dann die Zuordnung
       // übertragen. So bleibt der Kontrollpunkt eindeutig belegt.
-      await client.query<Row>(`UPDATE nfc_devices SET status='replaced',replaced_at=now(),event_reason=$1,reported_by=$2,updated_at=now()
+      // Das alte Gerät verlässt die Zuordnung immer; die letzte Zuordnung bleibt
+      // ausschließlich in der Historie und im Ersatzvorgang dokumentiert.
+      const oldAfter=empty;
+      await client.query<Row>(`UPDATE nfc_devices
+        SET status='replaced',replaced_at=now(),event_reason=$1,reported_by=$2,updated_at=now(),
+          employee_id=NULL,site_id=NULL,control_point_id=NULL
         WHERE tenant_id=$3 AND id=$4`,[body.reason,req.user!.id,tenantId,id]);
-      if(body.copy_assignment&&(next.employee_id||next.site_id||next.control_point_id)){
-        if(next.control_point_id)await assertControlPointAvailable(client,tenantId,next.control_point_id,String(replacement.id));
-        await client.query(`UPDATE nfc_devices SET employee_id=$1,site_id=$2,control_point_id=$3,updated_at=now()
-          WHERE tenant_id=$4 AND id=$5`,[next.employee_id,next.site_id,next.control_point_id,tenantId,replacement.id]);
+      // Erst nach dem Freigeben des alten Kontrollpunkts darf die Eindeutigkeit
+      // für das Ersatzgerät geprüft werden.
+      if(next.control_point_id){
+        await assertControlPointAvailable(client,tenantId,next.control_point_id,String(replacement.id));
+      }
+      // Die Zuordnung des alten Geräts wird in jedem Fall historisch geschlossen.
+      await client.query(`INSERT INTO nfc_device_assignment_history(tenant_id,device_id,previous_assignment,assignment,actor_user_id,reason)
+        VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,id,JSON.stringify(oldAssignment),JSON.stringify(oldAfter),
+          req.user!.id,`Ersatz durch ${replacement.identifier}`]);
+
+      if(takeOver){
         await client.query(`INSERT INTO nfc_device_assignment_history(tenant_id,device_id,previous_assignment,assignment,actor_user_id,reason)
-          VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,replacement.id,JSON.stringify(assignmentOf(replacement)),JSON.stringify(next),
+          VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,replacement.id,JSON.stringify(replacementAssignment),JSON.stringify(next),
             req.user!.id,`Ersatz für ${old.identifier}`]);
       }
+      // Nur wenn alle Voraussetzungen erfüllt sind, wird das Ersatzgerät aktiv.
+      const activated=(await client.query<Row>(`UPDATE nfc_devices
+        SET status='active',employee_id=$1,site_id=$2,control_point_id=$3,
+          lost_at=NULL,blocked_at=NULL,updated_at=now()
+        WHERE tenant_id=$4 AND id=$5 RETURNING *`,
+        [next.employee_id,next.site_id,next.control_point_id,tenantId,replacement.id])).rows[0];
+
       await client.query(`INSERT INTO nfc_device_replacements
         (tenant_id,old_device_id,new_device_id,reason,notes,old_assignment,new_assignment,actor_user_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [tenantId,id,replacement.id,body.reason,body.notes??null,JSON.stringify(previousAssignment),JSON.stringify(next),req.user!.id]);
-      await recordAudit(tenantId,req.user!.id,'nfc_device.replaced','nfc_device',id,
-        {new_device_id:replacement.id,previous_status:old.status,reason:body.reason,
-          previous_assignment:previousAssignment,new_assignment:next},client);
+        [tenantId,id,replacement.id,body.reason,body.notes??null,JSON.stringify(oldAssignment),JSON.stringify(next),req.user!.id]);
+      await recordAudit(tenantId,req.user!.id,'nfc_device.replaced','nfc_device',id,{
+        old_device_id:id,new_device_id:String(replacement.id),previous_status:old.status,
+        previous_replacement_status:previousReplacementStatus,reason:body.reason,
+        copy_assignment:body.copy_assignment,
+        acknowledge_existing_assignment:body.acknowledge_existing_assignment===true,
+        acknowledge_restricted:body.acknowledge_restricted===true,
+        old_assignment:oldAssignment,replacement_previous_assignment:replacementAssignment,new_assignment:next,
+      },client);
       if(newlyCreated)await recordAudit(tenantId,req.user!.id,'nfc_device.created','nfc_device',String(replacement.id),
         {identifier:replacement.identifier,replaces:id,reason:body.reason},client);
-      return {device:{...replacement,...next},replacement_reason:body.reason};
+      return {device:{...activated,...next},replacement_reason:body.reason};
     });
     res.status(201).json(result);
   }catch(error){next(error);}
