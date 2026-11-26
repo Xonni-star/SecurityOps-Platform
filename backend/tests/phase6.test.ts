@@ -34,4 +34,37 @@ describe('NFC device management',()=>{
     });
     expect(response.status).toBe(400);
   });
+
+  it('reports duplicate NFC identifiers with a field error',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('SELECT id FROM nfc_devices'))return result([{id:'existing'}]);
+      return result([]);
+    });
+    const response=await request(app).post('/api/v1/nfc-devices').set(csrf).send({
+      identifier:'TAG-001',device_type:'tag',manufacturer:'Acme',
+    });
+    expect(response.status).toBe(409);
+    expect(response.body.fields.identifier).toContain('bereits vergeben');
+  });
+
+  it('refuses status changes through the generic patch endpoint',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([session]):result([]));
+    const response=await request(app).patch('/api/v1/nfc-devices/00000000-0000-0000-0000-000000000020').set(csrf)
+      .send({status:'blocked'});
+    expect(response.status).toBe(400);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE nfc_devices'))).toBe(false);
+  });
+
+  it('protects devices with scan history from deletion',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([session]);
+      if(sql.includes('SELECT identifier FROM nfc_devices'))return result([{identifier:'TAG-001'}]);
+      if(sql.includes('scans,'))return result([{scans:1,replacements:0}]);
+      return result([]);
+    });
+    const response=await request(app).delete('/api/v1/nfc-devices/00000000-0000-0000-0000-000000000020').set(csrf);
+    expect(response.status).toBe(409);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('DELETE FROM nfc_devices'))).toBe(false);
+  });
 });

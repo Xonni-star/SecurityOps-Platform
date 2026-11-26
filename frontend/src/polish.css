@@ -96,6 +96,16 @@
 .object-status.active{color:#7fe0b0!important;background:#143d38!important}
 .object-status.restricted,.object-status.temporarily_closed{color:#ffd27f!important;background:#493a22!important}
 .object-status.archived,.object-status.decommissioned{color:#b4c1d1!important;background:#293b51!important}
+.object-status.blocked{color:#ff9f9f!important;background:#4a2429!important}
+.object-status.lost{color:#ffb98f!important;background:#4a2d1f!important}
+.object-status.replaced{color:#a8c6e8!important;background:#243a57!important}
+.object-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.object-form-grid label{display:flex;flex-direction:column;gap:5px;color:#b8c9dd;font-size:12px}
+.object-form-grid input,.object-form-grid select,.object-form-grid textarea{box-sizing:border-box;min-width:0;width:100%;padding:8px 10px;background:#091a2e;color:#e3edf8;border:1px solid #294968;border-radius:5px}
+.object-form-grid textarea{min-height:70px}
+.object-form-grid small{color:#8ea8c4}
+.object-check{display:flex!important;flex-direction:row!important;align-items:center;gap:8px!important}
+.object-check input{width:auto!important}
 .object-actions{justify-content:flex-end;max-width:430px}
 .object-management button,.object-management a{color:#d8e9fb}
 .object-management button{background:#17395a;border:1px solid #2a4c6e;border-radius:6px;padding:7px 10px}
@@ -229,7 +239,7 @@
   .object-management{padding:12px!important}
   .object-detail-header{display:block}
   .object-actions{justify-content:flex-start;margin-top:12px}
-  .object-filterbar,.object-summary-grid,.object-metrics,.object-detail-content form,.object-create-form,.object-inline-form{grid-template-columns:1fr}
+  .object-filterbar,.object-summary-grid,.object-metrics,.object-detail-content form,.object-create-form,.object-inline-form,.object-form-grid{grid-template-columns:1fr}
   .object-filterbar>input{grid-column:auto}
   .object-column-picker fieldset{position:fixed;left:12px;right:12px;top:auto;width:auto;max-height:70vh}
   .object-table{max-width:100%;-webkit-overflow-scrolling:touch}

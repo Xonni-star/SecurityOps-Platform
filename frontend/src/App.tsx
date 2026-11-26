@@ -13,6 +13,7 @@ import {Messages} from './pages/Messages';
 import {Notifications} from './pages/Notifications';
 import {Reports} from './pages/Reports';
 import {Admin} from './pages/Admin';
+import {NfcDeviceFile} from './pages/NfcDeviceFile';
 import {NfcDevices} from './pages/NfcDevices';
 import {MobileGuard} from './pages/MobileGuard';
 import {Watchbook} from './pages/Watchbook';
@@ -88,6 +89,7 @@ export default function App(){
         <Route path="/account-security" element={<AccountSecurity/>}/>
         <Route path="/admin" element={<Admin/>}/>
         <Route path="/nfc-devices" element={<NfcDevices/>}/>
+        <Route path="/nfc-devices/:deviceId" element={<NfcDeviceFile/>}/>
         <Route path="/employees" element={<Employees/>}/>
         <Route path="/employees/:employeeId" element={<EmployeeDetail/>}/>
         <Route path="/employees/:employeeId/:section" element={<EmployeeDetail/>}/>
