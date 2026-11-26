@@ -67,7 +67,7 @@ export function Layout(){
   const description=meta.description;
   const breadcrumb=`SECURITYOPS / ${meta.group.toUpperCase()} / ${title.toUpperCase()}`;
   const isDetailPath=location.pathname!==currentPath;
-  const darkPage=isDetailPath||['/employees','/customers','/keys','/sites'].includes(currentPath);
+  const darkPage=isDetailPath||['/employees','/customers','/keys','/sites','/nfc-devices'].includes(currentPath);
 
   return <div className="app-shell theme-dark">
     <aside className={open?'sidebar open':'sidebar'}>

@@ -1,0 +1,231 @@
+import pg from 'pg';
+import request from 'supertest';
+import {createHash,randomUUID} from 'node:crypto';
+import {existsSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {afterAll,beforeAll,describe,expect,it} from '@jest/globals';
+import {runMigrations} from '../src/db/migration-runner.js';
+
+const databaseUrl=process.env.POSTGRES_TEST_DATABASE_URL;
+if(!databaseUrl)console.warn('PostgreSQL NFC lifecycle integration skipped: POSTGRES_TEST_DATABASE_URL is not set.');
+const describePostgres=databaseUrl?describe:describe.skip;
+if(databaseUrl&&!process.env.DATABASE_URL)process.env.DATABASE_URL=databaseUrl;
+const {app}=databaseUrl?await import('../src/app.js'):{app:undefined};
+
+const sessionA=`nfc-lifecycle-a-${randomUUID()}`;
+const sessionB=`nfc-lifecycle-b-${randomUUID()}`;
+const sessionC=`nfc-lifecycle-c-${randomUUID()}`;
+const csrfA=`nfc-csrf-a-${randomUUID()}`;
+const csrfB=`nfc-csrf-b-${randomUUID()}`;
+const csrfC=`nfc-csrf-c-${randomUUID()}`;
+const headersA={Cookie:[`securityops_session=${sessionA}`,`securityops_csrf=${csrfA}`],'x-csrf-token':csrfA};
+const headersB={Cookie:[`securityops_session=${sessionB}`,`securityops_csrf=${csrfB}`],'x-csrf-token':csrfB};
+const headersC={Cookie:[`securityops_session=${sessionC}`,`securityops_csrf=${csrfC}`],'x-csrf-token':csrfC};
+const uid=()=>`QA-${randomUUID().replaceAll('-','').slice(0,20)}`;
+
+describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
+  let pool:pg.Pool;
+  let tenantA='';
+  let tenantB='';
+  let siteA='';
+  let controlPointA='';
+  let controlPointB='';
+  let employeeA='';
+  let routeA='';
+
+  beforeAll(async()=>{
+    if(!databaseUrl)throw new Error('POSTGRES_TEST_DATABASE_URL is required');
+    pool=new pg.Pool({connectionString:databaseUrl});
+    const migrationsDir=existsSync(resolve(process.cwd(),'migrations'))
+      ?resolve(process.cwd(),'migrations')
+      :resolve(process.cwd(),'backend/migrations');
+    await runMigrations(pool,migrationsDir);
+    const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+    const seeded=await pool.query<{
+      tenant_a:string;tenant_b:string;site_a:string;point_a:string;point_b:string;employee_a:string;route_a:string;
+    }>(`
+      WITH a AS (INSERT INTO tenants(name) VALUES ($1::text) RETURNING id),
+      b AS (INSERT INTO tenants(name) VALUES ($2::text) RETURNING id),
+      sa AS (INSERT INTO sites(tenant_id,name) SELECT id,'NFC Objekt' FROM a RETURNING id),
+      ua AS (INSERT INTO users(tenant_id,email,role,password_hash) SELECT id,$4::text,'operator','hash' FROM a RETURNING id),
+      ub AS (INSERT INTO users(tenant_id,email,role,password_hash) SELECT id,$5::text,'operator','hash' FROM b RETURNING id),
+      da AS (INSERT INTO devices(tenant_id,site_id,name,device_kind) SELECT id,(SELECT id FROM sa),'QA Client A','authenticated' FROM a RETURNING id),
+      sb AS (INSERT INTO sites(tenant_id,name) SELECT id,'NFC Objekt B' FROM b RETURNING id),
+      db AS (INSERT INTO devices(tenant_id,site_id,name,device_kind) SELECT id,(SELECT id FROM sb),'QA Client B','authenticated' FROM b RETURNING id),
+      uc AS (INSERT INTO users(tenant_id,email,role,password_hash) SELECT id,$12::text,'viewer','hash' FROM a RETURNING id),
+      dc AS (INSERT INTO devices(tenant_id,site_id,name,device_kind) SELECT id,(SELECT id FROM sa),'QA Client C','authenticated' FROM a RETURNING id),
+      sea AS (INSERT INTO sessions(tenant_id,user_id,device_id,token_hash,csrf_token,expires_at)
+        SELECT id,(SELECT id FROM ua),(SELECT id FROM da),$6::text,$8::text,now()+INTERVAL '1 day' FROM a RETURNING id),
+      seb AS (INSERT INTO sessions(tenant_id,user_id,device_id,token_hash,csrf_token,expires_at)
+        SELECT id,(SELECT id FROM ub),(SELECT id FROM db),$7::text,$9::text,now()+INTERVAL '1 day' FROM b RETURNING id),
+      sec AS (INSERT INTO sessions(tenant_id,user_id,device_id,token_hash,csrf_token,expires_at)
+        SELECT id,(SELECT id FROM uc),(SELECT id FROM dc),$13::text,$14::text,now()+INTERVAL '1 day' FROM a RETURNING id),
+      ea AS (INSERT INTO employees(tenant_id,name,email,employment_status,employment_type)
+        SELECT id,'Ava Worker',$3::text,'active','employee' FROM a RETURNING id),
+      cp1 AS (INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence)
+        SELECT id,(SELECT id FROM sa),'Eingang',$10::text,1 FROM a RETURNING id),
+      cp2 AS (INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence)
+        SELECT id,(SELECT id FROM sa),'Ausgang',$11::text,2 FROM a RETURNING id),
+      ra AS (INSERT INTO patrol_routes(tenant_id,site_id,name) SELECT id,(SELECT id FROM sa),'QA Route' FROM a RETURNING id)
+      SELECT a.id tenant_a,b.id tenant_b,(SELECT id FROM sa) site_a,(SELECT id FROM cp1) point_a,
+        (SELECT id FROM cp2) point_b,(SELECT id FROM ea) employee_a,(SELECT id FROM ra) route_a
+      FROM a,b
+    `,[
+      'NFC lifecycle A','NFC lifecycle B',`nfc-employee-a-${randomUUID()}@example.invalid`,
+      `nfc-user-a-${randomUUID()}@example.invalid`,`nfc-user-b-${randomUUID()}@example.invalid`,
+      hash(sessionA),hash(sessionB),csrfA,csrfB,uid(),uid(),
+      `nfc-user-c-${randomUUID()}@example.invalid`,hash(sessionC),csrfC,
+    ]);
+    const row=seeded.rows[0];
+    tenantA=row.tenant_a;tenantB=row.tenant_b;siteA=row.site_a;
+    controlPointA=row.point_a;controlPointB=row.point_b;employeeA=row.employee_a;routeA=row.route_a;
+  },60_000);
+
+  afterAll(async()=>{
+    if(pool&&tenantA&&tenantB)await pool.query('DELETE FROM tenants WHERE id IN ($1,$2)',[tenantA,tenantB]);
+    await pool?.end();
+  });
+
+  const register=async(identifier:string,body:Record<string,unknown>={})=>request(app!)
+    .post('/api/v1/nfc-devices').set(headersA).send({identifier,device_type:'tag',manufacturer:'Acme',...body});
+
+  it('registers active devices, assigns one target in tenant A and preserves assignment history',async()=>{
+    const identifier=uid();
+    const created=await register(identifier);
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe('active');
+    const assigned=await request(app!).post(`/api/v1/nfc-devices/${created.body.id}/assign`).set(headersA)
+      .send({control_point_id:controlPointA,reason:'Neue Zuordnung'});
+    expect(assigned.status).toBe(200);
+    expect(assigned.body.control_point_id).toBe(controlPointA);
+    const employeeAssign=await request(app!).post(`/api/v1/nfc-devices/${created.body.id}/assign`).set(headersA)
+      .send({employee_id:employeeA,reason:'Mitarbeiter zuordnen'});
+    expect(employeeAssign.status).toBe(200);
+    expect(employeeAssign.body.employee_id).toBe(employeeA);
+    expect(employeeAssign.body.control_point_id).toBeNull();
+    const history=await pool.query('SELECT * FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2',[tenantA,created.body.id]);
+    expect(history.rowCount).toBeGreaterThanOrEqual(1);
+    const multiple=await request(app!).post(`/api/v1/nfc-devices/${created.body.id}/assign`).set(headersA)
+      .send({site_id:siteA,control_point_id:controlPointB,reason:'Zweite Zuordnung'});
+    expect(multiple.status).toBe(400);
+  });
+
+  it('enforces the controlled status sequence and keeps replaced devices out of service',async()=>{
+    const created=await register(uid(),{employee_id:employeeA});
+    const id=created.body.id as string;
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/block`).set(headersA).send({reason:'Prüfung'})).body.status).toBe('blocked');
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/reactivate`).set(headersA).send({reason:'Freigabe'})).body.status).toBe('active');
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/report-lost`).set(headersA)
+      .send({lost_at:'2026-11-26',reason:'Verlust'})).body.status).toBe('lost');
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/reactivate`).set(headersA).send({reason:'Direkt'})).status).toBe(409);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/recover`).set(headersA)
+      .send({found_at:'2026-11-27',identifier_confirmation:created.body.identifier,assignment_confirmed:true,reason:'Gefunden'})).body.status).toBe('blocked');
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/reactivate`).set(headersA).send({reason:'Geprüft'})).body.status).toBe('active');
+    const replaced=await request(app!).post(`/api/v1/nfc-devices/${id}/replace`).set(headersA)
+      .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:true});
+    expect(replaced.status).toBe(201);
+    expect(replaced.body.device.status).toBe('active');
+    expect(replaced.body.device.employee_id).toBe(employeeA);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/reactivate`).set(headersA).send({reason:'Nochmal'})).status).toBe(409);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/recover`).set(headersA)
+      .send({found_at:'2026-11-28',identifier_confirmation:created.body.identifier,assignment_confirmed:true,reason:'Gefunden'})).status).toBe(409);
+  },60_000);
+
+  it('rolls back an incomplete replacement when the target control point is occupied',async()=>{
+    const oldDevice=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${oldDevice.body.id}/assign`).set(headersA)
+      .send({control_point_id:controlPointA,reason:'Eingang'})).status).toBe(200);
+    const candidate=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${candidate.body.id}/assign`).set(headersA)
+      .send({control_point_id:controlPointB,reason:'Ausgang'})).status).toBe(200);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${candidate.body.id}/block`).set(headersA)
+      .send({reason:'Prüfung'})).status).toBe(200);
+    // Ein aktiver Tag belegt denselben Kontrollpunkt wie der gesperrte Kandidat.
+    const occupied=await pool.query(`INSERT INTO nfc_devices(tenant_id,identifier,device_type,manufacturer,status,control_point_id)
+      VALUES($1,$2,'tag','Acme','active',$3) RETURNING id`,[tenantA,uid(),controlPointB]);
+    const before=await pool.query('SELECT status,control_point_id FROM nfc_devices WHERE id=$1',[oldDevice.body.id]);
+    const failed=await request(app!).post(`/api/v1/nfc-devices/${oldDevice.body.id}/replace`).set(headersA)
+      .send({new_device_id:candidate.body.id,reason:'Defekt',copy_assignment:false,
+        acknowledge_existing_assignment:true,acknowledge_restricted:true});
+    expect(failed.status).toBe(409);
+    expect(failed.body.error).toContain('Kontrollpunkt');
+    const after=await pool.query('SELECT status,control_point_id FROM nfc_devices WHERE id=$1',[oldDevice.body.id]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    const replacement=await pool.query('SELECT id FROM nfc_device_replacements WHERE tenant_id=$1 AND old_device_id=$2',[tenantA,oldDevice.body.id]);
+    expect(replacement.rowCount).toBe(0);
+    const candidateState=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[candidate.body.id]);
+    expect(candidateState.rows[0].status).toBe('blocked');
+    await pool.query('DELETE FROM nfc_devices WHERE id=$1',[occupied.rows[0].id]);
+  },60_000);
+
+  it('returns more than 200 real scans with pagination, filters and rejected audit events',async()=>{
+    const point=await pool.query(`INSERT INTO control_points(tenant_id,site_id,name,nfc_uid,sequence)
+      VALUES($1,$2,'Historie',$3,$4) RETURNING id`,[tenantA,siteA,uid(),Math.floor(Math.random()*900000)+100000]);
+    const device=await register(uid());
+    const id=device.body.id as string;
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/assign`).set(headersA)
+      .send({control_point_id:point.rows[0].id,reason:'Historie'})).status).toBe(200);
+    await pool.query(`INSERT INTO patrol_scans(tenant_id,route_id,control_point_id,employee_id,scanned_at,nfc_device_id)
+      SELECT $1,$2,$3,$4,now() - (g || ' minutes')::interval,$5 FROM generate_series(1,205) g`,
+      [tenantA,routeA,point.rows[0].id,employeeA,id]);
+    await pool.query(`INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,details,created_at)
+      SELECT $1,(SELECT id FROM users WHERE tenant_id=$1 AND role='operator' LIMIT 1),'patrol.scan.rejected','patrol_scan',
+        jsonb_build_object('nfc_uid',$2::text,'nfc_device_id',$3::text,'control_point_id',$4::text,'site_id',$5::text,
+          'route_id',$6::text,'employee_id',$7::text,'reason','NFC-Tag ist archiviert','code','NFC_TAG_ARCHIVED',
+          'scanned_at',now() - INTERVAL '1 hour','server_received_at',now()),now()`,
+      [tenantA,device.body.identifier,id,point.rows[0].id,siteA,routeA,employeeA]);
+    const first=await request(app!).get(`/api/v1/nfc-devices/${id}/scan-history?page=1&pageSize=25`).set(headersA);
+    expect(first.status).toBe(200);
+    expect(first.body.total).toBe(206);
+    expect(first.body.totalPages).toBe(9);
+    expect(first.body.rows).toHaveLength(25);
+    expect(first.headers['x-total-count']).toBe('206');
+    const rejectedOnly=await request(app!).get(`/api/v1/nfc-devices/${id}/scan-history?outcome=rejected`).set(headersA);
+    expect(rejectedOnly.body.total).toBe(1);
+    expect(rejectedOnly.body.rows[0]).toEqual(expect.objectContaining({outcome:'rejected',rejection_code:'NFC_TAG_ARCHIVED',rejection_reason:'NFC-Tag ist archiviert'}));
+    const filtered=await request(app!).get(`/api/v1/nfc-devices/${id}/scan-history?control_point_id=${controlPointB}`).set(headersA);
+    expect(filtered.body.total).toBe(0);
+  },60_000);
+
+  it('denies tenant B access to tenant A devices and audit data',async()=>{
+    const device=await register(uid());
+    const id=device.body.id as string;
+    expect((await request(app!).get(`/api/v1/nfc-devices/${id}/file`).set(headersB)).status).toBe(404);
+    expect((await request(app!).get(`/api/v1/nfc-devices/${id}/scan-history`).set(headersB)).status).toBe(404);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/block`).set(headersB).send({reason:'Fremd'})).status).toBe(404);
+    const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[id]);
+    expect(state.rows[0].status).toBe('active');
+  });
+
+  it('denies read and security actions without the required permission',async()=>{
+    // Der Viewer-Rolle werden ausschließlich für diesen Test ihre Grants entzogen;
+    // anschließend werden sie unverändert wiederhergestellt.
+    const original=(await pool.query<Row>("SELECT permission_id,scope FROM role_permissions WHERE role='viewer'")).rows;
+    await pool.query("DELETE FROM role_permissions WHERE role='viewer'");
+    try{
+      const device=await register(uid());
+      expect((await request(app!).get('/api/v1/nfc-devices/inventory').set(headersC)).status).toBe(403);
+      expect((await request(app!).get(`/api/v1/nfc-devices/${device.body.id}/file`).set(headersC)).status).toBe(403);
+      expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/block`).set(headersC).send({reason:'Test'})).status).toBe(403);
+      expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/replace`).set(headersC)
+        .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Test',copy_assignment:false})).status).toBe(403);
+      const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[device.body.id]);
+      expect(state.rows[0].status).toBe('active');
+    }finally{
+      for(const grant of original){
+        await pool.query(`INSERT INTO role_permissions(role,permission_id,scope) VALUES('viewer',$1,$2)
+          ON CONFLICT (role,permission_id) DO UPDATE SET scope=EXCLUDED.scope,updated_at=now()`,
+        [grant.permission_id,grant.scope]);
+      }
+    }
+  });
+
+  it('rejects state-changing API calls without a matching CSRF token',async()=>{
+    const device=await register(uid());
+    const cookies=[`securityops_session=${sessionA}`,`securityops_csrf=${csrfA}`];
+    expect((await request(app!).post(`/api/v1/nfc-devices/${device.body.id}/block`).set('Cookie',cookies)
+      .send({reason:'Test'})).status).toBe(403);
+    const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[device.body.id]);
+    expect(state.rows[0].status).toBe('active');
+  });
+});

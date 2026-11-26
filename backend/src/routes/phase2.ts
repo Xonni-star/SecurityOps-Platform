@@ -30,6 +30,7 @@ phase2Router.get('/patrol-routes',requirePermission('patrols:read'),async(req,re
 phase2Router.post('/patrol-routes',requirePermission('patrols:write'),async(req,res,next)=>{try{const b=z.object({site_id:uuid,name:nonempty,points:z.array(z.object({control_point_id:uuid,sequence:z.number().int().positive(),expected_offset_seconds:z.number().int().nonnegative()})).min(1)}).parse(req.body);const r=await query('INSERT INTO patrol_routes(tenant_id,site_id,name) VALUES($1,$2,$3) RETURNING *',[req.user!.tenantId,b.site_id,b.name]);for(const p of b.points)await query('INSERT INTO patrol_route_points(route_id,control_point_id,sequence,expected_offset_seconds) VALUES($1,$2,$3,$4)',[r.rows[0].id,p.control_point_id,p.sequence,p.expected_offset_seconds]);res.status(201).json(r.rows[0]);}catch(e){next(e);}});
 phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:write'),async(req,res,next)=>{
   let input!: {nfc_uid:string;employee_id:string;scanned_at?:Date;client_event_id?:string;conflict_strategy?:'USE_LOCAL'|'USE_SERVER'|'RECORD_AS_EXCEPTION'};
+  const rejectionContext:Record<string,unknown>={scan_authentication:'uid_registered'};
   try{
   input=z.object({nfc_uid:nonempty,employee_id:uuid,scanned_at:z.coerce.date().optional(),client_event_id:uuid.optional(),conflict_strategy:z.enum(['USE_LOCAL','USE_SERVER','RECORD_AS_EXCEPTION']).optional()}).strict().parse(req.body);
   const headerMutationId=req.get('Idempotency-Key');
@@ -40,11 +41,14 @@ phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:wri
     const receivedAt=new Date();
     const route=(await run('SELECT id,site_id FROM patrol_routes WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.routeId])).rows[0];
     if(!route)throw Object.assign(new Error('Rundgangsroute nicht gefunden'),{status:404});
+    rejectionContext.site_id=route.site_id;
     const cp=(await run('SELECT id,site_id FROM control_points WHERE tenant_id=$1 AND nfc_uid=$2 AND site_id=$3',[req.user!.tenantId,input.nfc_uid,route.site_id])).rows[0];
     if(!cp)throw Object.assign(new Error('NFC-Kontrollpunkt ist für das Objekt dieser Route nicht registriert'),{status:404,code:'PATROL_SITE_MISMATCH'});
+    rejectionContext.control_point_id=cp.id;
     const tag=(await run(`SELECT id,status,archived_at,control_point_id,site_id FROM nfc_devices
       WHERE tenant_id=$1 AND identifier=$2 AND device_type='tag' FOR UPDATE`,[req.user!.tenantId,input.nfc_uid])).rows[0];
     if(!tag)throw Object.assign(new Error('NFC-Tag ist nicht registriert'),{status:404,code:'NFC_TAG_UNREGISTERED'});
+    rejectionContext.nfc_device_id=tag.id;
     if(tag.archived_at)throw Object.assign(new Error('NFC-Tag ist archiviert'),{status:409,code:'NFC_TAG_ARCHIVED'});
     if(tag.status!=='active')throw Object.assign(new Error('NFC-Tag ist nicht aktiv'),{status:409,code:'NFC_TAG_NOT_ACTIVE'});
     if(tag.site_id&&tag.site_id!==route.site_id)throw Object.assign(new Error('NFC-Tag gehört zu einem anderen Objekt'),{status:409,code:'NFC_TAG_SITE_MISMATCH'});
@@ -85,7 +89,8 @@ phase2Router.post('/patrol-routes/:routeId/scans',requirePermission('patrols:wri
     if(input){
       const error=e as Error&{code?:string};
       await recordAudit(req.user!.tenantId,req.user!.id,'patrol.scan.rejected','patrol_scan',undefined,{
-        nfc_uid:input.nfc_uid,route_id:String(req.params.routeId),employee_id:input.employee_id,
+        ...rejectionContext,nfc_uid:input.nfc_uid,route_id:String(req.params.routeId),employee_id:input.employee_id,
+        scanned_at:input.scanned_at?.toISOString()??null,
         reason:error.message,code:error.code??null,server_received_at:new Date().toISOString(),
       }).catch(()=>undefined);
     }

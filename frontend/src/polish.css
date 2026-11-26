@@ -233,6 +233,7 @@
   .object-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .object-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
   .object-detail-form .form-grid{grid-template-columns:1fr}
+  .object-inline-form{grid-template-columns:repeat(2,minmax(0,1fr))}
   .object-priority-actions ol{grid-template-columns:1fr}
 }
 @media(max-width:700px){

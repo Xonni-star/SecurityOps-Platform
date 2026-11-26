@@ -9,6 +9,7 @@ export type StatusDomain =
   | 'device'
   | 'nfc'
   | 'nfcDeviceType'
+  | 'scanAuthentication'
   | 'document'
   | 'documentCategory'
   | 'key'
@@ -137,6 +138,11 @@ const domainLabels: Record<StatusDomain, Record<string, string>> = {
   nfcDeviceType: {
     tag: 'NFC-Tag',
     reader: 'Lesegerät',
+  },
+  scanAuthentication: {
+    uid_registered: 'Registrierte NFC-Kennung',
+    cryptographic: 'Kryptografisch geprüft',
+    manual_exception: 'Manuelle Ausnahme',
   },
   nfc: {
     active: 'Aktiv',
