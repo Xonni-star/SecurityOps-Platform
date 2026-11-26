@@ -124,12 +124,14 @@ const domainLabels: Record<StatusDomain, Record<string, string>> = {
     cancelled: 'Abgebrochen',
   },
   device: {
+    active: 'Aktiv',
     online: 'Online',
     offline: 'Offline',
     maintenance: 'In Wartung',
     operational: 'Betriebsbereit',
     fault: 'Störung',
     out_of_order: 'Außer Betrieb',
+    decommissioned: 'Stillgelegt',
   },
   nfc: {
     active: 'Aktiv',

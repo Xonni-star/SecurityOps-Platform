@@ -127,7 +127,13 @@
 .object-summary-card:focus-visible{box-shadow:0 0 0 2px #6fb0e6}
 .object-detail-form{display:block!important}
 .object-detail-form .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.object-inline-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:end;background:#102744;border:1px solid #1e3c5b;border-radius:8px;padding:14px;margin:12px 0}
 .object-inline-form h4{grid-column:1/-1;margin:0}
+.object-inline-form label{display:flex;flex-direction:column;gap:5px;color:#b8c9dd;font-size:12px}
+.object-inline-form input,.object-inline-form select,.object-inline-form textarea{height:34px;padding:7px 9px;border:1px solid #294966;background:#0b1d35;color:#dbe7f7;border-radius:4px}
+.object-inline-form textarea{height:auto;min-height:70px}
+.object-inline-form button{justify-self:start}
+.object-summary-card small{display:block;color:#7fa4c9}
 .object-personnel-overview{margin-top:16px;padding:14px;background:#102744;border:1px solid #1e3c5b;border-radius:8px}
 .object-personnel-overview h3{margin-top:0}
 .object-personnel-overview h4{margin:12px 0 6px;font-size:12px;color:#a9c1db}

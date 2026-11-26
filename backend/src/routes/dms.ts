@@ -47,12 +47,14 @@ dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['ten
     const scope=effectivePermissionScope(normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),'dms:read',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
     const siteFilter=scope==='site'?' AND d.site_id = ANY($2::uuid[])':'';
     const customerFilter=customerDocumentPermission(req,'customer_documents:read')?'':' AND d.customer_id IS NULL';
-    const values=siteFilter?[req.user!.tenantId,req.user!.siteIds??[]]:[req.user!.tenantId];
-    const rows=(await query(`SELECT d.id,d.site_id,d.employee_id,d.employee_document_category,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
+    const values:unknown[]=siteFilter?[req.user!.tenantId,req.user!.siteIds??[]]:[req.user!.tenantId];
+    const deviceFilter=typeof req.query.device_id==='string'&&uuid.safeParse(req.query.device_id).success?` AND d.device_id=$${values.length+1}`:'';
+    if(deviceFilter)values.push(req.query.device_id);
+    const rows=(await query(`SELECT d.id,d.site_id,d.device_id,d.employee_id,d.employee_document_category,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
       d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,d.approval_status,d.location_id,
       COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,'sha256',v.sha256,'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') versions
       FROM dms_documents d LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
-      WHERE d.tenant_id=$1${siteFilter}${customerFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
+      WHERE d.tenant_id=$1${siteFilter}${customerFilter}${deviceFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
     res.json(rows.map(row=>({...row,...classifyDocument(row)})));
   }catch(error){next(error);}
 });
@@ -63,6 +65,7 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       title:z.string().trim().min(1).max(240),
       description:z.string().max(4000).nullable().optional(),
       site_id:uuid.nullable().optional(),
+      device_id:uuid.nullable().optional(),
       employee_id:uuid.nullable().optional(),
       customer_id:uuid.nullable().optional(),
       employee_document_category:z.enum(['contract','qualification','training','instruction','personal','other']).nullable().optional(),
@@ -82,12 +85,19 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       Boolean(value.customer_id)===Boolean(value.customer_document_category)
       && !(value.customer_id&&value.employee_id)
     ).refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from).parse(req.body);
-    siteAccess(req,body.site_id??null,'dms:write');
+    let documentSiteId=body.site_id??null;
+    if(body.device_id){
+      const device=(await query('SELECT id,site_id FROM devices WHERE tenant_id=$1 AND id=$2 AND device_kind=\'operational\'',[req.user!.tenantId,body.device_id])).rows[0];
+      if(!device)throw Object.assign(new Error('Gerät nicht gefunden'),{status:404});
+      if(body.site_id&&device.site_id!==body.site_id)throw Object.assign(new Error('Objekt des Dokuments entspricht nicht dem Gerät'),{status:400});
+      documentSiteId=device.site_id??null;
+    }
+    siteAccess(req,documentSiteId,'dms:write');
     if(body.customer_id){
       if(!customerDocumentPermission(req,'customer_documents:write'))throw Object.assign(new Error('Unzureichende Berechtigungen für Kundendokumente'),{status:403});
       const customer=(await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.customer_id])).rows[0];
       if(!customer)throw Object.assign(new Error('Kunde nicht gefunden'),{status:404});
-      if(body.site_id&&!((await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=$3',[req.user!.tenantId,body.customer_id,body.site_id])).rows[0]))throw Object.assign(new Error('Objekt des Dokuments muss zum Kunden gehören'),{status:400});
+      if(documentSiteId&&!((await query('SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND site_id=$3',[req.user!.tenantId,body.customer_id,documentSiteId])).rows[0]))throw Object.assign(new Error('Objekt des Dokuments muss zum Kunden gehören'),{status:400});
     }
     if(body.employee_id){
       const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
@@ -98,8 +108,8 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       if(!employee)throw Object.assign(new Error('Verantwortlicher Mitarbeiter nicht gefunden'),{status:404});
     }
     if(body.location_id){
-      if(!body.site_id)throw Object.assign(new Error('Für den Bereich ist ein Objekt erforderlich'),{status:400});
-      const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,body.site_id,body.location_id])).rows[0];
+      if(!documentSiteId)throw Object.assign(new Error('Für den Bereich ist ein Objekt erforderlich'),{status:400});
+      const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,documentSiteId,body.location_id])).rows[0];
       if(!location)throw Object.assign(new Error('Objektbereich nicht gefunden'),{status:404});
     }
     const content=decodeContent(body.content_base64);
@@ -109,8 +119,8 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
     await dmsStorage.put(objectKey,content,body.content_type);
     try{
       const result=await withTransaction(client=>runIdempotentMutation<{document:Record<string,unknown>;version:Record<string,unknown>}>(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'dms.document',payload:req.body},async tx=>{
-        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,customer_id,customer_document_category,title,description,document_number,document_type,responsible_employee_id,location_id,valid_from,valid_until,review_on,approval_status,created_by,created_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
-          [documentId,req.user!.tenantId,body.site_id??null,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,body.document_number??null,body.document_type??null,body.responsible_employee_id??null,body.location_id??null,body.valid_from??null,body.valid_until??null,body.review_on??null,'draft',req.user!.id,session(req)])).rows[0];
+        const document=(await tx.query(`INSERT INTO dms_documents(id,tenant_id,site_id,employee_id,employee_document_category,customer_id,customer_document_category,title,description,document_number,document_type,responsible_employee_id,location_id,valid_from,valid_until,review_on,approval_status,created_by,created_session_id,device_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+          [documentId,req.user!.tenantId,documentSiteId,body.employee_id??null,body.employee_document_category??null,body.customer_id??null,body.customer_document_category??null,body.title,body.description??null,body.document_number??null,body.document_type??null,body.responsible_employee_id??null,body.location_id??null,body.valid_from??null,body.valid_until??null,body.review_on??null,'draft',req.user!.id,session(req),body.device_id??null])).rows[0];
         const version=(await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
           VALUES($1,$2,$3,1,$4,$5,$6,$7,'quarantined',$8,$9,(SELECT device_id FROM sessions WHERE id=$9),$10) RETURNING *`,
           [versionId,req.user!.tenantId,documentId,objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
@@ -146,6 +156,7 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
       document_type:z.string().trim().max(160).nullable().optional(),
       responsible_employee_id:uuid.nullable().optional(),
       location_id:uuid.nullable().optional(),
+      device_id:uuid.nullable().optional(),
       valid_from:z.string().date().nullable().optional(),
       valid_until:z.string().date().nullable().optional(),
       review_on:z.string().date().nullable().optional(),
@@ -162,7 +173,12 @@ dmsRouter.patch('/dms/documents/:documentId',requireCsrf,requirePermission('dms:
       const location=(await query('SELECT id FROM object_locations WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[req.user!.tenantId,document.site_id,body.location_id])).rows[0];
       if(!location)return res.status(400).json({error:'Objektbereich nicht gefunden'});
     }
-    const columns:Record<string,string>={title:'title',description:'description',document_number:'document_number',document_type:'document_type',responsible_employee_id:'responsible_employee_id',location_id:'location_id',valid_from:'valid_from',valid_until:'valid_until',review_on:'review_on'};
+    if(body.device_id){
+      const device=(await query('SELECT id,site_id FROM devices WHERE tenant_id=$1 AND id=$2 AND device_kind=\'operational\'',[req.user!.tenantId,body.device_id])).rows[0];
+      if(!device)return res.status(400).json({error:'Gerät nicht gefunden'});
+      if(document.site_id&&device.site_id!==document.site_id)return res.status(400).json({error:'Gerät gehört zu einem anderen Objekt'});
+    }
+    const columns:Record<string,string>={title:'title',description:'description',document_number:'document_number',document_type:'document_type',responsible_employee_id:'responsible_employee_id',location_id:'location_id',device_id:'device_id',valid_from:'valid_from',valid_until:'valid_until',review_on:'review_on'};
     const entries=Object.entries(body);
     const assignments=entries.map(([key],index)=>`${columns[key]}=$${index+3}`).join(',');
     const row=(await query(

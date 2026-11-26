@@ -3,7 +3,6 @@ import {BrowserRouter,Link,Navigate,Route,Routes} from 'react-router-dom';
 import {api,type ClientUser} from './lib/api';
 import {Layout} from './components/Layout';
 import {Login} from './pages/Login';
-import {Resource} from './pages/Resource';
 import {Operations} from './pages/Operations';
 import {Patrols} from './pages/Patrols';
 import {LiveMap} from './pages/LiveMap';
@@ -27,6 +26,7 @@ import {AlarmForwarding} from './pages/AlarmForwarding';
 import {CustomerReports} from './pages/CustomerReports';
 import {AccountSecurity} from './pages/AccountSecurity';
 import {Sites} from './pages/Sites';
+import {Devices,DeviceFile} from './pages/Devices';
 import {Employees} from './pages/Employees';
 import {EmployeeDetail} from './pages/EmployeeDetail';
 import {Customers} from './pages/Customers';
@@ -97,7 +97,8 @@ export default function App(){
         <Route path="/sites" element={<Sites/>}/>
         <Route path="/sites/:siteId" element={<Sites/>}/>
         <Route path="/sites/:siteId/:section" element={<Sites/>}/>
-        <Route path="/devices" element={<Resource name="devices" fields={['name','status','site_id']}/>}/>
+        <Route path="/devices" element={<Devices/>}/>
+        <Route path="/devices/:deviceId" element={<DeviceFile/>}/>
         <Route path="/alarms" element={<Operations/>}/>
         <Route path="/patrols" element={<Patrols/>}/>
         <Route path="/map" element={<LiveMap/>}/>
