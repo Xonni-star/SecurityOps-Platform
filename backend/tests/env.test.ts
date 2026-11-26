@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it,jest} from '@jest/globals';
-import {parseAllowedOrigins} from '../src/config/env.js';
+import {parseAllowedOrigins,parseKeyQrSecret} from '../src/config/env.js';
 
 describe('production CORS configuration',()=>{
   it('requires explicit external origins in production',()=>{
@@ -40,5 +40,49 @@ describe('key reminder configuration',()=>{
     process.env.KEY_REMINDER_DAYS='2';
     jest.resetModules();
     await expect(import('../src/config/env.js')).rejects.toThrow('KEY_REMINDER_DAYS');
+  });
+});
+
+describe('key QR signing secret configuration',()=>{
+  const names=['NODE_ENV','CORS_ORIGIN','KEY_QR_SECRET'];
+  const original=new Map(names.map(name=>[name,process.env[name]]));
+  const strong='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  afterEach(()=>{
+    for(const name of names){
+      const value=original.get(name);
+      if(value===undefined)delete process.env[name];else process.env[name]=value;
+    }
+    jest.restoreAllMocks();
+    jest.resetModules();
+  });
+
+  it('requires a strong dedicated secret in production and rejects weak values',()=>{
+    expect(()=>parseKeyQrSecret('production',undefined)).toThrow('KEY_QR_SECRET is required in production');
+    expect(()=>parseKeyQrSecret('production','short')).toThrow('strong random secret');
+    expect(()=>parseKeyQrSecret('production','securityops-dev-key-qr-secret')).toThrow('strong random secret');
+    expect(()=>parseKeyQrSecret('development','securityops-dev-key-qr-secret')).toThrow('strong random secret');
+    expect(()=>parseKeyQrSecret('production','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toThrow('strong random secret');
+    expect(parseKeyQrSecret('production',strong)).toEqual({secret:strong,source:'configured'});
+  });
+
+  it('prevents production startup when the secret is missing',async()=>{
+    process.env.NODE_ENV='production';
+    process.env.CORS_ORIGIN='https://security.example.test';
+    delete process.env.KEY_QR_SECRET;
+    jest.resetModules();
+    await expect(import('../src/config/env.js')).rejects.toThrow('KEY_QR_SECRET is required in production');
+  });
+
+  it('uses a random per-process secret outside production instead of any hardcoded fallback',async()=>{
+    const warn=jest.spyOn(console,'warn').mockImplementation(()=>undefined);
+    process.env.NODE_ENV='test';
+    delete process.env.KEY_QR_SECRET;
+    jest.resetModules();
+    const {env,keyQrSecret,keyQrSecretSource}=await import('../src/config/env.js');
+    expect(keyQrSecretSource).toBe('ephemeral');
+    expect(keyQrSecret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(keyQrSecret).not.toBe(env.WATCHBOOK_HASH_SECRET??null);
+    expect(keyQrSecret).not.toBe(env.BACKUP_SECRET_KEY??null);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ephemeral development-only QR secret'));
   });
 });

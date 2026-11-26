@@ -55,7 +55,7 @@ test('customer management migration extends the CRM model with tenant-safe activ
 
 test('all repository migrations have a unique, gap-free version sequence',async()=>{
   const migrations=await loadMigrationFiles(join(process.cwd(),'migrations'));
-  expect(migrations[migrations.length-1]?.id).toBe('054_key_management_cockpit.sql');
+  expect(migrations[migrations.length-1]?.id).toBe('055_key_fk_setnull_columns.sql');
 });
 
 test('object staffing target migration adds a guarded site-level headcount',async()=>{
@@ -120,4 +120,19 @@ test('maintenance completion audit migration records the completing user additiv
   expect(sql).toContain('maintenance_orders_tenant_completer_fk');
   expect(sql).toContain('FOREIGN KEY (tenant_id, completed_by) REFERENCES users(tenant_id, id)');
   expect(sql).not.toMatch(/DROP COLUMN|UPDATE maintenance_orders|DELETE FROM/i);
+});
+
+test('key FK repair migration rewrites every inherited SET NULL reference with an explicit column',async()=>{
+  const sql=await readFile(join(process.cwd(),'migrations','055_key_fk_setnull_columns.sql'),'utf8');
+  for(const table of [
+    'keys','key_movements','key_receipts','key_loss_reports','key_qr_tokens',
+    'key_inventory_checks','key_inventory_check_items','key_bundles',
+    'key_bundle_items','key_bundle_movements','key_reminder_state',
+  ])expect(sql).toContain(`'${table}'`);
+  expect(sql).toContain('ON DELETE SET NULL (%I)');
+  expect(sql).toContain('null_column=\'tenant_id\'');
+  expect(sql).toContain("pg_get_constraintdef(c.oid) !~* 'ON DELETE SET NULL\\s*\\('");
+  expect(sql).toContain('RAISE EXCEPTION');
+  expect(sql).toContain("(to_jsonb(NEW)-'device_id')=(to_jsonb(OLD)-'device_id')");
+  expect(sql).not.toMatch(/DROP COLUMN|DELETE FROM|UPDATE keys/i);
 });

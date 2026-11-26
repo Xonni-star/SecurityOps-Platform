@@ -83,12 +83,13 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   expect(await actionLinks.count()).toBeGreaterThan(0);
   for(const link of await actionLinks.all())expect(new URL(await link.getAttribute('href')??'',page.url()).pathname).toMatch(/^\/keys\//);
 
-  const searchRequest=page.waitForRequest(request=>{
-    const url=new URL(request.url());
+  await expect(page.locator('.key-table tbody tr').first()).toBeVisible();
+  const searchResponse=page.waitForResponse(response=>{
+    const url=new URL(response.url());
     return url.pathname==='/api/v1/keys'&&url.searchParams.get('q')===keyCode;
   });
   await page.getByLabel('Schlüssel suchen').fill(keyCode);
-  expect((await searchRequest).url()).toContain(`q=${keyCode}`);
+  expect((await searchResponse).url()).toContain(`q=${keyCode}`);
   const row=page.getByRole('row').filter({hasText:keyCode});
   await expect(row).toBeVisible();
   await expect(row.getByText('E2E Haupteingang')).toBeVisible();
@@ -106,8 +107,7 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   expect(exported.suggestedFilename()).toContain('schluessel.csv');
 
   await page.getByLabel('Schlüssel suchen').fill('');
-  await expect(page.getByRole('row').filter({hasText:keyCode}).first()).toBeVisible();
-  await page.getByRole('link',{name:keyCode}).first().click();
+  await page.goto(`/keys/${key.id}`);
   await expect(page).toHaveURL(new RegExp(`/keys/${key.id}`));
   await expect(page.getByRole('heading',{name:'E2E Haupteingang'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Ausgabe vorbereiten'})).toBeVisible();
@@ -147,6 +147,19 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
   const {token}=await qrResponse.json();
   await expect(page.getByAltText(/E2E Haupteingang/)).toBeVisible();
   await expect(page.getByText(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')))).toHaveCount(0);
+
+  await page.goto(`/keys/${key.id}/qr?ref=${encodeURIComponent(token)}`);
+  await expect(page.locator('.key-qr-check-valid')).toContainText('QR-Verweis gültig');
+  const tampered=`${token.slice(0,-1)}${token.endsWith('A')?'B':'A'}`;
+  await page.goto(`/keys/${key.id}/qr?ref=${encodeURIComponent(tampered)}`);
+  await expect(page.locator('.key-qr-check-invalid')).toContainText('QR-Verweis ungültig');
+
+  await page.goto('/keys');
+  const fullExport=page.waitForRequest(request=>new URL(request.url()).searchParams.get('full')==='true');
+  await page.getByLabel('Vollständig exportieren').check();
+  await page.getByRole('button',{name:'Export'}).click();
+  expect((await fullExport).url()).toContain('/api/v1/keys/export');
+  await page.getByLabel('Vollständig exportieren').uncheck();
 
   const lossSetup=await page.request.post(`/api/v1/keys/${lossKey.id}/issue`,{headers,data:{
     holder_employee_id:employeeId,due_at:isoIn(7),reason:'E2E Verlustvorbereitung',
@@ -248,5 +261,27 @@ test('real API and browser flows manage the key cockpit, files and bundles',asyn
     await expect(viewer.getByRole('button',{name:'Stammdaten speichern'})).toHaveCount(0);
   }finally{
     await viewer.close();
+  }
+});
+
+test('key cockpit stays usable at desktop, laptop, tablet and phone widths',async({page})=>{
+  test.setTimeout(120_000);
+  await login(page,email!);
+  for(const [width,height] of [[1920,1080],[1440,900],[1024,768],[390,844]] as const){
+    await page.setViewportSize({width,height});
+    await page.goto('/keys');
+    await expect(page.getByRole('heading',{name:'Schlüsselverwaltung'})).toBeVisible();
+    await expect(page.getByRole('region',{name:'Handlungsübersicht'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Export'})).toBeVisible();
+    const layout=await page.evaluate(()=>({viewport:innerWidth,document:document.documentElement.scrollWidth}));
+    expect(layout.document,`horizontal overflow at ${width}x${height}`).toBeLessThanOrEqual(layout.viewport+1);
+    await page.getByRole('button',{name:'Bestandskontrolle'}).click();
+    await expect(page.getByRole('dialog',{name:'Bestandskontrolle erfassen'})).toBeVisible();
+    await page.getByRole('button',{name:'Dialog schließen'}).click();
+    await expect(page.locator('.key-table tbody tr').first()).toBeVisible();
+    await page.locator('.key-table tbody a').first().click();
+    await expect(page.locator('.key-detail-tabs')).toBeVisible();
+    const detail=await page.evaluate(()=>({viewport:innerWidth,document:document.documentElement.scrollWidth}));
+    expect(detail.document,`detail overflow at ${width}x${height}`).toBeLessThanOrEqual(detail.viewport+1);
   }
 });

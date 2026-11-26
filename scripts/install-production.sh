@@ -65,6 +65,24 @@ if [ -z "$mfa_key" ]; then
   echo "A strong MFA encryption key was generated and stored in $env_file."
 fi
 
+qr_secret=""
+if [ -f "$env_file" ]; then
+  qr_secret="$(sed -n 's/^KEY_QR_SECRET=//p' "$env_file" | head -1)"
+fi
+if [ -z "$qr_secret" ]; then
+  read -r -s -p "Key QR signing secret (leave blank to generate): " qr_secret
+  echo
+  if [ -z "$qr_secret" ]; then
+    need openssl
+    qr_secret="$(openssl rand -hex 32)"
+    echo "A strong key QR signing secret was generated and stored in $env_file."
+  fi
+fi
+[ ${#qr_secret} -ge 32 ] || fail "KEY_QR_SECRET must contain at least 32 characters"
+case "$qr_secret" in
+  *' '*|*$'\t'*) fail "KEY_QR_SECRET must not contain whitespace" ;;
+esac
+
 read -r -p "SMTP host (optional): " smtp_host
 read -r -p "SMS gateway URL (optional): " sms_gateway_url
 read -r -s -p "TimeScan API token (leave blank if unused): " timescan_token
@@ -78,6 +96,7 @@ POSTGRES_USER=$postgres_user
 POSTGRES_PASSWORD=$postgres_password
 POSTGRES_DB=$postgres_db
 MFA_ENCRYPTION_KEY=$mfa_key
+KEY_QR_SECRET=$qr_secret
 CORS_ORIGIN=$cors_origin
 HTTP_PORT=$http_port
 API_PORT=$api_port

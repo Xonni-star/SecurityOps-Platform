@@ -2,6 +2,8 @@ import request from 'supertest';
 import type {QueryResult} from 'pg';
 import {beforeEach,describe,expect,it,jest} from '@jest/globals';
 import {canonicalPayloadHash} from '../src/services/offline-sync.js';
+import {keyQrSecret} from '../src/config/env.js';
+import {buildKeyQrToken} from '../src/services/keys-domain.js';
 
 const queryMock=jest.fn();
 const commitMock=jest.fn();
@@ -104,10 +106,31 @@ describe('key list, dashboard and actions',()=>{
     expect((await request(app).get('/api/v1/keys').set(csrf)).status).toBe(403);
   });
 
+  it('serves more than 100 keys from the server-side picker with scoped filters',async()=>{
+    const rows=Array.from({length:150},(_,index)=>({...keyRow,id:`00000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,key_code:`K-${index+1}`,total_count:150}));
+    install(['keys:read'],(sql,values)=>{
+      const text=String(sql);
+      if(text.includes('WITH latest_movement AS')){
+        expect(values[0]).toBe(tenant);
+        expect(text).toContain('NOT EXISTS (SELECT 1 FROM key_bundle_items');
+        expect(values).toContain('00000000-0000-4000-8000-000000000099');
+        expect(values.at(-2)).toBe(500);
+        expect(values.at(-1)).toBe(0);
+        return result(rows);
+      }
+      return undefined;
+    });
+    const response=await request(app).get('/api/v1/keys/picker').query({limit:500,status:'available',exclude_bundle_id:'00000000-0000-4000-8000-000000000099'}).set(csrf);
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveLength(150);
+    expect(response.headers['x-total-count']).toBe('150');
+    expect((await request(app).get('/api/v1/keys/picker').query({limit:501}).set(csrf)).status).toBe(400);
+  });
+
   it('derives live dashboard metrics and caps recent movements at eight',async()=>{
     install(['keys:read'],(sql)=>{
       const text=String(sql);
-      if(text.includes('FROM keys k WHERE k.tenant_id=$1'))return result([{total:4,available:1,issued:1,overdue:1,lost:1,blocked:0,deactivated:0,without_site:0,without_holder:0,due_today:1,due_7_days:2,due_30_days:3}]);
+      if(text.includes('FROM keys k WHERE k.tenant_id=$1'))return result([{total:4,available:1,issued:1,overdue:1,lost:1,blocked:0,critical_count:2,deactivated:0,without_site:0,without_holder:0,due_today:1,due_7_days:2,due_30_days:3}]);
       if(text.includes('FROM key_movements m JOIN keys k'))return result([{id:'m1',key_id:keyId,movement_type:'issued'}]);
       if(text.includes('FROM key_bundles b'))return result([{partial_bundles:1}]);
       return undefined;
@@ -117,22 +140,27 @@ describe('key list, dashboard and actions',()=>{
     expect(response.body.total).toBe(4);
     expect(response.body.overdue).toBe(1);
     expect(response.body.partial_bundles).toBe(1);
+    expect(response.body.critical_count).toBe(2);
     expect(response.body.recent_movements).toHaveLength(1);
   });
 
-  it('returns A/B/C action buckets whose URLs always deep-link to a key',async()=>{
-    install(['keys:read'],(sql)=>{
+  it('returns fully prioritized A/B/C buckets with stable deep links and totals',async()=>{
+    install(['keys:read'],(sql,values)=>{
       const text=String(sql);
-      if(text.includes('incomplete_master'))return result([{
-        id:keyId,key_code:'K-1001',label:'Haupteingang',site_id:siteId,site_name:'Zentrale',
-        status:'lost',display_status:'lost',holder_user_id:null,holder_employee_id:null,
-        due_at:null,created_at:'2026-01-01T00:00:00Z',incomplete_master:false,
-      }]);
+      if(text.includes('WITH candidates AS')){
+        expect(values[0]).toBe(tenant);
+        return result([
+          {bucket:'A',severity:10,code:'key_lost',label:'Schlüssel verloren: Haupteingang',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'loss_report',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false},
+          {bucket:'B',severity:30,code:'incomplete_master_data',label:'Stammdaten unvollständig: Haupteingang',key_id:keyId,key_code:'K-1001',site_id:siteId,site_name:'Zentrale',subject_type:'master_data',subject_id:null,due_at:null,sort_at:'2026-01-01T00:00:00Z',history:false},
+        ]);
+      }
       return undefined;
     });
     const response=await request(app).get('/api/v1/keys/action-list').set(csrf);
     expect(response.status).toBe(200);
-    expect(response.body.A.length).toBeGreaterThan(0);
+    expect(response.body.A).toHaveLength(1);
+    expect(response.body.B).toHaveLength(1);
+    expect(response.body.totals).toEqual({A:1,B:1,C:0});
     expect(response.body.generated_at).toBeTruthy();
     const all=[...response.body.A,...response.body.B,...response.body.C];
     for(const entry of all){
@@ -155,6 +183,34 @@ describe('key list, dashboard and actions',()=>{
     expect(response.text).toContain('Schlüsselnummer');
     expect(response.text).toContain('K-1001');
     expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('audit_events')&&JSON.stringify(values).includes('keys.exported'))).toBe(true);
+  });
+
+  it('caps the default export transparently and supports a complete export',async()=>{
+    install(['keys:export'],(sql,_values)=>{
+      const text=String(sql);
+      if(text.includes('WITH latest_movement AS')){
+        const batch=Array.from({length:1000},()=>({...keyRow,label:'=SUM(A1:A2)'}));
+        return result(batch.map((row,index)=>index===0?{...row,total_count:12000}:row));
+      }
+      return defaultMutations(sql);
+    });
+    const limited=await request(app).get('/api/v1/keys/export').set(csrf);
+    expect(limited.status).toBe(200);
+    expect(limited.headers['x-key-export-count']).toBe('10000');
+    expect(limited.headers['x-key-export-total']).toBe('12000');
+    expect(limited.headers['x-key-export-truncated']).toBe('true');
+    expect(limited.text).toContain('Export auf 10000 von 12000 Treffern begrenzt');
+    expect(limited.text).toContain('"\'=SUM(A1:A2)"');
+    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('WITH latest_movement AS'))).toHaveLength(10);
+
+    queryMock.mockClear();
+    const complete=await request(app).get('/api/v1/keys/export').query({full:'true'}).set(csrf);
+    expect(complete.status).toBe(200);
+    expect(complete.headers['x-key-export-count']).toBe('12000');
+    expect(complete.headers['x-key-export-truncated']).toBe('false');
+    expect(complete.text).not.toContain('begrenzt');
+    expect(queryMock.mock.calls.filter(([sql])=>String(sql).includes('WITH latest_movement AS'))).toHaveLength(12);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('audit_events')&&JSON.stringify(values).includes('"truncated":false'))).toBe(true);
   });
 });
 
@@ -384,13 +440,48 @@ describe('key history, QR and inventory',()=>{
     });
     const response=await request(app).get(`/api/v1/keys/${keyId}/qr`).set(csrf);
     expect(response.status).toBe(200);
-    expect(response.body.url).toMatch(/^\/keys\/[0-9a-f-]+\?ref=/);
+    expect(response.body.url).toMatch(/^\/keys\/[0-9a-f-]+\/qr\?ref=/);
     expect(response.body.expires_at).toBeTruthy();
     expect(response.body.token).not.toContain(keyRow.key_code);
     expect(response.body.token).not.toContain(keyRow.serial_number);
     const insertValues=queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO key_qr_tokens'))?.[1] as unknown[];
     expect(insertValues?.[2]).toMatch(/^[a-f0-9]{64}$/);
     expect(insertValues?.[2]).not.toBe(response.body.token);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('DELETE FROM key_qr_tokens'))).toBe(true);
+  });
+
+  it('verifies QR references only for the matching tenant, key and active stored hash',async()=>{
+    const expiresAt=new Date(Date.now()+600000);
+    const token=buildKeyQrToken(keyQrSecret,tenant,keyId,expiresAt);
+    const installVerify=(stored:boolean)=>install(['keys:qr:read'],(sql,values)=>{
+      const text=String(sql);
+      if(text.includes('SELECT * FROM keys WHERE'))return result([keyRow]);
+      if(text.includes('SELECT id FROM key_qr_tokens')){
+        expect(values[0]).toBe(tenant);
+        expect(values[1]).toBe(keyId);
+        expect(values[2]).toMatch(/^[a-f0-9]{64}$/);
+        return stored?result([{id:'qr-1'}]):result([]);
+      }
+      return defaultMutations(sql);
+    });
+    installVerify(true);
+    const valid=await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:token}).set(csrf);
+    expect(valid.status).toBe(200);
+    expect(valid.body).toMatchObject({valid:true,key_id:keyId,key_code:keyRow.key_code});
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='keys.qr.verified')).toBe(true);
+
+    const manipulated=`${token.slice(0,-1)}${token.at(-1)==='A'?'B':'A'}`;
+    expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:manipulated}).set(csrf)).status).toBe(400);
+    const wrongTenant=buildKeyQrToken(keyQrSecret,'99999999-9999-4999-8999-999999999999',keyId,expiresAt);
+    expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:wrongTenant}).set(csrf)).body.code).toBe('KEY_QR_INVALID');
+    const wrongKey=buildKeyQrToken(keyQrSecret,tenant,'99999999-9999-4999-8999-999999999999',expiresAt);
+    expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:wrongKey}).set(csrf)).body.code).toBe('KEY_QR_INVALID');
+    const expired=buildKeyQrToken(keyQrSecret,tenant,keyId,new Date(Date.now()-1000));
+    expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:expired}).set(csrf)).status).toBe(410);
+    expect(queryMock.mock.calls.some(([sql,values])=>String(sql).includes('INSERT INTO audit_events')&&values?.[2]==='keys.qr.verify_failed')).toBe(true);
+
+    installVerify(false);
+    expect((await request(app).get(`/api/v1/keys/${keyId}/qr/verify`).query({ref:token}).set(csrf)).status).toBe(400);
   });
 
   it('records an inventory check with mismatches and lists checks with permission gating',async()=>{

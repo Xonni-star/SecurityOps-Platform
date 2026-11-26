@@ -1,6 +1,6 @@
 import {describe,expect,it} from '@jest/globals';
 import {canAccessResource} from '../src/types/authorization.js';
-import {bundleStatus,buildKeyQrToken,canReturnKey,derivedKeyStatus,hashKeyQrToken,holderIsValid,transitionKeyStatus,validateBundleReturn} from '../src/services/keys-domain.js';
+import {bundleStatus,buildKeyQrToken,canReturnKey,derivedKeyStatus,hashKeyQrToken,holderIsValid,transitionKeyStatus,validateBundleReturn,verifyKeyQrToken} from '../src/services/keys-domain.js';
 
 describe('key management domain',()=>{
   it('keeps tenant and site scope isolated',()=>{
@@ -73,5 +73,32 @@ describe('key management domain',()=>{
     expect(payload).not.toMatch(/key_code|serial|site_secret|secret/i);
     expect(hashKeyQrToken(token)).toMatch(/^[a-f0-9]{64}$/);
     expect(hashKeyQrToken(token)).not.toBe(hashKeyQrToken(`${token}x`));
+  });
+  it('verifies QR signatures with tenant, key and expiry binding',()=>{
+    const secret='a-strong-test-secret-value-with-entropy-12345';
+    const tenantId='11111111-1111-4111-8111-111111111111';
+    const keyId='22222222-2222-4222-8222-222222222222';
+    const now=new Date('2026-06-15T12:00:00.000Z');
+    const token=buildKeyQrToken(secret,tenantId,keyId,new Date('2026-06-15T12:15:00.000Z'));
+    expect(verifyKeyQrToken(secret,token,{tenantId,keyId},now)).toEqual({
+      valid:true,tenantId,keyId,expiresAt:'2026-06-15T12:15:00.000Z',
+    });
+    const [payload,signature]=token.split('.');
+    const flipped=`${payload}.${signature.slice(0,-1)}${signature.at(-1)==='A'?'B':'A'}`;
+    expect(verifyKeyQrToken(secret,flipped,{tenantId,keyId},now)).toEqual({valid:false,reason:'invalid_signature'});
+    expect(verifyKeyQrToken(secret,token,{tenantId:'33333333-3333-4333-8333-333333333333',keyId},now)).toEqual({valid:false,reason:'tenant_mismatch'});
+    expect(verifyKeyQrToken(secret,token,{tenantId,keyId:'44444444-4444-4444-8444-444444444444'},now)).toEqual({valid:false,reason:'key_mismatch'});
+    expect(verifyKeyQrToken(secret,token,{tenantId,keyId},new Date('2026-06-15T12:16:00.000Z'))).toEqual({valid:false,reason:'expired'});
+    expect(verifyKeyQrToken(secret,'not-a-token',{tenantId,keyId},now)).toEqual({valid:false,reason:'malformed'});
+  });
+  it('rejects QR tokens after secret rotation',()=>{
+    const oldSecret='a-strong-test-secret-value-with-entropy-12345';
+    const newSecret='a-different-strong-test-secret-value-67890!';
+    const tenantId='11111111-1111-4111-8111-111111111111';
+    const keyId='22222222-2222-4222-8222-222222222222';
+    const token=buildKeyQrToken(oldSecret,tenantId,keyId,'2026-06-15T12:15:00.000Z');
+    const now=new Date('2026-06-15T12:00:00.000Z');
+    expect(verifyKeyQrToken(oldSecret,token,{tenantId,keyId},now)).toMatchObject({valid:true});
+    expect(verifyKeyQrToken(newSecret,token,{tenantId,keyId},now)).toEqual({valid:false,reason:'invalid_signature'});
   });
 });

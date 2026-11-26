@@ -85,9 +85,16 @@ processing are gated by dedicated `keys:*` permissions; the existing `keys:read`
 `keys:write`, `keys:issue`, `keys:return`, `keys:manage` and bundle scopes remain
 valid. Migration 054 adds columns, tables, indexes, RLS policies and grants and
 widens legacy CHECK constraints for the new values; existing key rows keep their
-IDs and histories. Configure `KEY_QR_SECRET`, `KEY_REMINDER_DAYS` (a subset of `7,3,1,0`) and
-`KEY_REMINDER_INTERVAL_MS`; overdue (`-1`) reminders are always queued once and
-deduplicated by tenant, key, due date and day.
+IDs and histories. `KEY_QR_SECRET` is mandatory in production: generate at least 32 high-entropy
+characters with `openssl rand -hex 32` and store it only in the deployment
+environment; the backend refuses to start without it and never falls back to a
+compiled-in or unrelated secret. QR references are HMAC-SHA256 signed, bound to
+tenant, key and expiry, verified in constant time against the active stored hash,
+and reissuing or rotating the secret invalidates earlier references. Outside
+production an ephemeral per-process secret is used with a clear warning.
+`KEY_REMINDER_DAYS` accepts a subset of `7,3,1,0` and
+`KEY_REMINDER_INTERVAL_MS` controls the worker; overdue (`-1`) reminders are
+always queued once and deduplicated by tenant, key, due date and day.
 
 When the isolated E2E fixture is enabled, a viewer account
 `e2e-viewer@example.invalid` with the same `E2E_PASSWORD` is created alongside

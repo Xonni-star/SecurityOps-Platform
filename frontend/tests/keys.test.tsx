@@ -29,11 +29,12 @@ const rows=[
   {...baseKey,id:'00000000-0000-4000-8000-000000000003',key_code:'K-1003',label:'Tresorraum',key_type:'physical',status:'lost',lost_at:'2026-11-24T10:00:00Z'},
   {...baseKey,id:bundledKeyId,key_code:'K-1004',label:'Bundschlüssel',key_type:'physical',status:'available',bundle_id:bundleId,bundle_name:'Nachschicht'},
 ];
-const dashboard={total:25,available:10,issued:9,overdue:3,lost:2,blocked:1,deactivated:0,without_site:1,without_holder:2,partial_bundles:1,due_today:1,due_7_days:2,due_30_days:4,recent_movements:[{id:'m-1',key_id:keyId,key_code:'K-1001',key_label:'Haupteingang',movement_type:'created',created_at:'2026-11-25T10:00:00Z'}]};
+const dashboard={total:25,available:10,issued:9,overdue:3,lost:2,blocked:1,critical_count:4,deactivated:0,without_site:1,without_holder:2,partial_bundles:1,due_today:1,due_7_days:2,due_30_days:4,recent_movements:[{id:'m-1',key_id:keyId,key_code:'K-1001',key_label:'Haupteingang',movement_type:'created',created_at:'2026-11-25T10:00:00Z'}]};
 const actionList={
   A:[{id:'a-1',bucket:'A' as const,code:'overdue',label:'Rückgabe überfällig',key_id:rows[1].id,key_code:'K-1002',subject_type:'due',subject_id:rows[1].id,due_at:'2026-11-20T00:00:00Z',url:`/keys/${rows[1].id}/historie`,target:`/keys/${rows[1].id}/historie`,site_name:'Objekt Nord'}],
   B:[{id:'b-1',bucket:'B' as const,code:'bundle_partial',label:'Bund teils ausgegeben',key_id:keyId,key_code:'K-1001',subject_type:'bundle',subject_id:bundleId,due_at:null,url:`/keys/${keyId}`,target:`/keys/${keyId}`,site_name:null}],
   C:[{id:'c-1',bucket:'C' as const,code:'no_holder',label:'Kein Halter zugeordnet',key_id:keyId,key_code:'K-1001',subject_type:'holder',subject_id:keyId,due_at:null,url:`/keys/${keyId}`,target:`/keys/${keyId}`,site_name:null}],
+  totals:{A:1,B:1,C:1},
   generated_at:'2026-11-26T00:00:00.000Z',
 };
 const sites=[{id:siteId,name:'Objekt Nord',site_number:'S-11',site_status:'active'},{id:'00000000-0000-4000-8000-000000000015',name:'Objekt Süd',site_number:'S-12'}];
@@ -57,7 +58,19 @@ let listPages=3;
 const defaultApi=async(path:string)=>{
   if(path==='/keys/dashboard')return dashboard;
   if(path==='/keys/action-list')return actionList;
-  if(path==='/keys?pageSize=100')return rows;
+  if(path.startsWith('/keys?'))return rows;
+  if(path.startsWith('/keys/picker?')){
+    const params=new URLSearchParams(path.split('?')[1]??'');
+    const q=(params.get('q')??'').toLowerCase();
+    const site=params.get('site_id');
+    const bundle=params.get('bundle_id');
+    const excluded=params.get('exclude_bundle_id');
+    const limit=Number(params.get('limit')??500);
+    return rows.filter(key=>(!q||`${key.key_code} ${key.label}`.toLowerCase().includes(q))
+      &&(!site||key.site_id===site)
+      &&(!bundle||key.bundle_id===bundle)
+      &&(!excluded||key.bundle_id!==excluded)).slice(0,limit);
+  }
   if(path==='/sites')return sites;
   if(path==='/employees')return employees;
   if(path==='/key-bundles')return bundles;
@@ -102,7 +115,7 @@ describe('Schlüssel-Cockpit',()=>{
     expect(await screen.findByLabelText('Haupteingang auswählen')).toBeTruthy();
     const metrics=screen.getByText('Gesamt').closest('.key-metrics')!;
     for(const label of ['Gesamt','Verfügbar','Ausgegeben','Überfällig','Verloren','Kritische Vorgänge'])expect(within(metrics as HTMLElement).getByText(label)).toBeTruthy();
-    expect(within(metrics as HTMLElement).getByText('Kritische Vorgänge').parentElement?.textContent).toContain('7');
+    expect(within(metrics as HTMLElement).getByText('Kritische Vorgänge').parentElement?.textContent).toContain('4');
 
     fireEvent.change(screen.getByLabelText('Schlüssel suchen'),{target:{value:'Haupteingang'}});
     fireEvent.change(screen.getByLabelText('Schlüsselstatus'),{target:{value:'available'}});
@@ -154,6 +167,23 @@ describe('Schlüssel-Cockpit',()=>{
       expect(params.get('pageSize')).toBe('10');
       expect(params.get('sort')).toBe('key_code');
     });
+  });
+
+  it('can request a complete export and shows the truncation notice from the server',async()=>{
+    fetchMock.mockImplementation(async(input:string)=>{
+      if(String(input).includes('/api/v1/keys/export'))return response([],{
+        'Content-Disposition':'attachment; filename="schluessel.csv"',
+        'X-Key-Export-Truncated':'true','X-Key-Export-Count':'10000','X-Key-Export-Total':'12000',
+      });
+      if(String(input).startsWith('/api/v1/keys?'))return response(rows,{'X-Total-Count':String(listTotal),'X-Page':'1','X-Page-Size':'10','X-Page-Count':String(listPages)});
+      return response([]);
+    });
+    renderKeys();
+    await screen.findByLabelText('Haupteingang auswählen');
+    fireEvent.click(screen.getByLabelText('Vollständig exportieren'));
+    fireEvent.click(screen.getByRole('button',{name:'Export'}));
+    await waitFor(()=>expect(new URLSearchParams(lastExportUrl().split('?')[1]??'').get('full')).toBe('true'));
+    expect((await screen.findByRole('alert')).textContent).toContain('10000 von 12000');
   });
 
   it('hides all write controls without permissions and shows no UUID inputs',async()=>{
@@ -301,12 +331,30 @@ describe('Schlüssel-Cockpit',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Bestandskontrolle'}));
     const dialog=screen.getByRole('dialog',{name:'Bestandskontrolle erfassen'});
     fireEvent.change(within(dialog).getByLabelText('Prüfer'),{target:{value:'Leo Wache'}});
-    fireEvent.click(within(dialog).getByLabelText('K-1002 · Nebenpforte erwartet'));
+    fireEvent.click(await within(dialog).findByLabelText('K-1002 · Nebenpforte erwartet'));
     fireEvent.click(within(dialog).getByRole('button',{name:'Bestandskontrolle speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/keys/inventory-checks',expect.objectContaining({method:'POST'})));
     const body=bodyOf('/keys/inventory-checks');
     expect(body).toEqual(expect.objectContaining({checker_name:'Leo Wache'}));
     expect(Array.isArray(body.results)).toBe(true);
+  });
+
+  it('loads more than 100 keys through the server-side bundle picker',async()=>{
+    const many=Array.from({length:150},(_,index)=>({...rows[0],id:`00000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,key_code:`K-${1500+index}`,label:`Schlüssel ${index+1}`,bundle_id:null}));
+    apiMock.mockImplementation(async(path:string)=>{
+      if(path==='/keys/dashboard')return dashboard;
+      if(path==='/keys/action-list')return actionList;
+      if(path.startsWith('/keys/picker?'))return many;
+      return defaultApi(path);
+    });
+    renderKeys();
+    await screen.findByRole('heading',{name:'Nachschicht',level:3});
+    fireEvent.click(screen.getByRole('button',{name:'Schlüssel anzeigen'}));
+    const select=await screen.findByLabelText('Schlüssel für Bund');
+    await waitFor(()=>expect(within(select).getAllByRole('option')).toHaveLength(151));
+    fireEvent.change(within(select).getByRole('option',{name:/K-1649/}).closest('select')!,{target:{value:many[149].id}});
+    expect((select as HTMLSelectElement).value).toBe(many[149].id);
+    expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('/keys/picker?limit=500'));
   });
 
   it('manages bundles: create, add a key, issue and return only checked keys',async()=>{

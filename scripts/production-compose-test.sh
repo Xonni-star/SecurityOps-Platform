@@ -55,8 +55,9 @@ POSTGRES_DB=securityops
 CORS_ORIGIN=https://pi5.example.test
 HTTP_PORT=$http_port
 API_PORT=$api_port
-# Ephemeral CI/integration-test marker only; never use this value in production.
+# Ephemeral CI/integration-test markers only; never use these values in production.
 MFA_ENCRYPTION_KEY=ci-production-compose-test-only-not-a-secret
+KEY_QR_SECRET=ci-production-compose-test-qr-secret-9f2c7a41e6b8d350
 EOF
 
 baseline_migration_count="$(find "$work_dir/backend/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"

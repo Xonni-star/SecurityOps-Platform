@@ -51,5 +51,3 @@ export function startKeyReminderWorker(intervalMs=3600000){
   return stopKeyReminderWorker;
 }
 export function stopKeyReminderWorker(){if(timer){clearInterval(timer);timer=undefined;}}
-
-export const keyQrSecret=()=>env.KEY_QR_SECRET??env.WATCHBOOK_HASH_SECRET??env.BACKUP_SECRET_KEY??'securityops-dev-key-qr-secret';

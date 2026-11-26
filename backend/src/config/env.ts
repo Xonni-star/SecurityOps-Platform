@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 const optionalString=z.preprocess(value=>value===''?undefined:value,z.string().min(1).optional());
 const optionalUrl=z.preprocess(value=>value===''?undefined:value,z.string().url().optional());
@@ -8,6 +9,36 @@ const reminderDays=z.string().default('7,3,1,0').transform(value=>[...new Set(va
   .refine(values=>values.length>0&&values.every(value=>supportedReminderDays.includes(value)),{
     message:'KEY_REMINDER_DAYS must contain at least one of 0,1,3,7',
   });
+const knownWeakQrSecrets=new Set([
+  'securityops-dev-key-qr-secret','test-key-qr-secret','super-secret-signing-key',
+  'changeme','change-me','secret','development','password','key-qr-secret',
+]);
+function shannonEntropy(value:string):number{
+  const counts=new Map<string,number>();
+  for(const char of value)counts.set(char,(counts.get(char)??0)+1);
+  return [...counts.values()].reduce((sum,count)=>{
+    const probability=count/value.length;
+    return sum-probability*Math.log2(probability);
+  },0);
+}
+/**
+ * QR signing secrets are never taken from other secrets and never fall back to
+ * a compiled-in value in production. A missing secret only gets a cryptographically
+ * random, per-process secret in an explicitly non-production environment.
+ */
+export function parseKeyQrSecret(nodeEnv:string,configured:string|undefined):{secret:string;source:'configured'|'ephemeral'}{
+  if(configured!==undefined){
+    const weak=configured.length<32||configured.length>512
+      ||Array.from(configured).some(character=>/\s/.test(character)||character.charCodeAt(0)<=31||character.charCodeAt(0)===127)
+      ||new Set(configured).size<12||/(.)\1{5,}/.test(configured)
+      ||shannonEntropy(configured)<3.5
+      ||knownWeakQrSecrets.has(configured.toLowerCase());
+    if(weak)throw new Error('KEY_QR_SECRET must be a strong random secret (at least 32 characters, high entropy, no whitespace or repeated patterns)');
+    return {secret:configured,source:'configured'};
+  }
+  if(nodeEnv==='production')throw new Error('KEY_QR_SECRET is required in production; generate one with: openssl rand -hex 32');
+  return {secret:crypto.randomBytes(32).toString('base64url'),source:'ephemeral'};
+}
 const schema=z.object({
   NODE_ENV:z.string().default('development'),
   PORT:z.coerce.number().default(3000),
@@ -54,6 +85,12 @@ const schema=z.object({
   LOG_LEVEL:z.string().default('info'),
 });
 const parsedEnv=schema.parse(process.env);
+const keyQrConfig=parseKeyQrSecret(parsedEnv.NODE_ENV,parsedEnv.KEY_QR_SECRET);
+if(keyQrConfig.source==='ephemeral'){
+  console.warn('KEY_QR_SECRET is not configured; an ephemeral development-only QR secret is in use. Issued QR references will be invalid after a restart.');
+}
+export const keyQrSecret=keyQrConfig.secret;
+export const keyQrSecretSource=keyQrConfig.source;
 
 export function parseAllowedOrigins(nodeEnv:string,configuredOrigin:string|undefined):string[]{
   if(nodeEnv==='production'&&!configuredOrigin)throw new Error('Production CORS_ORIGIN is required and must list explicit external origins');

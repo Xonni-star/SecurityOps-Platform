@@ -13,9 +13,9 @@ export type KeyRow={
 };
 export type BundleRow={id:string;name:string;description?:string|null;site_id:string|null;site_name?:string|null;status:string;holder_user_id?:string|null;holder_employee_id?:string|null;holder_name?:string|null;item_count:number;issued_count:number;last_movement_at?:string|null;metrics?:Record<string,number>};
 export type BundleDetail=BundleRow&{items:KeyRow[];history?:RecordedMovement[]};
-export type Dashboard={total:number;available:number;issued:number;overdue:number;lost:number;blocked:number;deactivated:number;without_site:number;without_holder:number;partial_bundles:number;due_today:number;due_7_days:number;due_30_days:number;recent_movements:RecordedMovement[]};
+export type Dashboard={total:number;available:number;issued:number;overdue:number;lost:number;blocked:number;deactivated:number;critical_count?:number;without_site:number;without_holder:number;partial_bundles:number;due_today:number;due_7_days:number;due_30_days:number;recent_movements:RecordedMovement[]};
 export type ActionEntry={id:string;bucket:'A'|'B'|'C';code:string;label:string;key_id?:string|null;key_code?:string|null;site_id?:string|null;site_name?:string|null;subject_type:string;subject_id:string|null;due_at:string|null;url?:string|null;target?:string|null};
-export type ActionList={A:ActionEntry[];B:ActionEntry[];C:ActionEntry[];generated_at:string};
+export type ActionList={A:ActionEntry[];B:ActionEntry[];C:ActionEntry[];totals?:Record<'A'|'B'|'C',number>;generated_at:string};
 export type EmployeeOption={id:string;name?:string|null;first_name?:string|null;last_name?:string|null;employee_number?:string|null;personnel_number?:string|null;department?:string|null;position?:string|null;email?:string|null;status?:string|null;employment_status?:string|null};
 export type SiteOption={id:string;name:string;site_number?:string|null;site_status?:string|null;address?:string|null};
 export type HolderInfo={holder_user_id?:string|null;holder_employee_id?:string|null;holder_name?:string|null;holder_personnel_number?:string|null;holder_status?:string|null;user_id?:string|null;employee_id?:string|null;name?:string|null;personnel_number?:string|null;status?:string|null};
@@ -110,6 +110,42 @@ export function SitePicker({label,value,onChange,sites,required=false}:{label:st
     <option value="">{required?'Bitte auswählen':'Kein Objekt'}</option>
     {sites.map(site=><option key={site.id} value={site.id}>{siteLabel(site)}</option>)}
   </select></label>;
+}
+
+export function useKeyOptions({q='',siteId='',bundleId='',excludeBundleId='',status='',limit=500}:{q?:string;siteId?:string;bundleId?:string;excludeBundleId?:string;status?:string;limit?:number}={}){
+  const [keys,setKeys]=useState<KeyRow[]>([]);
+  const [loading,setLoading]=useState(false);
+  useEffect(()=>{
+    let cancelled=false;
+    const params=new URLSearchParams({limit:String(limit)});
+    if(q)params.set('q',q);
+    if(siteId)params.set('site_id',siteId);
+    if(bundleId)params.set('bundle_id',bundleId);
+    if(excludeBundleId)params.set('exclude_bundle_id',excludeBundleId);
+    if(status)params.set('status',status);
+    setLoading(true);
+    void api<KeyRow[]>(`/keys/picker?${params.toString()}`)
+      .then(rows=>{if(!cancelled)setKeys(Array.isArray(rows)?rows:[]);})
+      .catch(()=>{if(!cancelled)setKeys([]);})
+      .finally(()=>{if(!cancelled)setLoading(false);});
+    return()=>{cancelled=true;};
+  },[q,siteId,bundleId,excludeBundleId,status,limit]);
+  return {keys,loading};
+}
+
+export function KeySearchSelect({label,searchLabel,value,onChange,siteId='',bundleId='',excludeBundleId='',status='',placeholder='Schlüssel suchen',required=false}:{
+  label:string;searchLabel?:string;value:string;onChange:(value:string)=>void;siteId?:string;bundleId?:string;excludeBundleId?:string;status?:string;placeholder?:string;required?:boolean;
+}){
+  const [query,setQuery]=useState('');
+  const {keys,loading}=useKeyOptions({q:query,siteId,bundleId,excludeBundleId,status});
+  return <div className="key-search-select">
+    <label>{searchLabel??`${label} suchen`}<input aria-label={searchLabel??`${label} suchen`} placeholder={placeholder} value={query} onChange={event=>setQuery(event.target.value)}/></label>
+    <label>{label} auswählen<select aria-label={label} value={value} required={required} onChange={event=>onChange(event.target.value)}>
+      <option value="">{required?'Bitte auswählen':'Schlüssel auswählen'}</option>
+      {keys.map(key=><option key={key.id} value={key.id}>{`${key.key_code} · ${key.label}`}</option>)}
+    </select></label>
+    {loading&&<small role="status">Schlüssel werden gesucht …</small>}
+  </div>;
 }
 
 export function KeyPicker({label,value,onChange,keys,required=false}:{label:string;value:string;onChange:(value:string)=>void;keys:KeyRow[];required?:boolean}){
@@ -298,20 +334,28 @@ export function BlockDialog({item,action,onClose,onDone}:{item:KeyRow;action:'bl
   </form></Dialog>;
 }
 
-export function QrCodeView({keyId,label}:{keyId:string;label:string}){
+export function QrCodeView({keyId,label,reference}:{keyId:string;label:string;reference?:string|null}){
   const [qr,setQr]=useState('');const [expires,setExpires]=useState('');const [error,setError]=useState('');
   useEffect(()=>{
     let cancelled=false;
     void (async()=>{
       try{
-        const data=await api<{token:string;url:string;expires_at:string|null}>(`/keys/${keyId}/qr`);
-        if(!data?.url)throw new Error('QR-Code konnte nicht geladen werden.');
-        const source=await import('qrcode').then(({toDataURL})=>toDataURL(data.url,{width:220,margin:1,errorCorrectionLevel:'M'}));
-        if(!cancelled){setQr(source);setExpires(data.expires_at??'');setError('');}
+        // A scanned reference must not be reissued here: that would revoke the
+        // token we are currently verifying and make legitimate scans fail.
+        let url:string;let expiresAt='';
+        if(reference){
+          url=`/keys/${keyId}/qr?ref=${encodeURIComponent(reference)}`;
+        }else{
+          const data=await api<{token:string;url:string;expires_at:string|null}>(`/keys/${keyId}/qr`);
+          if(!data?.url)throw new Error('QR-Code konnte nicht geladen werden.');
+          url=data.url;expiresAt=data.expires_at??'';
+        }
+        const source=await import('qrcode').then(({toDataURL})=>toDataURL(url,{width:220,margin:1,errorCorrectionLevel:'M'}));
+        if(!cancelled){setQr(source);setExpires(expiresAt);setError('');}
       }catch(cause){if(!cancelled)setError((cause as Error).message);}
     })();
     return ()=>{cancelled=true;};
-  },[keyId]);
+  },[keyId,reference]);
   return <div className="key-qr-panel">
     {qr?<img src={qr} alt={`QR-Code für ${label}`}/>:<p role="status" className="employee-empty">{error||'QR-Code wird geladen …'}</p>}
     <p className="key-qr-meta">Gültig bis {displayDateTime(expires)} · Der Token wird nicht angezeigt.</p>
@@ -326,19 +370,21 @@ export function QrDialog({item,onClose}:{item:KeyRow;onClose:()=>void}){
   </div></Dialog>;
 }
 
-export function InventoryDialog({keys,sites,bundles,onClose,onDone}:{keys:KeyRow[];sites:SiteOption[];bundles:BundleRow[];onClose:()=>void;onDone:()=>void}){
+export function InventoryDialog({sites,bundles,onClose,onDone}:{sites:SiteOption[];bundles:BundleRow[];onClose:()=>void;onDone:()=>void}){
   const [siteId,setSiteId]=useState('');const [bundleId,setBundleId]=useState('');const [checkedAt,setCheckedAt]=useState(toDateTimeLocal(new Date().toISOString()));
   const [checker,setChecker]=useState('');const [notes,setNotes]=useState('');const [error,setError]=useState('');
-  const [results,setResults]=useState<Record<string,{expected_present:boolean;actual_condition:string}>>(()=>Object.fromEntries(keys.map(key=>[key.id,{expected_present:true,actual_condition:'good'}])));
-  const scopedKeys=bundleId?keys.filter(key=>key.bundle_id===bundleId):siteId?keys.filter(key=>key.site_id===siteId):keys;
+  const [keyQuery,setKeyQuery]=useState('');
+  const {keys:scopedKeys,loading}=useKeyOptions({q:keyQuery,siteId,bundleId});
+  const [results,setResults]=useState<Record<string,{expected_present:boolean;actual_condition:string}>>({});
+  const entryFor=(key:KeyRow)=>results[key.id]??{expected_present:true,actual_condition:'good'};
   const valid=!!checkedAt&&!!checker.trim()&&scopedKeys.length>0;
   const submit=(event:FormEvent)=>{
     event.preventDefault();if(!valid)return;
     void send('/keys/inventory-checks','POST',{
       site_id:siteId||null,bundle_id:bundleId||null,checked_at:toIso(checkedAt),checker_name:checker.trim(),
       results:scopedKeys.map(key=>{
-        const entry=results[key.id];
-        return {key_id:key.id,expected_present:entry?.expected_present??false,actual_condition:entry?.expected_present?entry.actual_condition??null:null};
+        const entry=entryFor(key);
+        return {key_id:key.id,expected_present:entry.expected_present,actual_condition:entry.expected_present?entry.actual_condition||null:null};
       }),
       notes:notes||null,
     },onDone,setError);
@@ -349,10 +395,11 @@ export function InventoryDialog({keys,sites,bundles,onClose,onDone}:{keys:KeyRow
     <BundlePicker label="Schlüsselbund" value={bundleId} onChange={setBundleId} bundles={bundles}/>
     <label>Prüfzeitpunkt<input required type="datetime-local" value={checkedAt} onChange={event=>setCheckedAt(event.target.value)}/></label>
     <label>Prüfer<input required value={checker} onChange={event=>setChecker(event.target.value)}/></label>
+    <label className="span-2">Schlüssel suchen<input aria-label="Schlüssel für Bestandskontrolle suchen" placeholder="Kennziffer, Bezeichnung, Halter" value={keyQuery} onChange={event=>setKeyQuery(event.target.value)}/></label>
     <div className="span-2 key-inventory-results">{scopedKeys.length?scopedKeys.map(key=><div key={key.id} className="key-inventory-row">
-      <label><input type="checkbox" checked={results[key.id]?.expected_present??false} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:event.target.checked,actual_condition:current[key.id]?.actual_condition??'good'}}))}/> {`${key.key_code} · ${key.label}`} erwartet</label>
-      <label>Zustand<select aria-label={`Zustand ${key.key_code}`} value={results[key.id]?.actual_condition??'good'} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:current[key.id]?.expected_present??false,actual_condition:event.target.value}}))}>{Object.entries(conditionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
-    </div>):<p className="employee-empty">Keine Schlüssel für diese Auswahl vorhanden.</p>}</div>
+      <label><input type="checkbox" checked={entryFor(key).expected_present} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:event.target.checked,actual_condition:current[key.id]?.actual_condition??'good'}}))}/> {`${key.key_code} · ${key.label}`} erwartet</label>
+      <label>Zustand<select aria-label={`Zustand ${key.key_code}`} value={entryFor(key).actual_condition} onChange={event=>setResults(current=>({...current,[key.id]:{expected_present:current[key.id]?.expected_present??true,actual_condition:event.target.value}}))}>{Object.entries(conditionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+    </div>):<p className="employee-empty">{loading?'Schlüssel werden geladen …':'Keine Schlüssel für diese Auswahl vorhanden.'}</p>}</div>
     <label className="span-2">Notizen<textarea value={notes} onChange={event=>setNotes(event.target.value)}/></label>
     <div className="key-dialog-actions"><button type="button" onClick={onClose}>Abbrechen</button><button type="submit" disabled={!valid}>Bestandskontrolle speichern</button></div>
   </form></Dialog>;
