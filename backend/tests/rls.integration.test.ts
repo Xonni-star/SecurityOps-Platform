@@ -10,7 +10,7 @@ describePostgres('PostgreSQL tenant RLS integration',()=>{
   let client:pg.Client;
   let tenantA:string;
   let tenantB:string;
-  let siteA:string;
+  let _siteA:string;
   let siteB:string;
   let employeeA:string;
   let employeeB:string;
@@ -29,7 +29,7 @@ describePostgres('PostgreSQL tenant RLS integration',()=>{
       SELECT a.id tenant_a,b.id tenant_b,sa.id site_a,sb.id site_b,ea.id employee_a,eb.id employee_b
       FROM a,b,sa,sb,ea,eb
     `,[`${testName}-a@example.invalid`,`${testName}-b@example.invalid`]);
-    ({tenant_a:tenantA,tenant_b:tenantB,site_a:siteA,site_b:siteB,employee_a:employeeA,employee_b:employeeB}=seed.rows[0]);
+    ({tenant_a:tenantA,tenant_b:tenantB,site_a:_siteA,site_b:siteB,employee_a:employeeA,employee_b:employeeB}=seed.rows[0]);
     await client.query(`CREATE ROLE ${testName} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
     await client.query(`GRANT USAGE ON SCHEMA public TO ${testName}`);
     await client.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON employees,sites,devices TO ${testName}`);
@@ -38,10 +38,14 @@ describePostgres('PostgreSQL tenant RLS integration',()=>{
 
   afterAll(async()=>{
     if(!client)return;
-    await client.query('RESET ROLE');
-    await client.query('DELETE FROM tenants WHERE id IN ($1,$2)',[tenantA,tenantB]);
-    await client.query(`DROP ROLE IF EXISTS ${testName}`);
-    await client.end();
+    try{
+      await client.query('RESET ROLE');
+      await client.query('DELETE FROM tenants WHERE id IN ($1,$2)',[tenantA,tenantB]);
+      await client.query(`DROP OWNED BY ${testName}`);
+      await client.query(`DROP ROLE IF EXISTS ${testName}`);
+    }finally{
+      await client.end();
+    }
   });
 
   it('isolates select and all DML operations by request tenant context',async()=>{

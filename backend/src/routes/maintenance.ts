@@ -6,12 +6,22 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
 import {queueNotificationEvent} from '../services/notifications.js';
 import {effectiveMaintenanceStatus,maintenanceStatusLabels,nextMaintenanceDate,withMaintenanceStatus} from '../services/maintenance-domain.js';
+import {runIdempotentMutation} from '../services/offline-sync.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
 const maintenanceTypes=['inspection','preventive','corrective','repair','other'] as const;
 const priorities=['critical','high','medium','low'] as const;
 const openStatuses=['planned','open','in_progress'] as const;
+const createOrderBody=z.object({
+  device_id:uuid,
+  maintenance_type:z.enum(maintenanceTypes).default('inspection'),
+  description:z.string().trim().min(3).max(4000),
+  priority_code:z.enum(priorities).default('medium'),
+  due_on:z.string().date().nullable().optional(),
+  status:z.enum(openStatuses).default('planned'),
+  responsible_employee_id:uuid.nullable().optional(),
+}).strict();
 
 type OrderRow={
   id:string;tenant_id:string;site_id:string;device_id:string;order_number:string;
@@ -76,6 +86,23 @@ async function employeeAssignedToSite(tenantId:string,siteId:string,employeeId:s
   )).rows[0]);
 }
 
+async function insertMaintenanceOrder(
+  client:PoolClient,
+  tenantId:string,
+  userId:string,
+  siteId:string,
+  body:z.infer<typeof createOrderBody>,
+):Promise<OrderRow>{
+  const sequence=(await client.query<{next:string}>(`SELECT nextval('maintenance_order_number_seq')::text AS next`)).rows[0];
+  const orderNumber=`MAIN-${new Date().getUTCFullYear()}-${String(sequence?.next??'').padStart(6,'0')}`;
+  const row=(await client.query<OrderRow>(
+    `INSERT INTO maintenance_orders(tenant_id,site_id,device_id,order_number,maintenance_type,description,priority_code,due_on,responsible_employee_id,status,created_by,started_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [tenantId,siteId,body.device_id,orderNumber,body.maintenance_type,body.description,body.priority_code,body.due_on??null,body.responsible_employee_id??null,body.status,userId,body.status==='in_progress'?new Date():null],
+  )).rows[0];
+  await recordAudit(tenantId,userId,'maintenance_order.created','maintenance_order',row.id,{site_id:siteId,device_id:body.device_id,order_number:orderNumber,status:body.status},client);
+  return row;
+}
 
 async function notifyResponsible(order:OrderRow,title:string,body:string){
   if(!order.responsible_employee_id)return;
@@ -107,31 +134,30 @@ maintenanceRouter.get('/sites/:id/maintenance-orders',requireAuth,requirePermiss
 maintenanceRouter.post('/sites/:id/maintenance-orders',requireAuth,requireCsrf,requirePermission('devices:write',{allowedScopes:['tenant','site','system']}),requireSiteScope('devices:write'),async(req,res,next)=>{
   try{
     const siteId=uuid.parse(String(req.params.id));
-    const body=z.object({
-      device_id:uuid,
-      maintenance_type:z.enum(maintenanceTypes).default('inspection'),
-      description:z.string().trim().min(3).max(4000),
-      priority_code:z.enum(priorities).default('medium'),
-      due_on:z.string().date().nullable().optional(),
-      status:z.enum(openStatuses).default('planned'),
-      responsible_employee_id:uuid.nullable().optional(),
-    }).strict().parse(req.body);
+    const body=createOrderBody.parse(req.body);
+    const idempotencyKey=req.get('Idempotency-Key');
+    const mutationId=idempotencyKey?uuid.safeParse(idempotencyKey):null;
+    if(idempotencyKey&&!mutationId?.success)return res.status(400).json({error:'Invalid Idempotency-Key'});
     const device=(await query<{id:string;site_id:string}>(
       `SELECT id,site_id FROM devices WHERE tenant_id=$1 AND id=$2 AND device_kind='operational'`,
       [req.user!.tenantId,body.device_id],
     )).rows[0];
     if(!device||device.site_id!==siteId)return res.status(404).json({error:'Operational device not found at this site'});
     if(body.responsible_employee_id&&!await employeeAssignedToSite(req.user!.tenantId,siteId,body.responsible_employee_id))return res.status(400).json({error:'Responsible employee must be assigned to this site'});
-    const sequence=(await query<{next:string}>(`SELECT nextval('maintenance_order_number_seq')::text AS next`)).rows[0];
-    const orderNumber=`MAIN-${new Date().getUTCFullYear()}-${String(sequence?.next??'').padStart(6,'0')}`;
-    const row=(await query<OrderRow>(
-      `INSERT INTO maintenance_orders(tenant_id,site_id,device_id,order_number,maintenance_type,description,priority_code,due_on,responsible_employee_id,status,created_by,started_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [req.user!.tenantId,siteId,body.device_id,orderNumber,body.maintenance_type,body.description,body.priority_code,body.due_on??null,body.responsible_employee_id??null,body.status,req.user!.id,body.status==='in_progress'?new Date():null],
-    )).rows[0];
-    await recordAudit(req.user!.tenantId,req.user!.id,'maintenance_order.created','maintenance_order',row.id,{site_id:siteId,device_id:body.device_id,order_number:orderNumber,status:body.status});
-    await notifyResponsible(row,'Wartungsauftrag erfasst',`${row.order_number}: ${row.description}`);
-    res.status(201).json(withMaintenanceStatus(row));
+    let row:OrderRow;
+    let replayed=false;
+    if(mutationId?.success){
+      const result=await withTransaction(client=>runIdempotentMutation(client,{
+        tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:mutationId.data,
+        action:'maintenance.order.create',payload:req.body,
+      },tx=>insertMaintenanceOrder(tx,req.user!.tenantId,req.user!.id,siteId,body)));
+      row=result.response;
+      replayed=result.replayed;
+    }else{
+      row=await withTransaction(client=>insertMaintenanceOrder(client,req.user!.tenantId,req.user!.id,siteId,body));
+    }
+    if(!replayed)await notifyResponsible(row,'Wartungsauftrag erfasst',`${row.order_number}: ${row.description}`);
+    res.status(replayed?200:201).json(withMaintenanceStatus(row));
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid maintenance order'});next(error);}
 });
 

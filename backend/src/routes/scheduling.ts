@@ -2,7 +2,6 @@ import {Router,Request} from 'express';
 import {z} from 'zod';
 import {query,withTransaction} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
-import {recordAudit} from '../services/audit.js';
 import {runIdempotentMutation} from '../services/offline-sync.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 import {detectShiftConflicts} from '../services/scheduling.js';

@@ -81,11 +81,9 @@ const statuses:Record<string,string>={planning:'Planung',setup:'Einrichtung',act
 const classifications:Record<string,string>={unknown:'Offen',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
 const documentStatusLabels:Record<DocumentStatus,string>={gueltig:'Gültig',lauf_bald_ab:'Läuft bald ab',bald_pruefpflichtig:'Bald prüfpflichtig',abgelaufen:'Abgelaufen',fehlend:'Fehlt',nicht_freigegeben:'Nicht freigegeben',pruefung_ausstehend:'Prüfung ausstehend',noch_nicht_gueltig:'Noch nicht gültig'};
 const reviewStateLabels:Record<'none'|'pending'|'due_soon'|'overdue',string>={none:'Keine Prüffrist',pending:'Prüfung ausstehend',due_soon:'Prüfung bald fällig',overdue:'Prüfung überfällig'};
-const approvalLabels:Record<string,string>={approved:'Freigegeben',pending_approval:'Freigabe ausstehend',draft:'Entwurf',rejected:'Abgelehnt',archived:'Archiviert'};
 const instructionStatusLabels:Record<string,string>={draft:'Entwurf',pending_approval:'Freigabe ausstehend',approved:'Freigegeben',returned_for_revision:'Zur Überarbeitung',archived:'Archiviert'};
 const hazardStatusLabels:Record<string,string>={open:'Offen',mitigated:'Gemindert',accepted:'Akzeptiert',closed:'Geschlossen'};
 const measureStatusLabels:Record<string,string>={open:'Offen',in_progress:'In Bearbeitung',completed:'Abgeschlossen',cancelled:'Abgebrochen'};
-const maintenanceTypeLabels:Record<string,string>={inspection:'Prüfung',preventive:'Vorbeugend',corrective:'Korrigierend',repair:'Reparatur',other:'Sonstige'};
 const priorityLabels:Record<string,string>={critical:'Kritisch',high:'Hoch',medium:'Mittel',low:'Niedrig'};
 const eligibilityLabels:Record<'eligible'|'restricted'|'ineligible',string>={eligible:'Einsatzfähig',restricted:'Eingeschränkt einsatzfähig',ineligible:'Nicht einsatzfähig'};
 const hazardCategories:Record<string,string>={burglary:'Einbruch',theft:'Diebstahl',vandalism:'Vandalismus',fire:'Brand',robbery:'Raub',unauthorized_access:'Unbefugter Zutritt',sabotage:'Sabotage',conflict:'Konflikt',technical:'Technisch',environmental:'Umwelt',other:'Sonstige'};
@@ -271,6 +269,7 @@ export function Sites(){
   const [maintenanceClientEntryId,setMaintenanceClientEntryId]=useState(uuid());
   const [maintenanceOptionsLoaded,setMaintenanceOptionsLoaded]=useState(false);
   const [orderFormOpen,setOrderFormOpen]=useState(false);
+  const [orderClientId,setOrderClientId]=useState(uuid());
   const [orderForm,setOrderForm]=useState({device_id:'',maintenance_type:'inspection',description:'',priority_code:'medium',due_on:'',responsible_employee_id:'',status:'planned'});
   const [completingOrderId,setCompletingOrderId]=useState<string|null>(null);
   const [completionForm,setCompletionForm]=useState({performed_work:'',result:'',remarks:''});
@@ -505,8 +504,8 @@ export function Sites(){
   async function createMaintenanceOrder(event:FormEvent){
     event.preventDefault();if(!selected||!orderForm.device_id||!orderForm.description.trim())return;
     try{
-      await api(`/sites/${selected.site.id}/maintenance-orders`,{method:'POST',body:JSON.stringify({device_id:orderForm.device_id,maintenance_type:orderForm.maintenance_type,description:orderForm.description.trim(),priority_code:orderForm.priority_code,due_on:orderForm.due_on||null,status:orderForm.status,responsible_employee_id:orderForm.responsible_employee_id||null})});
-      setOrderForm({device_id:'',maintenance_type:'inspection',description:'',priority_code:'medium',due_on:'',responsible_employee_id:'',status:'planned'});setOrderFormOpen(false);await refreshContext();setError('');
+      await api(`/sites/${selected.site.id}/maintenance-orders`,{method:'POST',headers:{'Idempotency-Key':orderClientId},body:JSON.stringify({device_id:orderForm.device_id,maintenance_type:orderForm.maintenance_type,description:orderForm.description.trim(),priority_code:orderForm.priority_code,due_on:orderForm.due_on||null,status:orderForm.status,responsible_employee_id:orderForm.responsible_employee_id||null})});
+      setOrderForm({device_id:'',maintenance_type:'inspection',description:'',priority_code:'medium',due_on:'',responsible_employee_id:'',status:'planned'});setOrderClientId(uuid());setOrderFormOpen(false);await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
   }
   async function updateMaintenanceOrder(order:MaintenanceOrder,status:'planned'|'open'|'in_progress'){
@@ -658,7 +657,6 @@ export function Sites(){
     if(key==='name')return;
     setVisibleColumns(current=>checked?[...current,key]:current.length>1?current.filter(column=>column!==key):current);
   };
-  const visibleSiteColumns=siteColumns.filter(column=>column.key==='name'||visibleColumns.includes(column.key));
   const customerOptions=Array.from(new Set(sites.flatMap(site=>site.customer_names??[]))).sort((a,b)=>a.localeCompare(b,'de'));
   const managerOptions=Array.from(new Map<string,string>(sites.flatMap(site=>{
     const managers:[string,string][]=[];
@@ -690,7 +688,7 @@ export function Sites(){
   const locationParentType=locationForm.location_type==='area'?'building':locationForm.location_type==='zone'?'area':null;
   useEffect(()=>{
     if(!selectedSiteId)return;
-    setMaintenanceClientEntryId(uuid());
+    setMaintenanceClientEntryId(uuid());setOrderClientId(uuid());
   },[selectedSiteId]);
   useEffect(()=>{
     if(active!=='technik'||!selectedSiteId)return;
@@ -754,10 +752,6 @@ export function Sites(){
     counts[bucket]=selected?.documentWarningCounts?.[bucket]??documents.filter(document=>document.expiry_bucket===bucket).length;
     return counts;
   },{} as Record<ExpiryBucket,number>);
-  const expiredDocuments=documents.filter(document=>document.computed_status==='abgelaufen');
-  const expiring7Documents=documents.filter(document=>document.expiry_bucket==='within_7_days');
-  const expiring30Documents=documents.filter(document=>document.expiry_bucket==='within_8_30_days');
-  const expiring60Documents=documents.filter(document=>document.expiry_bucket==='within_31_60_days');
   const activeDevices=selected?.devices?.filter(device=>device.operational_status==='active')??[];
   const faultyDevices=selected?.devices?.filter(device=>device.operational_status==='fault'||device.operational_status==='offline')??[];
   const maintenanceOrders=selected?.maintenanceOrders??[];
@@ -1118,7 +1112,7 @@ export function Sites(){
       </form>}
       <h3>Wartungsaufträge</h3>
       {selected.maintenanceOrders===null?<p>Keine Berechtigung für Wartungsaufträge.</p>:<>
-        {hasPermission('devices:write')&&<button type="button" onClick={()=>setOrderFormOpen(open=>!open)}>{orderFormOpen?'Auftragsformular schließen':'Wartungsauftrag erfassen'}</button>}
+        {hasPermission('devices:write')&&<button type="button" onClick={()=>{setOrderFormOpen(open=>!open);setOrderClientId(uuid());}}>{orderFormOpen?'Auftragsformular schließen':'Wartungsauftrag erfassen'}</button>}
         {orderFormOpen&&hasPermission('devices:write')&&<form onSubmit={createMaintenanceOrder}>
           <h4>Neuen Wartungsauftrag anlegen</h4>
           <label>Anlage<select required value={orderForm.device_id} onChange={event=>setOrderForm({...orderForm,device_id:event.target.value})}><option value="">Anlage auswählen</option>{(selected.devices??[]).map(device=><option key={device.id} value={device.id}>{device.name}{device.asset_number?` · ${device.asset_number}`:''}</option>)}</select></label>

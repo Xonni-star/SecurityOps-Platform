@@ -1,5 +1,5 @@
 import pg from 'pg'; import {AsyncLocalStorage} from 'node:async_hooks'; import {env} from '../config/env.js';
-export const pool=new pg.Pool({connectionString:env.DATABASE_URL,max:10});
+export const pool=new pg.Pool({connectionString:env.DATABASE_URL,max:10,allowExitOnIdle:true});
 
 type DbContext={tenantId?:string;loginEmail?:string;sessionTokenHash?:string};
 const dbContext=new AsyncLocalStorage<DbContext>();

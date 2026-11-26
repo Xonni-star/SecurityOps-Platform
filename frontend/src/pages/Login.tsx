@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars -- MFA enrollment UI is retained for the self-service flow. */
 import {FormEvent,useEffect,useState} from 'react'; import {useNavigate} from 'react-router-dom'; import {enrollMfa,login,mfaChallenge} from '../lib/api'; import '../mfa.css';
 type Setup={uri:string;codes:string[]};
 export function Login(){const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[code,setCode]=useState(''),[recoveryCode,setRecoveryCode]=useState(''),[setup,setSetup]=useState<Setup|null>(null),[pending,setPending]=useState(false),[error,setError]=useState('');const nav=useNavigate();

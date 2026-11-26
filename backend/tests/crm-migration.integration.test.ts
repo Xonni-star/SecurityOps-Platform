@@ -11,7 +11,7 @@ describePostgres('PostgreSQL CRM foundation constraints and tenant isolation',()
   let tenantA:string;
   let tenantB:string;
   let customerA:string;
-  let customerB:string;
+  let _customerB:string;
   let siteA:string;
   let siteB:string;
 
@@ -29,7 +29,7 @@ describePostgres('PostgreSQL CRM foundation constraints and tenant isolation',()
       SELECT a.id tenant_a,b.id tenant_b,ca.id customer_a,cb.id customer_b,sa.id site_a,sb.id site_b
       FROM a,b,ca,cb,sa,sb
     `,[`${testName}-a@example.invalid`,`${testName}-b@example.invalid`]);
-    ({tenant_a:tenantA,tenant_b:tenantB,customer_a:customerA,customer_b:customerB,site_a:siteA,site_b:siteB}=seed.rows[0]);
+    ({tenant_a:tenantA,tenant_b:tenantB,customer_a:customerA,customer_b:_customerB,site_a:siteA,site_b:siteB}=seed.rows[0]);
     await client.query(`CREATE ROLE ${testName} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
     await client.query(`GRANT USAGE ON SCHEMA public TO ${testName}`);
     await client.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON customer_sites,customer_contacts,contracts,contract_sites,services,contract_services,customers,sites,tenants TO ${testName}`);
@@ -38,10 +38,14 @@ describePostgres('PostgreSQL CRM foundation constraints and tenant isolation',()
 
   afterAll(async()=>{
     if(!client)return;
-    await client.query('RESET ROLE');
-    await client.query('DELETE FROM tenants WHERE id IN ($1,$2)',[tenantA,tenantB]);
-    await client.query(`DROP ROLE IF EXISTS ${testName}`);
-    await client.end();
+    try{
+      await client.query('RESET ROLE');
+      await client.query('DELETE FROM tenants WHERE id IN ($1,$2)',[tenantA,tenantB]);
+      await client.query(`DROP OWNED BY ${testName}`);
+      await client.query(`DROP ROLE IF EXISTS ${testName}`);
+    }finally{
+      await client.end();
+    }
   });
 
   it('supports customer contacts without inventing a legacy contact name',async()=>{

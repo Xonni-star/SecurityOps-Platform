@@ -359,7 +359,7 @@ describe('Objektübersicht',()=>{
       keys:{items:[{id:'key-1',key_code:'K-01',label:'Main entrance',key_type:'physical',status:keyStatus,holder_user_id:null,holder_employee_id:keyStatus==='issued'?employee.id:null,issued_at:null,returned_at:null,lost_at:null,deactivated_at:null}],recentMovements:[]},
       keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
     });
-    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>{
+    apiMock.mockImplementation(async(path:string,_options?:RequestInit)=>{
       if(path==='/sites')return sites.slice(0,1);
       if(path==='/customers')return [];
       if(path==='/employees')return [employee];
@@ -494,7 +494,7 @@ describe('Objektübersicht',()=>{
       shifts:[{id:'shift-1',period_id:'period-1',period_name:'November',period_status:'published',period_starts_at:'2026-11-25T00:00:00Z',period_ends_at:'2026-11-26T00:00:00Z',role_code:'guard',starts_at:'2026-11-25T08:00:00Z',ends_at:'2026-11-25T16:00:00Z',assigned_count:0,assignments:[]}],
       patrols:null,keys:null,keyBundles:null,documents:null,alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
     };
-    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'employee-1',name:'Mia Guard'}]:path==='/scheduling/shifts/shift-1/assignments'?{}:context);
+    apiMock.mockImplementation(async(path:string,_options?:RequestInit)=>path==='/sites'?sites.slice(0,1):path==='/customers'?[]:path==='/employees'?[{id:'employee-1',name:'Mia Guard'}]:path==='/scheduling/shifts/shift-1/assignments'?{}:context);
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
@@ -583,6 +583,9 @@ describe('Objektübersicht',()=>{
     const created=JSON.parse(apiMock.mock.calls.find(([path,options])=>path==='/sites/0/maintenance-orders'&&options?.method==='POST')![1].body);
     expect(created).toEqual(expect.objectContaining({device_id:'device-1',description:'Replace defective camera',due_on:'2026-12-01',status:'planned'}));
     expect(created).not.toHaveProperty('watchbook_entry_id');
+    expect(apiMock.mock.calls.find(([path,options])=>path==='/sites/0/maintenance-orders'&&options?.method==='POST')![1].headers).toEqual(expect.objectContaining({
+      'Idempotency-Key':expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
+    }));
     fireEvent.click(screen.getByRole('button',{name:'In Bearbeitung nehmen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/maintenance-orders/order-1',expect.objectContaining({method:'PATCH',body:JSON.stringify({status:'in_progress'})})));
     fireEvent.click(screen.getByRole('button',{name:'Abschließen'}));

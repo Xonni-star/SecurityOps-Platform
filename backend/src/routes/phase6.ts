@@ -1,4 +1,4 @@
-import {Router,Request} from 'express';
+import {Router} from 'express';
 import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
