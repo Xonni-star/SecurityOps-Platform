@@ -24,10 +24,10 @@ describe('strict backend contracts',()=>{
     });
     render(<MemoryRouter><Resource name="devices" fields={['name','status','site_id']}/></MemoryRouter>);
     await waitFor(()=>expect(screen.getByRole('option',{name:'Hauptobjekt'})).toBeTruthy());
-    fireEvent.change(screen.getByPlaceholderText('name'),{target:{value:'Leser 1'}});
+    fireEvent.change(screen.getByPlaceholderText('z. B. Handfunkgerät 01'),{target:{value:'Leser 1'}});
     fireEvent.change(screen.getByLabelText('Status'),{target:{value:'online'}});
     fireEvent.change(screen.getByLabelText('Objekt'),{target:{value:'00000000-0000-4000-8000-000000000001'}});
-    fireEvent.click(screen.getByRole('button',{name:'Add'}));
+    fireEvent.click(screen.getByRole('button',{name:'Gerät anlegen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/devices',{method:'POST',body:JSON.stringify({name:'Leser 1',status:'online',site_id:'00000000-0000-4000-8000-000000000001'})}));
   });
 
@@ -38,11 +38,11 @@ describe('strict backend contracts',()=>{
       return [];
     });
     render(<MemoryRouter><AlarmForwarding/></MemoryRouter>);
-    await waitFor(()=>expect(screen.getByPlaceholderText('Name')).toBeTruthy());
-    fireEvent.change(screen.getByPlaceholderText('Name'),{target:{value:'Webhook'}});
-    fireEvent.change(screen.getAllByPlaceholderText('Änderungsgrund')[0],{target:{value:'Initial Newsletter'}});
-    fireEvent.click(screen.getByRole('button',{name:'Anlegen'}));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent','Für einen Webhook ist ein Endpoint erforderlich.');
+    await waitFor(()=>expect(screen.getByPlaceholderText('Name des Ziels')).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText('Name des Ziels'),{target:{value:'Webhook'}});
+    fireEvent.change(screen.getAllByPlaceholderText('Grund für die Änderung')[0],{target:{value:'Initial Newsletter'}});
+    fireEvent.click(screen.getByRole('button',{name:'Ziel anlegen'}));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent','Für einen Webhook ist eine Zieladresse erforderlich.');
     expect(apiMock).not.toHaveBeenCalledWith('/alarm-forwarding/destinations',expect.objectContaining({method:'POST'}));
   });
 
@@ -50,9 +50,9 @@ describe('strict backend contracts',()=>{
     const handover={id:'00000000-0000-4000-8000-000000000002',site_id:'00000000-0000-4000-8000-000000000001',shift_id:null,title:'Frühschicht',status:'open',created_at:'2026-01-01',participant_count:0,confirmation_count:0,participants:[]};
     apiMock.mockImplementation(async(path:string)=>path==='/handover-protocols'?[handover]:path===`/handover-protocols/${handover.id}`?handover:[]);
     render(<MemoryRouter><Handovers/></MemoryRouter>);
-    fireEvent.click(await screen.findByRole('button',{name:'Details'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Teilnehmer binden'}));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent','Bitte genau eine Identität (Benutzer oder Mitarbeiter) angeben.');
+    fireEvent.click(await screen.findByRole('button',{name:'Details anzeigen'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Teilnehmer zuordnen'}));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent','Bitte genau eine Zuordnung angeben: entweder ein Benutzerkonto oder ein Mitarbeiter.');
     expect(apiMock).not.toHaveBeenCalledWith(expect.stringContaining('/participants'),expect.objectContaining({method:'POST'}));
   });
 
@@ -61,16 +61,17 @@ describe('strict backend contracts',()=>{
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/qualifications/catalog')return [{id:'q-1',code:'first-aid',name:'Erste Hilfe',default_validity_days:365,active:true}];
       if(path==='/qualifications/reminders')return {reminder_days:[90,30]};
+      if(path==='/employees')return [{id:employeeId,name:'E2E Mitarbeiter'}];
       if(path.endsWith('/qualifications'))return [];
       return [];
     });
     render(<MemoryRouter><Qualifications/></MemoryRouter>);
     await waitFor(()=>expect(screen.getByRole('option',{name:/Erste Hilfe/})).toBeTruthy());
-    fireEvent.change(screen.getByLabelText('Mitarbeiter-ID'),{target:{value:employeeId}});
+    fireEvent.change(screen.getByLabelText('Mitarbeiter'),{target:{value:employeeId}});
     fireEvent.change(screen.getByLabelText('Qualifikation'),{target:{value:'first-aid'}});
     fireEvent.change(screen.getByLabelText('Gültig ab'),{target:{value:''}});
     fireEvent.change(screen.getByLabelText('Begründung'),{target:{value:'Nachweis geprüft'}});
-    fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
+    fireEvent.click(screen.getByRole('button',{name:'Qualifikation speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/employees/${employeeId}/qualifications`,{method:'POST',body:JSON.stringify({code:'first-aid',valid_from:null,valid_until:null,reason:'Nachweis geprüft'})}));
   });
 });

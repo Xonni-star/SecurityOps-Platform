@@ -15,7 +15,7 @@ describe('DMS domain contracts',()=>{
     const content=Buffer.from('hello');
     expect(validateDmsUpload(content,'text/plain',10,new Set(['text/plain']))).toEqual({sizeBytes:5,sha256:sha256(content)});
     expect(()=>validateDmsUpload(content,'application/octet-stream',10,new Set(['text/plain']))).toThrow('Content-Type');
-    expect(()=>validateDmsUpload(content,'text/plain',4,new Set(['text/plain']))).toThrow('size');
+    expect(()=>validateDmsUpload(content,'text/plain',4,new Set(['text/plain']))).toThrow('Größenbegrenzung');
   });
   it('models quarantine scanning and explicit scan rejection',()=>{
     expect(scanLifecycle({clean:true})).toEqual({state:'available'});

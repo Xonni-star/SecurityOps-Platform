@@ -8,14 +8,14 @@ const defaultResolver:SecretResolver=(reference)=>process.env[reference];
 export async function resolveSecret(reference:string|undefined,resolver:SecretResolver=defaultResolver):Promise<string|undefined>{
   if(!reference)return undefined;
   const value=await resolver(reference);
-  if(typeof value!=='string'||value.length===0)throw new Error(`Referenced secret ${reference} is unavailable`);
+  if(typeof value!=='string'||value.length===0)throw new Error(`Referenziertes Geheimnis ${reference} ist nicht verfügbar`);
   return value;
 }
 
 export async function resolveSecretPayload(secretRef:string|undefined,encryptedSecret:string|null,resolver:SecretResolver=defaultResolver):Promise<Record<string,string>|undefined>{
   if(secretRef){
     const raw=await resolveSecret(secretRef,resolver);
-    if(!raw)throw new Error(`Referenced secret ${secretRef} is unavailable`);
+    if(!raw)throw new Error(`Referenziertes Geheimnis ${secretRef} ist nicht verfügbar`);
     try{
       const parsed=JSON.parse(raw) as unknown;
       if(parsed&&typeof parsed==='object'){
@@ -25,11 +25,11 @@ export async function resolveSecretPayload(secretRef:string|undefined,encryptedS
     }catch{
       return {value:raw};
     }
-    throw new Error(`Referenced secret ${secretRef} has an invalid payload`);
+    throw new Error(`Referenziertes Geheimnis ${secretRef} hat einen ungültigen Wert`);
   }
   if(encryptedSecret){
     const encryptionKey=env.BACKUP_SECRET_KEY??process.env.BACKUP_SECRET_KEY;
-    if(!encryptionKey)throw new Error('Encrypted secret key is unavailable');
+    if(!encryptionKey)throw new Error('Verschlüsselter Geheimnisschlüssel ist nicht verfügbar');
     const decrypted=decryptSecretPayload(encryptedSecret,encryptionKey);
     if(typeof decrypted==='string')return {value:decrypted};
     return Object.fromEntries(Object.entries(decrypted??{}).filter((entry):entry is [string,string]=>typeof entry[1]==='string'));

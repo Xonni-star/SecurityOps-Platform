@@ -78,7 +78,7 @@ phase3Router.get('/sensor-events',requirePermission('telemetry:read'),async(req,
 phase3Router.post('/telemetry',requirePermission('telemetry:write'),async(req,res,next)=>{
   try{
     const body=z.object({device_id:uuid,sensor_type:sensorType,value:z.number(),recorded_at:z.coerce.date().optional(),metadata:z.record(z.string(),z.unknown()).optional()}).strict().parse(req.body);
-    if(!await deviceBelongsToTenant(body.device_id,req.user!.tenantId))return res.status(404).json({error:'Device not found'});
+    if(!await deviceBelongsToTenant(body.device_id,req.user!.tenantId))return res.status(404).json({error:'Gerät nicht gefunden'});
     const recordedAt=body.recorded_at??new Date();
     const event=(await query(
       `INSERT INTO sensor_events(tenant_id,device_id,sensor_type,value,recorded_at,metadata) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
@@ -101,7 +101,7 @@ phase3Router.get('/positions',requirePermission('positions:read'),async(req,res,
 phase3Router.post('/positions',requirePermission('positions:write'),async(req,res,next)=>{
   try{
     const body=z.object({device_id:uuid,latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180),accuracy_m:z.number().nonnegative().optional(),recorded_at:z.coerce.date().optional()}).strict().parse(req.body);
-    if(!await deviceBelongsToTenant(body.device_id,req.user!.tenantId))return res.status(404).json({error:'Device not found'});
+    if(!await deviceBelongsToTenant(body.device_id,req.user!.tenantId))return res.status(404).json({error:'Gerät nicht gefunden'});
     const position=(await query(
       `INSERT INTO device_positions(tenant_id,device_id,latitude,longitude,accuracy_m,recorded_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
       [req.user!.tenantId,body.device_id,body.latitude,body.longitude,body.accuracy_m??null,body.recorded_at??new Date()],
@@ -125,10 +125,10 @@ phase3Router.post('/incidents',requirePermission('incidents:write'),async(req,re
   try{
     const body=z.object({alarm_id:uuid.nullable().optional(),site_id:uuid.nullable().optional(),employee_id:uuid.nullable().optional(),priority_id:uuid,description:nonempty}).strict().parse(req.body);
     const priority=(await query('SELECT id FROM alarm_priorities WHERE id=$1 AND tenant_id=$2',[body.priority_id,req.user!.tenantId])).rows[0];
-    if(!priority)return res.status(404).json({error:'Priority not found'});
-    if(body.alarm_id&&!(await query('SELECT id FROM alarms WHERE id=$1 AND tenant_id=$2',[body.alarm_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Alarm not found'});
-    if(body.site_id&&!(await query('SELECT id FROM sites WHERE id=$1 AND tenant_id=$2',[body.site_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Site not found'});
-    if(body.employee_id&&!(await query('SELECT id FROM employees WHERE id=$1 AND tenant_id=$2',[body.employee_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Employee not found'});
+    if(!priority)return res.status(404).json({error:'Priorität nicht gefunden'});
+    if(body.alarm_id&&!(await query('SELECT id FROM alarms WHERE id=$1 AND tenant_id=$2',[body.alarm_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Alarm nicht gefunden'});
+    if(body.site_id&&!(await query('SELECT id FROM sites WHERE id=$1 AND tenant_id=$2',[body.site_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Objekt nicht gefunden'});
+    if(body.employee_id&&!(await query('SELECT id FROM employees WHERE id=$1 AND tenant_id=$2',[body.employee_id,req.user!.tenantId])).rows[0])return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const incident=(await query(`INSERT INTO incidents(tenant_id,alarm_id,site_id,employee_id,priority_id,description,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[req.user!.tenantId,body.alarm_id??null,body.site_id??null,body.employee_id??null,body.priority_id,body.description,req.user!.id])).rows[0];
     await query(`INSERT INTO incident_history(incident_id,tenant_id,to_status,changed_by) VALUES($1,$2,'initiated',$3)`,[incident.id,req.user!.tenantId,req.user!.id]);
     publish(req.user!.tenantId,'incident.created',incident,'incidents:read');
@@ -140,9 +140,9 @@ phase3Router.post('/incidents/:id/assignments',requirePermission('incidents:writ
   try{
     const body=z.object({employee_id:uuid}).strict().parse(req.body);
     const employee=(await query<{id:string}>('SELECT id FROM employees WHERE id=$1 AND tenant_id=$2',[body.employee_id,req.user!.tenantId])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const assignment=(await query(`INSERT INTO incident_assignments(incident_id,employee_id,assigned_by) SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM incidents WHERE id=$1 AND tenant_id=$4) RETURNING *`,[req.params.id,body.employee_id,req.user!.id,req.user!.tenantId])).rows[0];
-    if(!assignment)return res.status(404).json({error:'Incident not found'});
+    if(!assignment)return res.status(404).json({error:'Vorfall nicht gefunden'});
     publish(req.user!.tenantId,'incident.assigned',assignment,'incidents:read');
     res.status(201).json(assignment);
   }catch(error){next(error);}
@@ -151,9 +151,9 @@ phase3Router.post('/incidents/:id/status',requirePermission('incidents:write'),a
   try{
     const body=z.object({status}).strict().parse(req.body);
     const current=(await query<{status:string}>('SELECT status FROM incidents WHERE id=$1 AND tenant_id=$2',[req.params.id,req.user!.tenantId])).rows[0];
-    if(!current)return res.status(404).json({error:'Incident not found'});
+    if(!current)return res.status(404).json({error:'Vorfall nicht gefunden'});
     const allowed:{[key:string]:string[]}={initiated:['en_route'],en_route:['on_site'],on_site:['completed'],completed:[]};
-    if(!allowed[current.status]?.includes(body.status))return res.status(409).json({error:'Invalid incident transition'});
+    if(!allowed[current.status]?.includes(body.status))return res.status(409).json({error:'Ungültiger Statuswechsel des Vorfalls'});
     const incident=(await query('UPDATE incidents SET status=$1,updated_at=now() WHERE id=$2 AND tenant_id=$3 RETURNING *',[body.status,req.params.id,req.user!.tenantId])).rows[0];
     await query(`INSERT INTO incident_history(incident_id,tenant_id,from_status,to_status,changed_by) VALUES($1,$2,$3,$4,$5)`,[req.params.id,req.user!.tenantId,current.status,body.status,req.user!.id]);
     publish(req.user!.tenantId,'incident.status_changed',incident,'incidents:read');

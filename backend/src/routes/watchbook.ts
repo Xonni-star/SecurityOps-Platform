@@ -139,7 +139,7 @@ watchbookRouter.post('/watchbook/entries',requirePermission('watchbook:write',{a
     const user=req.user!;
     const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
     const scope=effectivePermissionScope(grants,'watchbook:write',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-    if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:body.site_id??null}))return res.status(403).json({error:'Permission scope does not include this site'});
+    if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:body.site_id??null}))return res.status(403).json({error:'Kein Zugriff auf Objekt'});
     const mutationId=req.get('Idempotency-Key')??body.client_entry_id;
     if(req.get('Idempotency-Key')&&body.client_entry_id&&req.get('Idempotency-Key')!==body.client_entry_id)return res.status(400).json({error:'Idempotency-Key und client_entry_id müssen übereinstimmen.'});
     if(!mutationId)return res.status(400).json({error:'client_entry_id oder Idempotency-Key ist erforderlich.'});

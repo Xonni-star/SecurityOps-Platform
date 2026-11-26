@@ -44,7 +44,7 @@ describe('phase 5 reporting',()=>{
       return result([]);
     });
     const response=await request(app).get('/api/v1/reports/patrols?site_id=not-a-uuid').set('Cookie',csrf.Cookie);
-    expect(response.status).toBe(400);expect(response.body.error).toBe('Invalid report filter');
+    expect(response.status).toBe(400);expect(response.body.error).toBe('Ungültiger Berichtsfilter');
   });
 
   it('emits a PDF with a resolvable cross-reference table',async()=>{

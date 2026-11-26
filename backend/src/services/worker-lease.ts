@@ -4,7 +4,7 @@ import {query} from '../db/pool.js';
 const holderId=randomUUID();
 
 export async function tryAcquireWorkerLease(workerName:string,ttlMs:number):Promise<boolean>{
-  if(!Number.isInteger(ttlMs)||ttlMs<1000)throw new Error('Worker lease TTL must be at least one second');
+  if(!Number.isInteger(ttlMs)||ttlMs<1000)throw new Error('Worker-Lease-TTL muss mindestens eine Sekunde betragen');
   const result=await query(
     `INSERT INTO worker_leases(worker_name,holder_id,expires_at,updated_at)
      VALUES($1,$2,now()+($3::text || ' milliseconds')::interval,now())

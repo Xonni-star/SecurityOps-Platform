@@ -8,9 +8,26 @@ import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} fr
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
 /** Field paths and messages only: never echo employee values back to the client or logs. */
+type ValidationIssue=z.ZodError['issues'][number];
+const validationMessage=(issue:ValidationIssue):string=>{
+  switch(issue.code){
+    case 'invalid_format':
+      return issue.format==='email'?'Ungültige E-Mail-Adresse':issue.format==='date'?'Ungültiges Datum':'Ungültiges Format';
+    case 'invalid_value':
+      return 'Ungültiger Wert';
+    case 'invalid_type':
+      return `Ungültiger Wert: ${issue.expected} erwartet`;
+    case 'too_small':
+      return issue.origin==='string'&&issue.minimum===1?'Darf nicht leer sein':`Wert zu klein: mindestens ${issue.minimum} erwartet`;
+    case 'too_big':
+      return `Wert zu groß: höchstens ${issue.maximum} erwartet`;
+    default:
+      return 'Ungültiger Wert';
+  }
+};
 const validationFields=(error:z.ZodError)=>Object.fromEntries(error.issues.map(issue=>issue.code==='unrecognized_keys'
   ?[issue.keys[0]??'_',`Feld ${issue.keys[0]} ist nicht erlaubt.`]
-  :[issue.path.join('.')||'_',issue.message]));
+  :[issue.path.join('.')||'_',validationMessage(issue)]));
 
 const profileSchema=z.object({
   name:nonempty.max(240),
@@ -243,7 +260,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
        WHERE e.tenant_id=$1 AND e.id=$2`,
       [req.user!.tenantId,id],
     )).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const [contracts,qualifications,absences,objectAssignments,workTime,documents,availability]=await Promise.all([
       query('SELECT * FROM employee_contracts WHERE tenant_id=$1 AND employee_id=$2 ORDER BY starts_on DESC',[req.user!.tenantId,id]),
       query(`SELECT q.*,c.name AS catalog_name,c.category
@@ -274,7 +291,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       documents:documents.rows,
       availability:availability.rows,
     });
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid employee id'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Mitarbeiter-ID'});next(error);}
 });
 
 employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
@@ -282,13 +299,13 @@ employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('em
     const id=uuid.parse(String(req.params.id));
     const body=profileSchema.parse(req.body);
     if(body.hire_date&&body.termination_date&&body.termination_date<body.hire_date)
-      return res.status(400).json({error:'Invalid employee profile',fields:{termination_date:'Der Austritt darf nicht vor dem Eintritt liegen.'}});
+      return res.status(400).json({error:'Ungültiges Mitarbeiterprofil',fields:{termination_date:'Der Austritt darf nicht vor dem Eintritt liegen.'}});
     await withTransaction(async client=>{
       const current=(await client.query('SELECT id,name,email FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];
-      if(!current)throw Object.assign(new Error('Employee not found'),{status:404});
+      if(!current)throw Object.assign(new Error('Mitarbeiter nicht gefunden'),{status:404});
       if(body.user_id){
         const account=(await client.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.user_id])).rows[0];
-        if(!account)throw Object.assign(new Error('Account not found in tenant'),{status:400});
+        if(!account)throw Object.assign(new Error('Konto nicht im Mandanten gefunden'),{status:400});
       }
       const row=(await client.query(
         `UPDATE employees SET name=$1,email=$2,title=$3,employee_number=$4,first_name=$5,last_name=$6,
@@ -312,7 +329,7 @@ employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('em
     const updated=(await query('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];
     res.json(updated);
   }catch(error){
-    if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid employee profile',fields:validationFields(error)});
+    if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiges Mitarbeiterprofil',fields:validationFields(error)});
     const status=(error as Error&{status?:number}).status;
     if(status)return res.status(status).json({error:(error as Error).message});
     next(error);
@@ -323,9 +340,9 @@ employeesRouter.post('/employees/:id/contracts',requireCsrf,requirePermission('e
   try{
     const employeeId=uuid.parse(String(req.params.id));
     const body=contractSchema.parse(req.body);
-    if(body.ends_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Contract end date must be on or after start date'});
+    if(body.ends_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Vertragsende muss am oder nach dem Vertragsbeginn liegen'});
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,employeeId])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const row=(await query(`INSERT INTO employee_contracts
       (tenant_id,employee_id,contract_number,contract_type,status,starts_on,ends_on,weekly_hours,probation_ends_on,notice_period_days,cost_center,notes)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
@@ -335,16 +352,16 @@ employeesRouter.post('/employees/:id/contracts',requireCsrf,requirePermission('e
       [req.user!.tenantId,employeeId,'contract.created',req.user!.id,{reason:body.reason,contract_id:row.id}]);
     await recordAudit(req.user!.tenantId,req.user!.id,'employee.contract.created','employee_contract',row.id,{reason:body.reason,employee_id:employeeId});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid contract'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Vertrag'});next(error);}
 });
 
 employeesRouter.post('/employees/:id/availability',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
   try{
     const employeeId=uuid.parse(String(req.params.id));
     const body=availabilitySchema.parse(req.body);
-    if(body.ends_time<=body.starts_time)return res.status(400).json({error:'Availability end time must be after start time'});
+    if(body.ends_time<=body.starts_time)return res.status(400).json({error:'Ende der Verfügbarkeit muss nach dem Beginn liegen'});
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,employeeId])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const row=(await query(`INSERT INTO employee_availability
       (tenant_id,employee_id,weekday,starts_time,ends_time,available,valid_from,valid_until,note)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
@@ -354,25 +371,25 @@ employeesRouter.post('/employees/:id/availability',requireCsrf,requirePermission
       [req.user!.tenantId,employeeId,'availability.created',req.user!.id,{reason:body.reason,weekday:body.weekday}]);
     await recordAudit(req.user!.tenantId,req.user!.id,'employee.availability.created','employee_availability',row.id,{reason:body.reason,employee_id:employeeId});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid availability'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Verfügbarkeit'});next(error);}
 });
 
 employeesRouter.post('/employees/:id/object-assignments',requireCsrf,requirePermission('employees:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const employeeId=uuid.parse(String(req.params.id));
     const body=objectAssignmentSchema.parse(req.body);
-    if(body.ends_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Assignment end date must be on or after start date'});
+    if(body.ends_on&&body.ends_on<body.starts_on)return res.status(400).json({error:'Ende der Zuordnung muss am oder nach dem Beginn liegen'});
     const user=req.user!;
     const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
     const scope=effectivePermissionScope(grants,'employees:write',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
     if(!scope||!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:body.site_id})){
-      return res.status(403).json({error:'Permission scope does not include this site'});
+      return res.status(403).json({error:'Kein Zugriff auf Objekt'});
     }
-    if(scope==='site'&&body.primary_assignment)return res.status(403).json({error:'Primary assignment requires tenant-wide employee write scope'});
+    if(scope==='site'&&body.primary_assignment)return res.status(403).json({error:'Die Hauptzuordnung erfordert Schreibzugriff auf Mitarbeitende im gesamten Mandanten'});
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,employeeId])).rows[0];
     const site=(await query('SELECT id FROM sites WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.site_id])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
-    if(!site)return res.status(404).json({error:'Site not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
+    if(!site)return res.status(404).json({error:'Objekt nicht gefunden'});
     if(body.primary_assignment){
       await query(`UPDATE employee_object_assignments SET primary_assignment=false,updated_at=now()
                    WHERE tenant_id=$1 AND employee_id=$2 AND ends_on IS NULL`,
@@ -387,7 +404,7 @@ employeesRouter.post('/employees/:id/object-assignments',requireCsrf,requirePerm
       [req.user!.tenantId,employeeId,'object_assignment.created',req.user!.id,{reason:body.reason,site_id:body.site_id,assignment_type:body.assignment_type}]);
     await recordAudit(req.user!.tenantId,req.user!.id,'employee.object_assignment.created','employee_object_assignment',row.id,{reason:body.reason,employee_id:employeeId,site_id:body.site_id});
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid object assignment'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Objektzuordnung'});next(error);}
 });
 
 employeesRouter.patch('/employees/:id/object-assignments/:assignmentId',requireCsrf,requirePermission('employees:write',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
@@ -398,15 +415,15 @@ employeesRouter.patch('/employees/:id/object-assignments/:assignmentId',requireC
     const user=req.user!;
     const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
     const scope=effectivePermissionScope(grants,'employees:write',{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-    if(!scope)return res.status(403).json({error:'Insufficient permissions'});
+    if(!scope)return res.status(403).json({error:'Unzureichende Berechtigungen'});
     const assignment=(await query<{site_id:string;employee_id:string;starts_on:string}>(
       'SELECT site_id,employee_id,starts_on FROM employee_object_assignments WHERE tenant_id=$1 AND id=$2 AND employee_id=$3',
       [user.tenantId,assignmentId,employeeId],
     )).rows[0];
-    if(!assignment)return res.status(404).json({error:'Object assignment not found'});
-    if(body.ends_on<assignment.starts_on)return res.status(400).json({error:'Assignment end date must be on or after start date'});
+    if(!assignment)return res.status(404).json({error:'Objektzuordnung nicht gefunden'});
+    if(body.ends_on<assignment.starts_on)return res.status(400).json({error:'Ende der Zuordnung muss am oder nach dem Beginn liegen'});
     if(!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId:assignment.site_id})){
-      return res.status(403).json({error:'Permission scope does not include this site'});
+      return res.status(403).json({error:'Kein Zugriff auf Objekt'});
     }
     const row=(await query(
       `UPDATE employee_object_assignments SET ends_on=$4,primary_assignment=false,updated_at=now()
@@ -414,19 +431,19 @@ employeesRouter.patch('/employees/:id/object-assignments/:assignmentId',requireC
        RETURNING *`,
       [user.tenantId,assignmentId,employeeId,body.ends_on],
     )).rows[0];
-    if(!row)return res.status(404).json({error:'Object assignment not found or already ended'});
+    if(!row)return res.status(404).json({error:'Objektzuordnung nicht gefunden oder bereits beendet'});
     await query('INSERT INTO employee_history(tenant_id,employee_id,event_type,actor_user_id,details) VALUES($1,$2,$3,$4,$5)',
       [user.tenantId,employeeId,'object_assignment.ended',user.id,{reason:body.reason,assignment_id:assignmentId,site_id:assignment.site_id,ends_on:body.ends_on}]);
     await recordAudit(user.tenantId,user.id,'employee.object_assignment.ended','employee_object_assignment',assignmentId,{reason:body.reason,employee_id:employeeId,site_id:assignment.site_id,ends_on:body.ends_on});
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid object assignment'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Objektzuordnung'});next(error);}
 });
 
 employeesRouter.get('/employees/:id/absences',requirePermission('employees:read'),async(req,res,next)=>{
   try{
     const employeeId=uuid.parse(String(req.params.id));
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,employeeId])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const rows=(await query(
       `SELECT id,employee_id,starts_at,ends_at,absence_type,status,reason,document_id,created_by,created_at,updated_at
        FROM employee_absences
@@ -435,19 +452,19 @@ employeesRouter.get('/employees/:id/absences',requirePermission('employees:read'
       [req.user!.tenantId,employeeId],
     )).rows;
     res.json(rows);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid employee id'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Mitarbeiter-ID'});next(error);}
 });
 
 employeesRouter.post('/employees/:id/absences',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
   try{
     const employeeId=uuid.parse(String(req.params.id));
     const body=absenceSchema.parse(req.body);
-    if(new Date(body.ends_at)<=new Date(body.starts_at))return res.status(400).json({error:'Absence end time must be after start time'});
+    if(new Date(body.ends_at)<=new Date(body.starts_at))return res.status(400).json({error:'Ende der Abwesenheit muss nach dem Beginn liegen'});
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,employeeId])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     if(body.document_id){
       const document=(await query('SELECT id FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.document_id])).rows[0];
-      if(!document)return res.status(404).json({error:'Document not found'});
+      if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     }
     if(body.status==='approved'||body.status==='requested'){
       const overlap=(await query(
@@ -456,7 +473,7 @@ employeesRouter.post('/employees/:id/absences',requireCsrf,requirePermission('em
            AND starts_at<$4 AND $3<ends_at LIMIT 1`,
         [req.user!.tenantId,employeeId,body.starts_at,body.ends_at],
       )).rows[0];
-      if(overlap)return res.status(409).json({error:'Absence overlaps an existing absence'});
+      if(overlap)return res.status(409).json({error:'Abwesenheit überschneidet sich mit einer bestehenden Abwesenheit'});
     }
     const row=(await query(
       `INSERT INTO employee_absences
@@ -474,7 +491,7 @@ employeesRouter.post('/employees/:id/absences',requireCsrf,requirePermission('em
       reason:body.audit_reason,employee_id:employeeId,absence_type:body.absence_type,status:body.status,
     });
     res.status(201).json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid absence'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Abwesenheit'});next(error);}
 });
 
 employeesRouter.patch('/employees/:id/absences/:absenceId',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
@@ -486,13 +503,13 @@ employeesRouter.patch('/employees/:id/absences/:absenceId',requireCsrf,requirePe
       `SELECT * FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2 AND id=$3`,
       [req.user!.tenantId,employeeId,absenceId],
     )).rows[0];
-    if(!current)return res.status(404).json({error:'Absence not found'});
+    if(!current)return res.status(404).json({error:'Abwesenheit nicht gefunden'});
     const startsAt=body.starts_at??current.starts_at;
     const endsAt=body.ends_at??current.ends_at;
-    if(new Date(endsAt)<=new Date(startsAt))return res.status(400).json({error:'Absence end time must be after start time'});
+    if(new Date(endsAt)<=new Date(startsAt))return res.status(400).json({error:'Ende der Abwesenheit muss nach dem Beginn liegen'});
     if(body.document_id){
       const document=(await query('SELECT id FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.document_id])).rows[0];
-      if(!document)return res.status(404).json({error:'Document not found'});
+      if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     }
     const row=(await query(
       `UPDATE employee_absences SET
@@ -511,7 +528,7 @@ employeesRouter.patch('/employees/:id/absences/:absenceId',requireCsrf,requirePe
       reason:body.audit_reason,employee_id:employeeId,status:row.status,
     });
     res.json(row);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid absence'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Abwesenheit'});next(error);}
 });
 
 employeesRouter.delete('/employees/:id/absences/:absenceId',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
@@ -524,7 +541,7 @@ employeesRouter.delete('/employees/:id/absences/:absenceId',requireCsrf,requireP
        WHERE tenant_id=$1 AND employee_id=$2 AND id=$3 AND status<>'cancelled' RETURNING id`,
       [req.user!.tenantId,employeeId,absenceId],
     )).rows[0];
-    if(!row)return res.status(404).json({error:'Absence not found'});
+    if(!row)return res.status(404).json({error:'Abwesenheit nicht gefunden'});
     await query(
       `INSERT INTO employee_history(tenant_id,employee_id,event_type,actor_user_id,details)
        VALUES($1,$2,'absence.cancelled',$3,$4)`,
@@ -534,5 +551,5 @@ employeesRouter.delete('/employees/:id/absences/:absenceId',requireCsrf,requireP
       reason:body.audit_reason,employee_id:employeeId,
     });
     res.status(204).send();
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid absence cancellation'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Abbruch der Abwesenheit'});next(error);}
 });

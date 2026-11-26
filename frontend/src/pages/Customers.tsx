@@ -1,6 +1,8 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {Link,useNavigate} from 'react-router-dom';
 import {api,hasPermission} from '../lib/api';
+import {formatDate,formatNumber} from '../lib/format';
+import {priorityLabel,riskLabel,statusLabel} from '../lib/status';
 
 type Reminder={id:string;code:string;label:string;severity:'critical'|'warning';customer_id:string;customer_name:string;contract_id:string;contract_number:string;due_date:string|null;url:string};
 type Dashboard={total:number;active:number;pipeline:number;at_risk:number;archived:number;paused:number;new_30d:number;incomplete_master_data:number;linked_customers:number;active_object_links:number;contracts:{total:number;active:number};contracts_expiring_90_days:number;open_tasks:number;overdue_tasks:number;reminders:Reminder[]};
@@ -17,12 +19,10 @@ type SortKey='name'|'customer_number'|'customer_status'|'risk_classification'|'p
 const apiBase='/api/v1';
 const pageSize=10;
 const emptyForm={name:'',email:'',customer_number:'',legal_form:'',industry:'',phone:'',city:'',postal_code:'',address_line1:'',country_code:'DE',customer_status:'active',priority:'normal',risk_classification:'unknown'};
-const statusLabels:Record<string,string>={prospect:'Interessent',negotiating:'Verhandlung',active:'Aktiv',paused:'Pausiert',at_risk:'Gefährdet',terminated:'Beendet',archived:'Archiviert'};
-const priorityLabels:Record<string,string>={low:'Niedrig',normal:'Normal',high:'Hoch',critical:'Kritisch'};
-const riskLabels:Record<string,string>={unknown:'Nicht bewertet',low:'Niedrig',medium:'Mittel',high:'Hoch',critical:'Kritisch'};
+const customerStatuses=['prospect','negotiating','active','paused','at_risk','terminated','archived'];
 const bucketLabels:Record<'A'|'B'|'C',string>={A:'Sofort handeln',B:'Zeitnah klären',C:'Beobachten'};
 const actionSections:Record<string,string>={customer:'uebersicht',contacts:'ansprechpartner',contract:'vertraege',task:'aufgaben',site:'objekte',stammdaten:'stammdaten',verlauf:'verlauf'};
-const displayDate=(value:string|null)=>value?new Date(value.length<=10?`${value}T00:00:00`:value).toLocaleDateString('de-DE'):'–';
+const displayDate=(value:string|null)=>formatDate(value);
 
 function actionTarget(entry:ActionEntry){
   const section=actionSections[entry.subject_type]??'uebersicht';
@@ -130,7 +130,7 @@ export function Customers(){
       const exportQuery=new URLSearchParams(queryString);
       if(selected.length)exportQuery.set('ids',selected.join(','));
       const response=await fetch(`${apiBase}/customers/export?${exportQuery.toString()}`,{credentials:'include',headers:{'Content-Type':'application/json'}});
-      if(!response.ok)throw new Error('Kundenexport fehlgeschlagen.');
+      if(!response.ok)throw new Error('Der Kundenexport konnte nicht abgeschlossen werden.');
       const blob=await response.blob();
       const disposition=response.headers.get('Content-Disposition')??'';
       const filename=/filename="?([^";]+)"?/i.exec(disposition)?.[1]??'kunden.csv';
@@ -155,14 +155,14 @@ export function Customers(){
         {selected.length>0&&canWrite&&<>
           <button type="button" onClick={()=>void applyBulk('archive')}>Auswahl archivieren ({selected.length})</button>
           <select aria-label="Status der Auswahl setzen" value="" onChange={event=>{if(event.target.value)void applyBulk('set_status',event.target.value);}}>
-            <option value="">Status setzen</option>{Object.entries(statusLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}
+            <option value="">Status setzen</option>{customerStatuses.map(value=><option key={value} value={value}>{statusLabel(value,'customer')}</option>)}
           </select>
           {managers.length>0&&<select aria-label="Betreuer der Auswahl setzen" value="" onChange={event=>{if(event.target.value)void applyBulk('set_manager',event.target.value);}}>
             <option value="">Betreuer setzen</option>{managers.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
           </select>}
         </>}
-        {canExport&&<button type="button" onClick={()=>void exportCsv()}>Export{selected.length?` (${selected.length})`:''}</button>}
-        {canWrite&&<button type="button" onClick={()=>setCreateOpen(value=>!value)}>+ Kunde anlegen</button>}
+        {canExport&&<button type="button" onClick={()=>void exportCsv()}>CSV exportieren{selected.length?` (${selected.length})`:''}</button>}
+        {canWrite&&<button type="button" onClick={()=>setCreateOpen(value=>!value)}>Kunde anlegen</button>}
       </div>
     </div>
     {error&&<p role="alert" className="error">{error}</p>}
@@ -172,7 +172,7 @@ export function Customers(){
         [dashboard.paused,'Pausiert'],[dashboard.new_30d,'Neu in 30 Tagen'],[dashboard.incomplete_master_data,'Stammdaten unvollständig'],
         [dashboard.active_object_links,'Aktive Objektbeziehungen'],[dashboard.contracts_expiring_90_days,'Verträge laufen aus'],
         [dashboard.open_tasks,'Offene Aufgaben'],[dashboard.overdue_tasks,'Überfällige Aufgaben'],
-      ] as [number,string][]).map(([value,label])=><article key={label}><strong>{value}</strong><span>{label}</span></article>)}
+      ] as [number,string][]).map(([value,label])=><article key={label}><strong>{formatNumber(value)}</strong><span>{label}</span></article>)}
     </div>}
     {dashboard&&dashboard.reminders?.length>0&&<article className="customer-reminder-list customer-cockpit-panel">
       <h3>Vertragsfristen & Erinnerungen</h3>
@@ -209,7 +209,7 @@ export function Customers(){
       <div className="employee-filterbar customer-filterbar">
         <input className="employee-search" placeholder="Kunde, Nummer, Ort, Branche oder E-Mail suchen" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}}/>
         <select aria-label="Kundenstatus" value={status} onChange={event=>{setStatus(event.target.value);setPage(1);}}>
-          <option value="all">Alle Status</option><option value="prospect">Interessent</option><option value="negotiating">In Verhandlung</option><option value="active">Aktiv</option><option value="paused">Pausiert</option><option value="at_risk">Gefährdet</option><option value="terminated">Beendet</option><option value="archived">Archiviert</option>
+          <option value="all">Status: Alle</option><option value="prospect">Interessent</option><option value="negotiating">In Verhandlung</option><option value="active">Aktiv</option><option value="paused">Pausiert</option><option value="at_risk">Gefährdet</option><option value="terminated">Beendet</option><option value="archived">Archiviert</option>
         </select>
         <select aria-label="Risikoklasse" value={risk} onChange={event=>{setRisk(event.target.value);setPage(1);}}>
           <option value="all">Alle Risikoklassen</option><option value="unknown">Nicht bewertet</option><option value="low">Niedrig</option><option value="medium">Mittel</option><option value="high">Hoch</option><option value="critical">Kritisch</option>
@@ -221,10 +221,10 @@ export function Customers(){
           <option value="all">Alle Betreuer</option>{managers.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
         <select aria-label="Vertragsstatus" value={contractStatus} onChange={event=>{setContractStatus(event.target.value);setPage(1);}}>
-          <option value="all">Alle Vertragsstatus</option><option value="draft">Entwurf</option><option value="in_review">In Prüfung</option><option value="pending_approval">Freigabe ausstehend</option><option value="active">Aktiv</option><option value="paused">Pausiert</option><option value="termination_received">Kündigung eingegangen</option><option value="expiring">Läuft aus</option><option value="ended">Beendet</option><option value="archived">Archiviert</option>
+          <option value="all">Vertragsstatus: Alle</option><option value="draft">Entwurf</option><option value="in_review">In Prüfung</option><option value="pending_approval">Freigabe ausstehend</option><option value="active">Aktiv</option><option value="paused">Pausiert</option><option value="termination_received">Kündigung eingegangen</option><option value="expiring">Läuft aus</option><option value="ended">Beendet</option><option value="archived">Archiviert</option>
         </select>
         <select aria-label="Aktivitätsstatus" value={active} onChange={event=>{setActive(event.target.value);setPage(1);}}>
-          <option value="all">Alle Aktivitätsstatus</option><option value="true">Nur aktive Kunden</option><option value="false">Nicht aktiv</option>
+          <option value="all">Aktivitätsstatus: Alle</option><option value="true">Nur aktive Kunden</option><option value="false">Nicht aktiv</option>
         </select>
         <button type="button" onClick={resetFilters}>Filter zurücksetzen</button>
       </div>
@@ -248,21 +248,21 @@ export function Customers(){
             <td><input type="checkbox" aria-label={`${customer.name} auswählen`} checked={selected.includes(customer.id)} onChange={()=>toggleSelected(customer.id)}/></td>
             <td>{customer.customer_number||'–'}</td>
             <td><button type="button" className="employee-name-link" onClick={()=>navigate(`/customers/${customer.id}`)}><strong>{customer.name}</strong><small>{customer.email||customer.industry||'Keine Kontaktangabe'}</small></button></td>
-            <td><span className={`employee-status ${customer.customer_status}`}>{statusLabels[customer.customer_status]||customer.customer_status}</span></td>
-            <td>{priorityLabels[customer.priority]||customer.priority}</td>
-            <td>{riskLabels[customer.risk_classification]||customer.risk_classification}</td>
+            <td><span className={`employee-status ${customer.customer_status}`}>{statusLabel(customer.customer_status,'customer')}</span></td>
+            <td>{priorityLabel(customer.priority)}</td>
+            <td>{riskLabel(customer.risk_classification)}</td>
             <td>{customer.account_manager_name||'–'}</td>
-            <td>{customer.active_sites}</td>
-            <td>{customer.active_contracts}{customer.expiring_contracts>0&&<small className="customer-expiring"> · {customer.expiring_contracts} Frist</small>}</td>
+            <td>{formatNumber(customer.active_sites)}</td>
+            <td>{formatNumber(customer.active_contracts)}{customer.expiring_contracts>0&&<small className="customer-expiring"> · {formatNumber(customer.expiring_contracts)} Frist</small>}</td>
             <td>{displayDate(customer.next_contract_deadline)}</td>
             <td>{displayDate(customer.last_activity)}</td>
-            <td>{customer.open_tasks}{customer.overdue_tasks>0&&<small className="customer-expiring"> · {customer.overdue_tasks} überfällig</small>}</td>
+            <td>{formatNumber(customer.open_tasks)}{customer.overdue_tasks>0&&<small className="customer-expiring"> · {formatNumber(customer.overdue_tasks)} überfällig</small>}</td>
             <td><button type="button" onClick={()=>navigate(`/customers/${customer.id}`)}>Öffnen</button></td>
           </tr>)}
         </tbody></table>
         {loading&&<p className="employee-empty">Kunden werden geladen …</p>}
         {!loading&&customers.length===0&&<p className="employee-empty">Keine Kunden entsprechen den aktiven Filtern.</p>}
-        {total>0&&<div className="employee-pagination"><span>{total} Kunden · Seite {page} von {pageCount}</span><button type="button" disabled={page===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={page>=pageCount} onClick={()=>setPage(value=>value+1)}>Weiter</button></div>}
+        {total>0&&<div className="employee-pagination"><span>{formatNumber(total)} Kunden · Seite {formatNumber(page)} von {formatNumber(pageCount)}</span><button type="button" disabled={page===1} onClick={()=>setPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={page>=pageCount} onClick={()=>setPage(value=>value+1)}>Weiter</button></div>}
       </div>
     </div>
   </section>;

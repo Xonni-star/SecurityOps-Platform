@@ -53,7 +53,7 @@ describe('object management OpenAPI coverage', () => {
   });
 
   it('keeps approval off the generic metadata update description', () => {
-    expect(paths['/dms/documents/{documentId}'].patch.summary).toContain('dedicated workflow endpoints');
+    expect(paths['/dms/documents/{documentId}'].patch.summary).toContain('dafür vorgesehenen Workflow-Endpunkte');
     expect(paths['/dms/documents'].post.summary ?? '').toBeTruthy();
   });
 });
@@ -114,7 +114,7 @@ describe('key management OpenAPI coverage', () => {
   });
 
   it('documents that QR tokens carry no secrets and history endpoints are paginated', () => {
-    expect(paths['/keys/{id}/qr'].get.summary).toMatch(/no secret/i);
+    expect(paths['/keys/{id}/qr'].get.summary).toMatch(/kein Geheimnis/i);
     expect((paths['/keys/{id}/history'].get as unknown as {parameters:Array<{name:string}>}).parameters.map(parameter=>parameter.name)).toEqual(
       expect.arrayContaining(['page','pageSize']),
     );

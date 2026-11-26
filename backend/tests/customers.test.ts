@@ -72,7 +72,7 @@ describe('customer management',()=>{
       .set('Cookie',csrf).set('x-csrf-token','csrf-value')
       .send({first_name:'Mira',email:'mira@example.invalid',site_ids:[site]});
     expect(response.status).toBe(400);
-    expect(response.body.error).toContain('already belong');
+    expect(response.body.error).toContain('bereits zum Kunden gehören');
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO customer_contacts'))).toBe(false);
   });
 

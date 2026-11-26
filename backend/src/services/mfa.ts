@@ -46,8 +46,8 @@ export async function getPendingSession(sessionId:string|undefined){
   return result.rows[0]??null;
 }
 export async function verifyPendingMfa(sessionId:string,code:string,recoveryCode?:string){
-  const pending=await getPendingSession(sessionId);if(!pending||!pending.mfa_pending)throw error('MFA challenge is not active',401,'MFA_NOT_PENDING');
-  if(pending.mfa_locked_until&&new Date(pending.mfa_locked_until)>new Date())throw error('MFA temporarily locked',429,'MFA_LOCKED');
+  const pending=await getPendingSession(sessionId);if(!pending||!pending.mfa_pending)throw error('MFA-Herausforderung ist nicht aktiv',401,'MFA_NOT_PENDING');
+  if(pending.mfa_locked_until&&new Date(pending.mfa_locked_until)>new Date())throw error('MFA vorübergehend gesperrt',429,'MFA_LOCKED');
   let validStep: number|null=null;let recoveryId:string|undefined;
   if(recoveryCode){
     const candidates=await withTenantContext(pending.tenant_id,()=>withSessionContext(sessionHash(sessionId),()=>query<{id:string;code_hash:string}>('SELECT id,code_hash FROM mfa_recovery_codes WHERE tenant_id=$1 AND user_id=$2 AND used_at IS NULL',[pending.tenant_id,pending.id])));
@@ -57,13 +57,13 @@ export async function verifyPendingMfa(sessionId:string,code:string,recoveryCode
   }
   if(validStep===null&& !recoveryId){
     await withTenantContext(pending.tenant_id,()=>query('UPDATE users SET mfa_failed_attempts=mfa_failed_attempts+1,mfa_locked_until=CASE WHEN mfa_failed_attempts+1 >= $1 THEN now()+($2 * interval \'1 minute\') ELSE mfa_locked_until END WHERE id=$3',[MAX_FAILURES,LOCK_MINUTES,pending.id]));
-    throw error('Invalid MFA code',401,'MFA_INVALID');
+    throw error('Ungültiger MFA-Code',401,'MFA_INVALID');
   }
-  if(validStep!==null&&pending.mfa_last_used_step!==null&&validStep<=Number(pending.mfa_last_used_step))throw error('MFA code already used',401,'MFA_REPLAY');
+  if(validStep!==null&&pending.mfa_last_used_step!==null&&validStep<=Number(pending.mfa_last_used_step))throw error('MFA-Code bereits verwendet',401,'MFA_REPLAY');
   const updated=await withTenantContext(pending.tenant_id,()=>withSessionContext(sessionHash(sessionId),()=>withTransaction(async client=>{
-    if(recoveryId){const used=await client.query('UPDATE mfa_recovery_codes SET used_at=now() WHERE id=$1 AND used_at IS NULL',[recoveryId]);if(used.rowCount!==1)throw error('Recovery code already used',401,'MFA_REPLAY');}
+    if(recoveryId){const used=await client.query('UPDATE mfa_recovery_codes SET used_at=now() WHERE id=$1 AND used_at IS NULL',[recoveryId]);if(used.rowCount!==1)throw error('Wiederherstellungscode bereits verwendet',401,'MFA_REPLAY');}
     const result=await client.query(`UPDATE sessions SET mfa_pending=false,mfa_verified_at=now(),expires_at=now()+($1 * interval '1 hour'),updated_at=now() WHERE token_hash=$2 AND mfa_pending=true AND revoked_at IS NULL RETURNING id`,[env.SESSION_TTL_HOURS,sessionHash(sessionId)]);
-    if(result.rowCount!==1)throw error('MFA challenge is no longer active',401,'MFA_NOT_PENDING');
+    if(result.rowCount!==1)throw error('MFA-Herausforderung ist nicht mehr aktiv',401,'MFA_NOT_PENDING');
     await client.query('UPDATE users SET mfa_failed_attempts=0,mfa_locked_until=NULL,mfa_last_used_step=COALESCE($1,mfa_last_used_step) WHERE id=$2',[validStep,pending.id]);
     return result.rows[0];
   })));

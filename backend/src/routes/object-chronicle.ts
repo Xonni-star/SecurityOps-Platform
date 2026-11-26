@@ -5,7 +5,7 @@ import {requireAuth,requirePermission} from '../middleware/auth.js';
 import {createSitePermissionReader} from '../services/site-permissions.js';
 
 const uuid=z.string().uuid();
-const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value=>!Number.isNaN(Date.parse(`${value}T00:00:00Z`)),'Invalid calendar date');
+const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value=>!Number.isNaN(Date.parse(`${value}T00:00:00Z`)),'Ungültiges Kalenderdatum');
 
 export type ChronicleLink={
   target:string;label:string;permission:string;
@@ -249,7 +249,7 @@ objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('
   try{
     const siteId=uuid.parse(String(req.params.id));
     const canRead=createSitePermissionReader(req);
-    if(!await canRead('sites:read',siteId))return res.status(403).json({error:'Permission scope does not include this site'});
+    if(!await canRead('sites:read',siteId))return res.status(403).json({error:'Kein Zugriff auf Objekt'});
     const filters=z.object({type:z.string().max(120).optional(),from:isoDate.optional(),to:isoDate.optional(),limit:z.coerce.number().int().min(1).max(500).optional()}).strict().parse(req.query);
     const patternMap:Record<string,string[]>={
       'sites:read':['site.location.%','site.hazard.%','site.hazard_measure.%','site.customer_link%'],
@@ -345,5 +345,5 @@ objectChronicleRouter.get('/sites/:id/chronicle',requireAuth,requirePermission('
       category:category(String(row.event_kind)),
       link:links[index],
     }))});
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid chronicle filter'});next(error);}
+  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiger Chronikfilter'});next(error);}
 });

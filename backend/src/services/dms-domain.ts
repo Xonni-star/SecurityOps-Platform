@@ -3,9 +3,9 @@ import {sha256,MalwareScanResult} from './dms-providers.js';
 export type DmsLifecycleState='quarantined'|'scanning'|'available'|'rejected'|'deleted';
 
 export function validateDmsUpload(content:Buffer,contentType:string,maxBytes:number,allowedTypes:Set<string>){
-  if(!allowedTypes.has(contentType))throw Object.assign(new Error('Content-Type is not allowed'),{status:415});
-  if(content.length===0)throw Object.assign(new Error('Document content must not be empty'),{status:400});
-  if(content.length>maxBytes)throw Object.assign(new Error('Document exceeds configured size limit'),{status:413});
+  if(!allowedTypes.has(contentType))throw Object.assign(new Error('Content-Type ist nicht erlaubt'),{status:415});
+  if(content.length===0)throw Object.assign(new Error('Dokumentinhalt darf nicht leer sein'),{status:400});
+  if(content.length>maxBytes)throw Object.assign(new Error('Dokument überschreitet die konfigurierte Größenbegrenzung'),{status:413});
   return {sizeBytes:content.length,sha256:sha256(content)};
 }
 

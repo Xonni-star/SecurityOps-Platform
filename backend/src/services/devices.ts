@@ -32,8 +32,8 @@ export async function registerAuthenticatedDevice(
         'SELECT device_kind,revoked_at FROM devices WHERE tenant_id=$1 AND id=$2',
         [tenantId,deviceId],
       )).rows[0];
-      if(current?.revoked_at)throw deviceError('Device has been revoked.',403,'DEVICE_REVOKED');
-      throw deviceError('Device identity is already in use.',409,'DEVICE_ID_CONFLICT');
+      if(current?.revoked_at)throw deviceError('Das Gerät wurde widerrufen.',403,'DEVICE_REVOKED');
+      throw deviceError('Die Gerätekennung wird bereits verwendet.',409,'DEVICE_ID_CONFLICT');
     }
     if(mfaPending)await client.query(
       `INSERT INTO sessions(tenant_id,user_id,device_id,token_hash,csrf_token,expires_at,mfa_pending)
@@ -57,7 +57,7 @@ export async function revokeAuthenticatedDevice(tenantId:string,deviceId:string,
        RETURNING id,revoked_at`,
       [tenantId,deviceId],
     )).rows[0];
-    if(!device)throw deviceError('Authenticated device not found.',404,'DEVICE_NOT_FOUND');
+    if(!device)throw deviceError('Authentifiziertes Gerät nicht gefunden.',404,'DEVICE_NOT_FOUND');
     const sessions=await client.query(
       `UPDATE sessions SET revoked_at=now(),updated_at=now()
        WHERE tenant_id=$1 AND device_id=$2 AND revoked_at IS NULL`,
@@ -104,7 +104,7 @@ export async function revokeAuthenticatedSession(tenantId:string,sessionId:strin
         RETURNING id`,
       [tenantId,sessionId],
     )).rows[0];
-    if(!session)throw deviceError('Authenticated session not found or already revoked.',404,'SESSION_NOT_FOUND');
+    if(!session)throw deviceError('Authentifizierte Sitzung nicht gefunden oder bereits widerrufen.',404,'SESSION_NOT_FOUND');
     return session;
   }));
   await recordAudit(tenantId,actorUserId,'authenticated_session.revoked','session',sessionId,{});

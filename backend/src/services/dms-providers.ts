@@ -40,7 +40,7 @@ export class MinioS3BlobStorageAdapter implements BlobStorageAdapter {
 
   async get(key:string){
     const response=await this.client.send(new GetObjectCommand({Bucket:this.bucket,Key:key}));
-    if(!response.Body)throw new Error('Blob provider returned an empty body');
+    if(!response.Body)throw new Error('Blob-Anbieter hat einen leeren Antwortkörper zurückgegeben');
     return {content:Buffer.from(await response.Body.transformToByteArray()),contentType:response.ContentType};
   }
 
@@ -56,10 +56,10 @@ export class ClamAvMalwareScannerAdapter implements MalwareScannerAdapter {
     return new Promise<MalwareScanResult>((resolve,reject)=>{
       const socket=net.createConnection({host:this.host,port:this.port});
       const chunks:Buffer[]=[];
-      const timer=setTimeout(()=>{socket.destroy();reject(new Error('ClamAV scan timed out'));},this.timeoutMs);
+      const timer=setTimeout(()=>{socket.destroy();reject(new Error('Zeitüberschreitung beim ClamAV-Scan'));},this.timeoutMs);
       socket.on('data',chunk=>chunks.push(Buffer.from(chunk)));
       socket.on('error',error=>{clearTimeout(timer);reject(error);});
-      socket.on('close',()=>{clearTimeout(timer);const result=Buffer.concat(chunks).toString('utf8').replace(/\0+$/,'').trim();if(result.endsWith('OK'))resolve({clean:true});else if(result.startsWith('stream:'))resolve({clean:false,signature:result.slice(7).trim()});else reject(new Error(`Unexpected ClamAV response: ${result}`));});
+      socket.on('close',()=>{clearTimeout(timer);const result=Buffer.concat(chunks).toString('utf8').replace(/\0+$/,'').trim();if(result.endsWith('OK'))resolve({clean:true});else if(result.startsWith('stream:'))resolve({clean:false,signature:result.slice(7).trim()});else reject(new Error(`Unerwartete ClamAV-Antwort: ${result}`));});
       socket.write(Buffer.from('zINSTREAM\0'));
       for(let offset=0;offset<content.length;offset+=env.CLAMAV_CHUNK_BYTES){
         const chunk=content.subarray(offset,offset+env.CLAMAV_CHUNK_BYTES);

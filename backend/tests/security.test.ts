@@ -76,7 +76,7 @@ describe('permission and tenant enforcement',()=>{
     queryMock.mockResolvedValue(result([{...sessionUser,permissions:['employees:write']}])) ;
     const response=await request(app).post('/api/v1/employees').set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value']).set('x-csrf-token','csrf-value').send({name:'',email:'not-an-email',unexpected:'rejected'});
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({error:'Invalid request'});
+    expect(response.body).toEqual({error:'Ungültige Anfrage'});
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 

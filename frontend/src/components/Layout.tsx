@@ -5,32 +5,34 @@ import '../polish.css';
 
 type Item=[string,string,string];
 
-const descriptions:Record<string,string>={
-  '/':'Zentrale Übersicht über aktuelle Sicherheitslage, offene Vorgänge und operative Kennzahlen.',
-  '/map':'Live-Positionen und Standortübersicht für den laufenden Betrieb.',
-  '/alarms':'Alarme prüfen, priorisieren, übernehmen und revisionssicher bearbeiten.',
-  '/incidents':'Einsätze und Ereignisse dokumentieren, verfolgen und abschließen.',
-  '/patrols':'Kontrollgänge, Kontrollpunkte und Abweichungen im Überblick.',
-  '/watchbook':'Wachbucheinträge nachvollziehbar erfassen, korrigieren und schließen.',
-  '/scheduling':'Dienstpläne, Schichten und Besetzungen für den operativen Alltag verwalten.',
-  '/handovers':'Schichtübergaben strukturiert dokumentieren und bestätigen.',
-  '/messages':'Interne Nachrichten und wichtige Informationen sicher austauschen.',
-  '/employees':'Mitarbeiter, Kontaktdaten und operative Zuordnungen verwalten.',
-  '/customers':'Kundenstammdaten und Ansprechpartner zentral pflegen.',
-  '/sites':'Objekte, Adressen und sicherheitsrelevante Standortdaten verwalten.',
-  '/devices':'Betriebsgeräte und deren Status tenant- und standortbezogen verwalten.',
-  '/keys':'Schlüssel, Bunde, Ausgaben, Verlustmeldungen und Bestandskontrollen verwalten.',
-  '/nfc-devices':'NFC-Geräte registrieren, zuordnen und bei Bedarf sperren.',
-  '/dms':'Sicherheitsrelevante Dokumente versioniert und revisionssicher verwalten.',
-  '/reports':'Kennzahlen, Arbeitszeiten und exportierbare Berichte für Auswertung und Nachweis.',
-  '/customer-reports':'Berichte für Kunden erstellen und kontrolliert bereitstellen.',
-  '/notifications':'Benachrichtigungen und persönliche Zustellungen im Blick behalten.',
-  '/telemetry':'Sensor- und Telemetriedaten zur technischen Lageüberwachung.',
-  '/alarm-forwarding':'Alarmweiterleitungen und Eskalationsregeln für externe Ziele konfigurieren.',
-  '/account-security':'MFA, Sitzungen und Sicherheitsoptionen des eigenen Kontos verwalten.',
-  '/admin':'Systemweite Einstellungen, Backups, Integrationen und Audit-Nachweise verwalten.',
-  '/mobile':'Mobile Leitstellenfunktionen für den Einsatz vor Ort.',
-  '/qualifications':'Qualifikationen und Gültigkeiten von Mitarbeitern verwalten.',
+type PageMeta={title:string;description:string;group:string};
+
+const pageMeta:Record<string,PageMeta>={
+  '/':{title:'Übersicht',description:'Zentrale Übersicht über die aktuelle Sicherheitslage, offene Vorgänge und operative Kennzahlen.',group:'Leitstelle'},
+  '/map':{title:'Live-Karte',description:'Aktuelle Positionen und Standorte der eingesetzten Geräte im Überblick.',group:'Leitstelle'},
+  '/alarms':{title:'Alarme',description:'Alarme prüfen, priorisieren, übernehmen und revisionssicher bearbeiten.',group:'Leitstelle'},
+  '/incidents':{title:'Einsätze',description:'Einsätze und Ereignisse dokumentieren, verfolgen und abschließen.',group:'Leitstelle'},
+  '/patrols':{title:'Kontrollgänge',description:'Kontrollgänge, Kontrollpunkte und Abweichungen im Überblick.',group:'Leitstelle'},
+  '/mobile':{title:'Mobile Einsatz-App',description:'Mobile Leitstellenfunktionen für den Einsatz vor Ort.',group:'Betrieb'},
+  '/watchbook':{title:'Wachbuch',description:'Wachbucheinträge nachvollziehbar erfassen, korrigieren und schließen.',group:'Betrieb'},
+  '/scheduling':{title:'Dienstplanung',description:'Dienstpläne, Schichten und Besetzungen für den operativen Alltag verwalten.',group:'Betrieb'},
+  '/handovers':{title:'Schichtübergaben',description:'Schichtübergaben strukturiert dokumentieren und bestätigen.',group:'Betrieb'},
+  '/messages':{title:'Nachrichten',description:'Interne Nachrichten und wichtige Informationen sicher austauschen.',group:'Betrieb'},
+  '/employees':{title:'Mitarbeiter',description:'Mitarbeiter, Kontaktdaten und operative Zuordnungen verwalten.',group:'Verwaltung'},
+  '/customers':{title:'Kunden',description:'Kundenstammdaten und Ansprechpartner zentral pflegen.',group:'Verwaltung'},
+  '/sites':{title:'Objekte',description:'Objekte, Adressen und sicherheitsrelevante Standortdaten verwalten.',group:'Verwaltung'},
+  '/devices':{title:'Geräte',description:'Betriebsgeräte, ihre Zuordnungen und ihren Status verwalten.',group:'Verwaltung'},
+  '/keys':{title:'Schlüssel',description:'Schlüssel, Schlüsselbünde, Ausgaben, Verlustmeldungen und Bestandskontrollen verwalten.',group:'Verwaltung'},
+  '/nfc-devices':{title:'NFC-Geräte',description:'NFC-Geräte registrieren, zuordnen und bei Bedarf sperren.',group:'Verwaltung'},
+  '/qualifications':{title:'Qualifikationen',description:'Qualifikationen und Gültigkeiten von Mitarbeitern verwalten.',group:'Verwaltung'},
+  '/dms':{title:'Dokumente',description:'Sicherheitsrelevante Dokumente in Fassungen und revisionssicher verwalten.',group:'Dokumente & Auswertungen'},
+  '/reports':{title:'Auswertungen',description:'Kennzahlen, Arbeitszeiten und exportierbare Berichte für Auswertung und Nachweis.',group:'Dokumente & Auswertungen'},
+  '/customer-reports':{title:'Kundenberichte',description:'Berichte für Kunden erstellen und kontrolliert bereitstellen.',group:'Dokumente & Auswertungen'},
+  '/notifications':{title:'Benachrichtigungen',description:'Benachrichtigungen und persönliche Zustellungen im Blick behalten.',group:'System'},
+  '/telemetry':{title:'Sensoren',description:'Sensorwerte und Schwellenwerte zur technischen Überwachung auswerten.',group:'System'},
+  '/alarm-forwarding':{title:'Alarmweiterleitung',description:'Alarmweiterleitungen und Eskalationsregeln für externe Ziele konfigurieren.',group:'System'},
+  '/account-security':{title:'Kontosicherheit',description:'Zwei-Faktor-Authentifizierung, Sitzungen und Sicherheitsoptionen des eigenen Kontos verwalten.',group:'System'},
+  '/admin':{title:'Administration',description:'Systemweite Einstellungen, Backups, Integrationen und Audit-Nachweise verwalten.',group:'System'},
 };
 
 const permissionAliases:Record<string,string[]>={
@@ -39,11 +41,16 @@ const permissionAliases:Record<string,string[]>={
 
 const groups:{label:string;items:Item[]}[]=[
   {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
-  {label:'Betrieb',items:[['/mobile','Wächter-App','alarms:write'],['/watchbook','Wachbuch','watchbook:read'],['/scheduling','Dienstplanung','scheduling:read'],['/handovers','Schichtübergaben','handover:read'],['/messages','Nachrichten','messages:read']]},
-  {label:'Verwaltung',items:[['/employees','Mitarbeiter','employees:read'],['/customers','Kunden','customers:read'],['/sites','Objekte','sites:read'],['/devices','Geräte','devices:read'],['/keys','Schlüssel','keys:read'],['/nfc-devices','NFC-Geräte','nfc_devices:read']]},
-  {label:'Dokumentation',items:[['/dms','Dokumente','dms:read'],['/reports','Reports','reports:read'],['/customer-reports','Kundenberichte','customer_reports:export']]},
-  {label:'System',items:[['/notifications','Benachrichtigungen','notifications:read'],['/telemetry','Sensorik','telemetry:read'],['/alarm-forwarding','Alarmaufschaltung','alarm_forwarding:read'],['/account-security','Account-Sicherheit','account_security:read'],['/admin','Administration','audit:read']]},
+  {label:'Betrieb',items:[['/mobile','Mobile Einsatz-App','alarms:write'],['/watchbook','Wachbuch','watchbook:read'],['/scheduling','Dienstplanung','scheduling:read'],['/handovers','Schichtübergaben','handover:read'],['/messages','Nachrichten','messages:read']]},
+  {label:'Verwaltung',items:[['/employees','Mitarbeiter','employees:read'],['/customers','Kunden','customers:read'],['/sites','Objekte','sites:read'],['/devices','Geräte','devices:read'],['/keys','Schlüssel','keys:read'],['/nfc-devices','NFC-Geräte','nfc_devices:read'],['/qualifications','Qualifikationen','employees:read']]},
+  {label:'Dokumente & Auswertungen',items:[['/dms','Dokumente','dms:read'],['/reports','Auswertungen','reports:read'],['/customer-reports','Kundenberichte','customer_reports:export']]},
+  {label:'System',items:[['/notifications','Benachrichtigungen','notifications:read'],['/telemetry','Sensoren','telemetry:read'],['/alarm-forwarding','Alarmweiterleitung','alarm_forwarding:read'],['/account-security','Kontosicherheit','account_security:read'],['/admin','Administration','audit:read']]},
 ];
+
+function basePath(pathname:string):string{
+  const match=/^\/[^/]+/.exec(pathname);
+  return match?match[0]:'/';
+}
 
 export function Layout(){
   const nav=useNavigate();
@@ -54,22 +61,21 @@ export function Layout(){
     ...group,
     items:group.items.filter(([path, ,permission])=>(permissionAliases[path]??[permission]).some(hasPermission)),
   })).filter(group=>group.items.length);
-  const employeeRoute=location.pathname==='/employees'||location.pathname.startsWith('/employees/');
-  const customerRoute=location.pathname==='/customers'||location.pathname.startsWith('/customers/');
-  const siteRoute=location.pathname==='/sites'||location.pathname.startsWith('/sites/');
-  const keyRoute=location.pathname==='/keys'||location.pathname.startsWith('/keys/');
-  const title=employeeRoute?'Mitarbeiter':customerRoute?'Kunden':siteRoute?'Objekte':keyRoute?'Schlüssel':visible.flatMap(group=>group.items).find(([path])=>path===location.pathname)?.[1]??'SecurityOps';
-  const description=employeeRoute?descriptions['/employees']:customerRoute?descriptions['/customers']:siteRoute?descriptions['/sites']:keyRoute?descriptions['/keys']:descriptions[location.pathname];
-  const breadcrumb=employeeRoute?'SECURITYOPS / VERWALTUNG / MITARBEITER':customerRoute?'SECURITYOPS / VERWALTUNG / KUNDEN':siteRoute?'SECURITYOPS / VERWALTUNG / OBJEKTE':keyRoute?'SECURITYOPS / VERWALTUNG / SCHLÜSSEL':'SECURITYOPS / ARBEITSBEREICH';
+  const currentPath=basePath(location.pathname);
+  const meta=pageMeta[currentPath]??pageMeta['/'];
+  const title=meta.title;
+  const description=meta.description;
+  const breadcrumb=`SECURITYOPS / ${meta.group.toUpperCase()} / ${title.toUpperCase()}`;
+  const isDetailPath=location.pathname!==currentPath;
 
   return <div className="app-shell">
     <aside className={open?'sidebar open':'sidebar'}>
       <div className="brand"><span className="brand-mark">S</span><span>Security<strong>Ops</strong></span></div>
-      <div className="workspace"><span className="status-dot"/> Leitstelle <small>PRODUKTION</small></div>
-      <nav className="side-nav">
+      <div className="workspace"><span className="status-dot"/> Leitstelle <small>PRODUKTIVBETRIEB</small></div>
+      <nav className="side-nav" aria-label="Hauptnavigation">
         {visible.map(group=><div className="nav-group" key={group.label}>
           <div className="nav-label">{group.label}</div>
-          {group.items.map(([path,label])=><Link className={location.pathname===path||(employeeRoute&&path==='/employees')||(customerRoute&&path==='/customers')||(siteRoute&&path==='/sites')||(keyRoute&&path==='/keys')?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
+          {group.items.map(([path,label])=><Link className={location.pathname===path||(isDetailPath&&path===currentPath)?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
             <span className="nav-icon">{label.charAt(0)}</span>{label}
           </Link>)}
         </div>)}
@@ -89,9 +95,9 @@ export function Layout(){
           <h1>{title}</h1>
           {description&&<p className="page-description">{description}</p>}
         </div>
-        <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzer'}</span></div>
+        <div className="user-menu"><span className="status-dot"/> <span>{user?.email||'Benutzerkonto'}</span></div>
       </header>
-      <main className={employeeRoute||customerRoute||siteRoute||keyRoute?'page-content employee-page':'page-content'}><Outlet/></main>
+      <main className={isDetailPath?'page-content employee-page':'page-content'}><Outlet/></main>
     </div>
   </div>;
 }

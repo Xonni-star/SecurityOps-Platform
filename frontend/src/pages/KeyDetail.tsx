@@ -1,25 +1,29 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {Link,useNavigate,useParams,useSearchParams} from 'react-router-dom';
 import {api,hasPermission} from '../lib/api';
+import {formatNumber} from '../lib/format';
+import {statusLabel} from '../lib/status';
+import {commonText} from '../lib/text';
 import {
   BundleRow,DocumentOption,EmployeeOption,HolderInfo,IncidentOption,KeyProfile,KeyRow,PriorityOption,RecordedMovement,SiteOption,StatusBadge,
   BlockDialog,InventoryDialog,IssueDialog,LossDialog,QrCodeView,ReturnDialog,displayDate,displayDateTime,
-  holderName,keyTypeLabels,lossStatusLabels,movementLabels,siteLabel,
+  holderName,keyTypeLabels,lossStatusLabels,siteLabel,
 } from './keyParts';
 
 type MasterForm={key_code:string;label:string;key_type:string;site_id:string;responsible_employee_id:string;serial_number:string;manufacturer:string;location:string;building:string;area:string;access_point:string;description:string;remarks:string};
 type LossDraft={status:string;immediate_measures:string;follow_up:string;notes:string};
-type DialogState={kind:'issue'|'return'|'loss'|'block'|'reactivate'|'qr'|'inventory'}|null;
+type DialogState={kind:'issue'|'return'|'loss'|'block'|'reactivate'|'inventory'}|null;
 type HistoryResponse={rows:RecordedMovement[];total:number;pageCount:number};
 
 const apiBase='/api/v1';
 const historyPageSize=10;
+const countText=(value:number,singular:string,plural:string)=>`${formatNumber(value)} ${value===1?singular:plural}`;
 const tabs=[
   ['uebersicht','Übersicht'],['stammdaten','Stammdaten'],['standort','Standort & Objekt'],
   ['besitz','Besitzverhältnisse'],['historie','Historie'],['verlust','Verlustmeldungen'],
-  ['bestandskontrolle','Bestandskontrolle'],['qr','QR/Etikett'],
+  ['bestandskontrolle','Bestandskontrolle'],['qr','QR-Code & Etikett'],
 ] as const;
-const sectionLabels:Record<string,string>={master:'Stammdaten',history:'Historie',loss_reports:'Verlustmeldungen',inventory:'Bestandskontrolle',qr:'QR/Etikett'};
+const sectionLabels:Record<string,string>={master:'Stammdaten',history:'Historie',loss_reports:'Verlustmeldungen',inventory:'Bestandskontrolle',qr:'QR-Code & Etikett'};
 
 const masterFromKey=(key:KeyRow):MasterForm=>({
   key_code:key.key_code,label:key.label,key_type:key.key_type,site_id:key.site_id||'',
@@ -76,7 +80,7 @@ export function KeyDetail(){
         hasPermission('alarm_priorities:read')?api<PriorityOption[]>('/alarm-priorities').catch(()=>[]):Promise.resolve([]),
         hasPermission('keys:bundle_read')?api<BundleRow[]>('/key-bundles').catch(()=>[]):Promise.resolve([]),
       ]);
-      if(!data?.key)throw new Error('Schlüsselakte konnte nicht gefunden werden.');
+      if(!data?.key)throw new Error('Die Schlüsselakte konnte nicht gefunden werden. Bitte prüfen Sie den Link und versuchen Sie es erneut.');
       setProfile(data);setForm(masterFromKey(data.key));
       setSites(Array.isArray(siteRows)?siteRows:[]);
       setEmployees(Array.isArray(employeeRows)?employeeRows:[]);
@@ -98,7 +102,7 @@ export function KeyDetail(){
         const response=await fetch(`${apiBase}/keys/${keyId}/history?page=${historyPage}&pageSize=${historyPageSize}`,{
           credentials:'include',headers:{'Content-Type':'application/json'},
         });
-        if(!response.ok)throw new Error('Historie konnte nicht geladen werden.');
+        if(!response.ok)throw new Error('Die Historie konnte nicht geladen werden. Bitte versuchen Sie es erneut.');
         const rows=await response.json() as RecordedMovement[];
         const totalHeader=Number(response.headers.get('X-Total-Count'));
         const pagesHeader=Number(response.headers.get('X-Page-Count'));
@@ -116,11 +120,11 @@ export function KeyDetail(){
     void (async()=>{
       try{
         const result=await api<{valid:boolean;expires_at:string}>(`/keys/${keyId}/qr/verify?ref=${encodeURIComponent(qrReference)}`);
-        if(!result)throw new Error('QR verification returned no result');
+        if(!result)throw new Error('Die QR-Prüfung hat kein Ergebnis geliefert.');
         if(!cancelled)setQrCheck(result.valid===true
-          ?{valid:true,message:`QR-Verweis gültig bis ${displayDateTime(result.expires_at)}`}
-          :{valid:false,message:'QR-Verweis ungültig.'});
-      }catch{if(!cancelled)setQrCheck({valid:false,message:'QR-Verweis ungültig oder abgelaufen.'});}
+          ?{valid:true,message:`QR-Code gültig bis ${displayDateTime(result.expires_at)}`}
+          :{valid:false,message:'Der QR-Code ist ungültig. Bitte prüfen Sie den Code.'});
+      }catch{if(!cancelled)setQrCheck({valid:false,message:'Der QR-Code ist ungültig oder abgelaufen. Bitte prüfen Sie den Code.'});}
     })();
     return ()=>{cancelled=true;};
   },[keyId,qrReference,canQr]);
@@ -139,7 +143,7 @@ export function KeyDetail(){
         area:form.area||null,access_point:form.access_point||null,description:form.description||null,remarks:form.remarks||null,
       })});
       reload();
-    }catch(cause){setError((cause as Error).message);}
+    }catch(cause){setError(`${commonText.saveFailed} ${(cause as Error).message}`);}
   };
   const saveLossReport=async(reportId:string,draft:LossDraft)=>{
     if(!keyId)return;
@@ -149,7 +153,7 @@ export function KeyDetail(){
         follow_up:draft.follow_up||null,notes:draft.notes||null,
       })});
       reload();
-    }catch(cause){setError((cause as Error).message);}
+    }catch(cause){setError(`${commonText.saveFailed} ${(cause as Error).message}`);}
   };
 
   const visible=profile?.visible_sections;
@@ -159,7 +163,10 @@ export function KeyDetail(){
     return visible[flag]!==false;
   };
   const denied=(flag:string)=><p className="employee-empty" role="status">{`Keine Berechtigung für ${sectionLabels[flag]||flag}.`}</p>;
-  const field=(label:string,value:string|number|null|undefined)=><><dt>{label}</dt><dd>{value||value===0?value:'–'}</dd></>;
+  const field=(label:string,value:string|number|null|undefined)=>{
+    const shown=typeof value==='number'?formatNumber(value):value;
+    return <><dt>{label}</dt><dd>{shown||'–'}</dd></>;
+  };
 
   if(!canRead)return <section className="employee-detail-page customer-detail-page key-detail-page"><p role="status">Keine Berechtigung zum Anzeigen von Schlüsseln.</p></section>;
   if(loading&&!profile)return <section className="employee-detail-page customer-detail-page key-detail-page"><button type="button" className="employee-back" onClick={()=>navigate('/keys')}>Zurück zur Schlüsselübersicht</button><p>Schlüsselakte wird geladen …</p></section>;
@@ -183,7 +190,6 @@ export function KeyDetail(){
       case 'loss':return <LossDialog item={key} employees={employees} sites={sites} incidents={incidents} priorities={priorities} onClose={closeDialog} onDone={done}/>;
       case 'block':return <BlockDialog item={key} action="block" onClose={closeDialog} onDone={done}/>;
       case 'reactivate':return <BlockDialog item={key} action="reactivate" onClose={closeDialog} onDone={done}/>;
-      case 'qr':return <QrDialogDetail item={key} onClose={closeDialog}/>;
       case 'inventory':return <InventoryDialog sites={sites} bundles={bundles} onClose={closeDialog} onDone={done}/>;
     }
   })();
@@ -194,7 +200,7 @@ export function KeyDetail(){
       <button type="button" className="employee-back" onClick={()=>navigate('/keys')}>Zurück zur Schlüsselübersicht</button>
       <div className="employee-detail-title">
         <div className="employee-avatar">{key.key_code.slice(0,2).toUpperCase()}</div>
-        <div><h1>{key.label}</h1><p>{key.key_code} · {keyTypeLabels[key.key_type]||key.key_type} · {siteLabel(site)}</p></div>
+        <div><h1>{key.label}</h1><p>{key.key_code} · {statusLabel(key.key_type,'keyType')} · {siteLabel(site)}</p></div>
         <StatusBadge status={key.status}/>
       </div>
       <div className="key-detail-actions">
@@ -206,7 +212,7 @@ export function KeyDetail(){
         {canQr&&canSee('qr')&&<button type="button" onClick={()=>navigate(`/keys/${key.id}/qr`)}>QR-Code</button>}
       </div>
     </div>
-    {bundled&&<p role="status" className="key-bundled-hint">Dieser Schlüssel gehört zum Bund {profile.bundle?.name||key.bundle_name}. Einzelaktionen sind im Schlüsselbund zu steuern.</p>}
+    {bundled&&<p role="status" className="key-bundled-hint">Dieser Schlüssel gehört zum Schlüsselbund {profile.bundle?.name||key.bundle_name}. Einzelaktionen sind im Schlüsselbund zu steuern.</p>}
     {qrCheck&&active!=='qr'&&<p role="status" className={qrCheck.valid?'key-qr-check-valid':'key-qr-check-invalid'}>{qrCheck.message}</p>}
     <nav className="employee-tabs key-detail-tabs" aria-label="Schlüsselbereiche">
       {tabs.map(([tab,label])=><button type="button" key={tab} className={active===tab?'active':''} onClick={()=>navigate(`/keys/${key.id}/${tab}`)}>{label}</button>)}
@@ -215,26 +221,26 @@ export function KeyDetail(){
       {active==='uebersicht'&&<>
         <div className="employee-detail-kpis">
           <article><strong>{key.key_code}</strong><span>Kennziffer</span></article>
-          <article><strong>{statusLabel(key.status)}</strong><span>Status</span></article>
+          <article><strong>{statusLabel(key.status,'key')}</strong><span>Status</span></article>
           <article><strong>{holderName(holder)}</strong><span>Aktueller Halter</span></article>
           <article><strong>{site?.name||'–'}</strong><span>Objekt</span></article>
           <article><strong>{displayDate(key.due_at)}</strong><span>Rückgabe fällig</span></article>
           <article><strong>{profile.bundle?.name||key.bundle_name||'–'}</strong><span>Schlüsselbund</span></article>
         </div>
         <div className="employee-detail-grid">
-          <article><h3>Schlüssel</h3><dl>{field('Bezeichnung',key.label)}{field('Kennziffer',key.key_code)}{field('Typ',keyTypeLabels[key.key_type]||key.key_type)}{field('Standort',key.location)}{field('Zugangspunkt',key.access_point)}</dl></article>
+          <article><h3>Schlüssel</h3><dl>{field('Bezeichnung',key.label)}{field('Kennziffer',key.key_code)}{field('Schlüsseltyp',statusLabel(key.key_type,'keyType'))}{field('Standort',key.location)}{field('Zugangspunkt',key.access_point)}</dl></article>
           <article><h3>Objekt & Halter</h3><dl>{field('Objekt',siteLabel(site))}{field('Halter',holderName(holder))}{field('Fällig',displayDate(key.due_at))}{field('Ausgegeben',displayDateTime(key.issued_at))}</dl>{objectLink&&<Link to={objectLink}>Objektseite öffnen</Link>}</article>
-          <article className="key-history"><h3>Letzte Bewegungen</h3>{movements.length?movements.slice(0,5).map(movement=><p key={movement.id}><strong>{movementText(movement.movement_type)}</strong><br/><small>{displayDateTime(movement.created_at)} · {movement.actor_name||'System'}{movement.holder_name?` · ${movement.holder_name}`:''}</small></p>):<p className="employee-empty">Keine Bewegungen erfasst.</p>}</article>
-          <article><h3>Verlustmeldungen & Bestand</h3><p>{canSee('loss_reports')?`${profile.loss_reports?.length??0} Verlustmeldung(en) erfasst.`:denied('loss_reports')}</p><p>{canSee('inventory')?`${profile.inventory_checks?.length??0} Bestandskontrolle(n) erfasst.`:denied('inventory')}</p></article>
+          <article className="key-history"><h3>Letzte Bewegungen</h3>{movements.length?movements.slice(0,5).map(movement=><p key={movement.id}><strong>{statusLabel(movement.movement_type,'movement')}</strong><br/><small>{displayDateTime(movement.created_at)} · {movement.actor_name||'Automatisch erfasst'}{movement.holder_name?` · ${movement.holder_name}`:''}</small></p>):<p className="employee-empty">Keine Bewegungen erfasst.</p>}</article>
+          <article><h3>Verlustmeldungen & Bestand</h3><p>{canSee('loss_reports')?`${countText(profile.loss_reports?.length??0,'Verlustmeldung','Verlustmeldungen')} erfasst.`:denied('loss_reports')}</p><p>{canSee('inventory')?`${countText(profile.inventory_checks?.length??0,'Bestandskontrolle','Bestandskontrollen')} erfasst.`:denied('inventory')}</p></article>
         </div>
       </>}
 
       {active==='stammdaten'&&(!canSee('master')?denied('master'):canUpdate&&form?<form className="employee-detail-form key-detail-form" onSubmit={saveMaster}><div className="form-grid">
-        <label>Kennziffer<input value={form.key_code} readOnly aria-readonly="true"/></label>
+        <label>Kennziffer<input value={form.key_code} readOnly aria-readonly="true" title="Die Kennziffer kann nicht geändert werden."/></label>
         <label>Bezeichnung<input required value={form.label} onChange={event=>setForm({...form,label:event.target.value})}/></label>
         <label>Schlüsseltyp<select value={form.key_type} onChange={event=>setForm({...form,key_type:event.target.value})}>{Object.entries(keyTypeLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <label>Objekt<select aria-label="Objekt" value={form.site_id} onChange={event=>setForm({...form,site_id:event.target.value})}><option value="">Kein Objekt</option>{sites.map(site=><option key={site.id} value={site.id}>{siteLabel(site)}</option>)}</select></label>
-        <label>Verantwortliche Person<select aria-label="Verantwortliche Person" value={form.responsible_employee_id} onChange={event=>setForm({...form,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{[employee.first_name,employee.last_name].filter(Boolean).join(' ')||employee.name||employee.email||employee.id}</option>)}</select></label>
+        <label>Verantwortliche Person<select aria-label="Verantwortliche Person" value={form.responsible_employee_id} onChange={event=>setForm({...form,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{[employee.first_name,employee.last_name].filter(Boolean).join(' ')||employee.name||employee.email||'Unbekannte Person'}</option>)}</select></label>
         <label>Seriennummer<input value={form.serial_number} onChange={event=>setForm({...form,serial_number:event.target.value})}/></label>
         <label>Hersteller<input value={form.manufacturer} onChange={event=>setForm({...form,manufacturer:event.target.value})}/></label>
         <label>Standort / Ort<input value={form.location} onChange={event=>setForm({...form,location:event.target.value})}/></label>
@@ -244,7 +250,7 @@ export function KeyDetail(){
         <label className="span-2">Beschreibung<textarea value={form.description} onChange={event=>setForm({...form,description:event.target.value})}/></label>
         <label className="span-2">Bemerkungen<textarea value={form.remarks} onChange={event=>setForm({...form,remarks:event.target.value})}/></label>
       </div><div className="key-detail-form-actions"><button type="submit">Stammdaten speichern</button><button type="button" onClick={()=>setForm(masterFromKey(key))}>Änderungen verwerfen</button></div></form>:<article className="employee-detail-table"><h3>Stammdaten</h3><dl>
-        {field('Kennziffer',key.key_code)}{field('Bezeichnung',key.label)}{field('Typ',keyTypeLabels[key.key_type]||key.key_type)}{field('Standort',key.location)}{field('Gebäude',key.building)}{field('Bereich',key.area)}{field('Zugangspunkt',key.access_point)}{field('Verantwortlich',key.responsible_name)}
+        {field('Kennziffer',key.key_code)}{field('Bezeichnung',key.label)}{field('Schlüsseltyp',statusLabel(key.key_type,'keyType'))}{field('Standort',key.location)}{field('Gebäude',key.building)}{field('Bereich',key.area)}{field('Zugangspunkt',key.access_point)}{field('Verantwortlich',key.responsible_name)}
         {!canUpdate&&<dt role="status">Keine Berechtigung zum Bearbeiten der Stammdaten.</dt>}
       </dl></article>)}
 
@@ -254,20 +260,20 @@ export function KeyDetail(){
       </article>}
 
       {active==='besitz'&&<article className="employee-detail-table"><h3>Besitzverhältnisse</h3>
-        <dl>{field('Halter',holderName(holder))}{field('Personalnummer',holder.holder_personnel_number??holder.personnel_number)}{field('Halterstatus',holder.holder_status??holder.status)}{field('Ausgegeben am',displayDateTime(key.issued_at))}{field('Rückgabe fällig',displayDateTime(key.due_at))}{field('Zurückgegeben am',displayDateTime(key.returned_at))}{field('Bund',profile.bundle?.name||key.bundle_name)}{field('Verantwortlich',key.responsible_name)}</dl>
+        <dl>{field('Halter',holderName(holder))}{field('Personalnummer',holder.holder_personnel_number??holder.personnel_number)}{field('Halterstatus',(holder.holder_status??holder.status)?statusLabel(holder.holder_status??holder.status,'employment'):null)}{field('Ausgegeben am',displayDateTime(key.issued_at))}{field('Rückgabe fällig',displayDateTime(key.due_at))}{field('Zurückgegeben am',displayDateTime(key.returned_at))}{field('Schlüsselbund',profile.bundle?.name||key.bundle_name)}{field('Verantwortlich',key.responsible_name)}</dl>
         {bundled&&<p role="status" className="key-bundled-hint">Besitzwechsel erfolgen über den Schlüsselbund.</p>}
       </article>}
 
       {active==='historie'&&(!canSee('history')?denied('history'):!canHistory?<p className="employee-empty" role="status">Keine Berechtigung für die Schlüsselhistorie.</p>:<article className="key-history"><h3>Schlüsselbewegungen</h3>
         {movements.length?<ol>{movements.map(movement=><li key={movement.id}>
-          <strong>{movementText(movement.movement_type)}</strong>
+          <strong>{statusLabel(movement.movement_type,'movement')}</strong>
           <p>{displayDateTime(movement.created_at)}{movement.actor_name?` · Ausgeführt von ${movement.actor_name}`:''}{movementHolder(movement)?` · Halter: ${movementHolder(movement)}`:''}{movement.site_name?` · Objekt: ${movement.site_name}`:''}</p>
-          {(movementFrom(movement)||movementTo(movement))&&<small>Status: {movementFrom(movement)||'–'} → {movementTo(movement)||'–'}</small>}
+          {(movementFrom(movement)||movementTo(movement))&&<small>Status: {movementFrom(movement)?statusLabel(movementFrom(movement),'key'):'–'} → {movementTo(movement)?statusLabel(movementTo(movement),'key'):'–'}</small>}
           {movement.reason&&<small> · Grund: {movement.reason}</small>}
-          {movement.incident_id&&<small> · Vorfall: {movement.incident_id}</small>}
-          {(movement.receipt_id||movement.reference)&&<small> · Beleg: {movement.receipt_id||movement.reference}</small>}
+          {movement.incident_id&&<small> · Vorfall verknüpft</small>}
+          {(movement.receipt_id||movement.reference)&&<small> · Beleg hinterlegt</small>}
         </li>)}</ol>:<p className="employee-empty">Keine Bewegungen erfasst.</p>}
-        {history&&history.pageCount>1&&<div className="key-history-pagination"><span>{history.total} Einträge · Seite {historyPage} von {history.pageCount}</span><button type="button" disabled={historyPage===1} onClick={()=>setHistoryPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={historyPage>=history.pageCount} onClick={()=>setHistoryPage(value=>value+1)}>Weiter</button></div>}
+        {history&&history.pageCount>1&&<div className="key-history-pagination"><span>{formatNumber(history.total)} Einträge · Seite {formatNumber(historyPage)} von {formatNumber(history.pageCount)}</span><button type="button" disabled={historyPage===1} onClick={()=>setHistoryPage(value=>Math.max(1,value-1))}>Zurück</button><button type="button" disabled={historyPage>=history.pageCount} onClick={()=>setHistoryPage(value=>value+1)}>Weiter</button></div>}
       </article>)}
 
       {active==='verlust'&&(!canSee('loss_reports')?denied('loss_reports'):<>
@@ -275,14 +281,14 @@ export function KeyDetail(){
         {(profile.loss_reports??[]).length===0&&<p className="employee-empty">Keine Verlustmeldungen erfasst.</p>}
         {(profile.loss_reports??[]).map(report=>{
           const draft=lossDrafts[report.id]??{status:report.status??'reported',immediate_measures:report.immediate_measures??'',follow_up:report.follow_up??'',notes:report.notes??''};
-          return <article className="key-loss-report" key={report.id}><header><h3>Verlustmeldung</h3><StatusBadge status={report.status||'reported'}/></header>
+          return <article className="key-loss-report" key={report.id}><header><h3>Verlustmeldung</h3><StatusBadge status={report.status||'reported'} domain="lossStatus"/></header>
             <dl>{field('Gemeldet am',displayDateTime(report.reported_at))}{field('Verlustzeitpunkt',displayDateTime(report.lost_at))}{field('Melder',report.reporter_name)}{field('Beschreibung',report.description)}</dl>
             {canManage?<div className="key-loss-form"><label>Status<select aria-label="Status der Verlustmeldung" value={draft.status} onChange={event=>setLossDrafts(current=>({...current,[report.id]:{...draft,status:event.target.value}}))}>{Object.entries(lossStatusLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
               <label>Sofortmaßnahmen<textarea value={draft.immediate_measures} onChange={event=>setLossDrafts(current=>({...current,[report.id]:{...draft,immediate_measures:event.target.value}}))}/></label>
-              <label>Folge Maßnahmen<textarea value={draft.follow_up} onChange={event=>setLossDrafts(current=>({...current,[report.id]:{...draft,follow_up:event.target.value}}))}/></label>
+              <label>Folgemaßnahmen<textarea value={draft.follow_up} onChange={event=>setLossDrafts(current=>({...current,[report.id]:{...draft,follow_up:event.target.value}}))}/></label>
               <label>Notizen<textarea value={draft.notes} onChange={event=>setLossDrafts(current=>({...current,[report.id]:{...draft,notes:event.target.value}}))}/></label>
               <button type="button" onClick={()=>void saveLossReport(report.id,draft)}>Verlustmeldung speichern</button>
-            </div>:<dl>{field('Sofortmaßnahmen',report.immediate_measures)}{field('Folge Maßnahmen',report.follow_up)}{field('Notizen',report.notes)}</dl>}
+            </div>:<dl>{field('Sofortmaßnahmen',report.immediate_measures)}{field('Folgemaßnahmen',report.follow_up)}{field('Notizen',report.notes)}</dl>}
           </article>;
         })}
       </>)}
@@ -292,7 +298,7 @@ export function KeyDetail(){
         {(profile.inventory_checks??[]).length===0&&<p className="employee-empty">Keine Bestandskontrollen erfasst.</p>}
         {(profile.inventory_checks??[]).map(check=><article className="key-inventory-card" key={check.id}><h3>Bestandskontrolle</h3>
           <dl>{field('Prüfer',check.checker_name)}{field('Geprüft am',displayDateTime(check.checked_at))}{field('Objekt',check.site_name)}{field('Notizen',check.notes)}</dl>
-          {(check.items??check.results??[]).length>0&&<ul>{(check.items??check.results??[]).map(result=><li key={result.key_id}>{result.key_id} · {result.expected_present?'erwartet':'nicht erwartet'} · {result.actual_condition||'–'}</li>)}</ul>}
+          {(check.items??check.results??[]).length>0&&<ul>{(check.items??check.results??[]).map((result,index)=><li key={result.key_id}>{result.key_id===key.id?`${key.key_code} · ${key.label}`:`Weiterer Schlüssel ${index+1}`} · {result.found===true?'vorhanden':result.found===false?'nicht vorhanden':result.expected_present?'erwartet':'nicht erwartet'} · {result.actual_condition?statusLabel(result.actual_condition,'condition'):'–'}</li>)}</ul>}
         </article>)}
       </>)}
 
@@ -304,15 +310,6 @@ export function KeyDetail(){
   </section>;
 }
 
-function QrDialogDetail({item,onClose}:{item:KeyRow;onClose:()=>void}){
-  return <div className="key-dialog-backdrop"><section className="key-dialog" role="dialog" aria-modal="true" aria-label={`QR-Code & Etikett · ${item.key_code}`}>
-    <header><h2>{`QR-Code & Etikett · ${item.key_code}`}</h2><button type="button" aria-label="Dialog schließen" onClick={onClose}>×</button></header>
-    <div className="key-dialog-body"><QrCodeView keyId={item.id} label={`${item.key_code} ${item.label}`}/><div className="key-dialog-actions"><button type="button" onClick={onClose}>Schließen</button></div></div>
-  </section></div>;
-}
-
-function statusLabel(status:string){return ({available:'Verfügbar',issued:'Ausgegeben',overdue:'Überfällig',lost:'Verloren',blocked:'Gesperrt',deactivated:'Deaktiviert'} as Record<string,string>)[status]||status;}
-function movementText(type:string){return movementLabels[type]||type;}
 function movementHolder(movement:RecordedMovement){return movement.holder_name??movement.holder_user_name??movement.holder_employee_name??null;}
 function movementFrom(movement:RecordedMovement){return movement.previous_status??movement.from_status??null;}
 function movementTo(movement:RecordedMovement){return movement.new_status??movement.to_status??null;}

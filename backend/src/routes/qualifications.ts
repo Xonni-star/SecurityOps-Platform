@@ -33,11 +33,11 @@ qualificationsRouter.get('/employees/:employeeId/qualifications',requirePermissi
 });
 qualificationsRouter.post('/employees/:employeeId/qualifications',requirePermission('qualifications:write'),async(req,res,next)=>{
   try{
-    const body=z.object({code:z.string().trim().min(1).max(80),valid_from:z.string().date().nullable().optional(),valid_until:z.string().date().nullable().optional(),document_id:uuid.nullable().optional(),issuing_authority:z.string().trim().max(200).nullable().optional(),status:z.enum(['valid','expired','revoked','invalid']).default('valid'),notes:z.string().max(2000).nullable().optional(),reason:nonempty.max(500)}).strict().refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from,{message:'valid_until must be on or after valid_from'}).parse(req.body);
+    const body=z.object({code:z.string().trim().min(1).max(80),valid_from:z.string().date().nullable().optional(),valid_until:z.string().date().nullable().optional(),document_id:uuid.nullable().optional(),issuing_authority:z.string().trim().max(200).nullable().optional(),status:z.enum(['valid','expired','revoked','invalid']).default('valid'),notes:z.string().max(2000).nullable().optional(),reason:nonempty.max(500)}).strict().refine(value=>!value.valid_from||!value.valid_until||value.valid_until>=value.valid_from,{message:'valid_until muss gleich oder nach valid_from liegen'}).parse(req.body);
     const employee=(await query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,req.params.employeeId])).rows[0];
-    if(!employee)return res.status(404).json({error:'Employee not found'});
+    if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const catalog=(await query('SELECT code FROM qualification_catalog WHERE tenant_id=$1 AND code=$2 AND active=true',[req.user!.tenantId,body.code])).rows[0];
-    if(!catalog)return res.status(400).json({error:'Qualification code is not active in the catalog'});
+    if(!catalog)return res.status(400).json({error:'Qualifikationscode ist im Katalog nicht aktiv'});
     // Site assignment is added to audit details so the object chronicle can
     // show which object the qualification change belongs to.
     const assignment=(await query(`SELECT site_id FROM employee_object_assignments
@@ -54,7 +54,7 @@ qualificationsRouter.delete('/employees/:employeeId/qualifications/:id',requireP
   try{
     const body=z.object({reason:nonempty.max(500)}).strict().parse(req.body);
     const row=(await query('DELETE FROM employee_qualifications WHERE tenant_id=$1 AND employee_id=$2 AND id=$3 RETURNING id,code',[req.user!.tenantId,req.params.employeeId,req.params.id])).rows[0];
-    if(!row)return res.status(404).json({error:'Qualification not found'});
+    if(!row)return res.status(404).json({error:'Qualifikation nicht gefunden'});
     const assignment=(await query(`SELECT site_id FROM employee_object_assignments
       WHERE tenant_id=$1 AND employee_id=$2 AND starts_on<=CURRENT_DATE AND (ends_on IS NULL OR ends_on>=CURRENT_DATE)
       ORDER BY primary_assignment DESC,starts_on DESC LIMIT 1`,[req.user!.tenantId,req.params.employeeId])).rows[0];

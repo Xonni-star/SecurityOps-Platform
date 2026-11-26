@@ -149,7 +149,7 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
       const {call}=install({handler:updateHandler(()=>{})});
       const response=await request(app).patch(`/api/v1/employees/${employeeId}/profile`).set(csrf).send(body);
       expect(response.status).toBe(400);
-      expect(response.body.error).toBe('Invalid employee profile');
+      expect(response.body.error).toBe('Ungültiges Mitarbeiterprofil');
       expect(response.body.fields[field]).toBeTruthy();
       expect(call('UPDATE employees SET')).toBeUndefined();
     }
@@ -172,7 +172,7 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
     }});
     const response=await request(app).patch(`/api/v1/employees/${otherEmployeeId}/profile`).set(csrf).send(payload());
     expect(response.status).toBe(404);
-    expect(response.body.error).toBe('Employee not found');
+    expect(response.body.error).toBe('Mitarbeiter nicht gefunden');
     expect(call('UPDATE employees SET')).toBeUndefined();
   });
 
@@ -185,7 +185,7 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
     }});
     const response=await request(app).patch(`/api/v1/employees/${employeeId}/profile`).set(csrf).send(payload({user_id:otherTenantAccount}));
     expect(response.status).toBe(400);
-    expect(response.body.error).toBe('Account not found in tenant');
+    expect(response.body.error).toBe('Konto nicht im Mandanten gefunden');
     expect(call('UPDATE employees SET')).toBeUndefined();
   });
 

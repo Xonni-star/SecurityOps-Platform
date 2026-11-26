@@ -13,9 +13,9 @@ function scopeSite(req:Request,siteId:string|undefined,permission:string){
   const user=req.user!;
   const grants=normalizePermissionGrants(user.permissionGrants,user.permissions);
   const scope=effectivePermissionScope(grants,permission,{role:user.role,isSystemAdmin:user.isSystemAdmin===true});
-  if(!scope)throw Object.assign(new Error('Insufficient permissions'),{status:403});
-  if(siteId&&user.siteIds?.length&&!user.siteIds.includes(siteId))throw Object.assign(new Error('Insufficient permissions for this site'),{status:403});
-  if(scope==='site'&&siteId&&!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId}))throw Object.assign(new Error('Insufficient permissions for this site'),{status:403});
+  if(!scope)throw Object.assign(new Error('Unzureichende Berechtigungen'),{status:403});
+  if(siteId&&user.siteIds?.length&&!user.siteIds.includes(siteId))throw Object.assign(new Error('Kein Zugriff auf Objekt'),{status:403});
+  if(scope==='site'&&siteId&&!canAccessResource({userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,siteIds:user.siteIds??[],grants},scope,{tenantId:user.tenantId,siteId}))throw Object.assign(new Error('Kein Zugriff auf Objekt'),{status:403});
   return scope;
 }
 
@@ -53,7 +53,7 @@ function csv(rows:Row[]){
   return [headers.join(','),...rows.map(row=>headers.map(key=>`"${String(row[key]??'').replaceAll('"','""')}"`).join(','))].join('\n');
 }
 function pdf(kind:string,rows:Row[]){
-  const text=`SecurityOps customer evidence - ${kind}\nDIN-77200 documentation profile; not a legal or certification statement.\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`.replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
+  const text=`SecurityOps Kunden-Nachweise - ${kind}\nDIN-77200-Dokumentationsprofil; keine rechtliche oder Zertifizierungsaussage.\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`.replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
   const output=`%PDF-1.4
 1 0 obj<< /Type /Catalog /Pages 2 0 R>>endobj
 2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1>>endobj
@@ -82,28 +82,28 @@ async function reportRequest(req:Request,res:any,next:any,portal=false){
     const to=typeof req.query.to==='string'?new Date(req.query.to):new Date();
     const siteId=typeof req.query.site_id==='string'?uuid.parse(req.query.site_id):undefined;
     const customerId=typeof req.query.customer_id==='string'?uuid.parse(req.query.customer_id):undefined;
-    if(Number.isNaN(from.valueOf())||Number.isNaN(to.valueOf())||from>to)throw Object.assign(new Error('Invalid date range'),{status:400});
+    if(Number.isNaN(from.valueOf())||Number.isNaN(to.valueOf())||from>to)throw Object.assign(new Error('Ungültiger Zeitraum'),{status:400});
     const permission=portal?'customer_portal:read':'customer_reports:export';
     const scope=scopeSite(req,siteId,permission);
     let siteIds:string[]|undefined;
     if(customerId){
-      if(!((await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,customerId])).rows[0]))throw Object.assign(new Error('Customer not found'),{status:404});
+      if(!((await query('SELECT id FROM customers WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,customerId])).rows[0]))throw Object.assign(new Error('Kunde nicht gefunden'),{status:404});
       const links=(await query(`SELECT site_id FROM customer_sites WHERE tenant_id=$1 AND customer_id=$2 AND relationship_status='active'`,[req.user!.tenantId,customerId])).rows as {site_id:string}[];
       siteIds=links.map(link=>link.site_id);
-      if(siteId&&!siteIds.includes(siteId))throw Object.assign(new Error('Site is not linked to this customer'),{status:400});
+      if(siteId&&!siteIds.includes(siteId))throw Object.assign(new Error('Objekt ist nicht mit diesem Kunden verknüpft'),{status:400});
     }
     if(scope==='site'){
       const permitted=new Set(req.user!.siteIds??[]);
       siteIds=siteIds?siteIds.filter(id=>permitted.has(id)):(req.user!.siteIds??[]);
-      if(siteId&&!permitted.has(siteId))throw Object.assign(new Error('Insufficient permissions for this site'),{status:403});
-      if(customerId&&siteIds.length===0)throw Object.assign(new Error('No accessible customer sites'),{status:403});
+      if(siteId&&!permitted.has(siteId))throw Object.assign(new Error('Kein Zugriff auf Objekt'),{status:403});
+      if(customerId&&siteIds.length===0)throw Object.assign(new Error('Keine zugänglichen Kundenstandorte'),{status:403});
     }
     const rawRows=await rowsFor(req,kind,from,to,siteId,siteIds);
     const rows=portal?rawRows.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!['content','description','author_email'].includes(key)))):rawRows;
     await recordAudit(req.user!.tenantId,req.user!.id,portal?'customer.portal.viewed':'customer.report.exported',portal?'customer_portal':'customer_report',undefined,{kind,site_id:siteId??null,customer_id:customerId??null,from:from.toISOString(),to:to.toISOString(),count:rows.length,format:portal?'json':req.query.format==='pdf'?'pdf':'csv',documentation_profile:'DIN-77200'});
-    if(portal)return res.json({kind,documentation_profile:'DIN-77200 documentation profile; not a legal or certification statement.',from,to,rows});
-    if(req.query.format==='pdf')return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-evidence.pdf"`).send(pdf(kind,rows));
-    return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-evidence.csv"`).send(csv(rows));
+    if(portal)return res.json({kind,documentation_profile:'DIN-77200-Dokumentationsprofil; keine rechtliche oder Zertifizierungsaussage.',from,to,rows});
+    if(req.query.format==='pdf')return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-nachweise.pdf"`).send(pdf(kind,rows));
+    return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-nachweise.csv"`).send(csv(rows));
   }catch(error){next(error);}
 }
 

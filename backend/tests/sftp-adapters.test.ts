@@ -15,7 +15,7 @@ describe('SFTP backup adapter',()=>{
     const connect=jest.fn();jest.unstable_mockModule('ssh2-sftp-client',()=>({default:class{connect=connect;end=jest.fn()}}));
     const {SftpBackupTargetAdapter}=await import('../src/services/backup-adapters.js');
     const adapter=new SftpBackupTargetAdapter({host:'sftp.example',remotePath:'backups'},{username:'guard',password:'secret'});
-    await expect(adapter.upload({key:'tenant/file',content:Buffer.from('x')})).rejects.toThrow('fingerprint');
+    await expect(adapter.upload({key:'tenant/file',content:Buffer.from('x')})).rejects.toThrow('Fingerprint');
     expect(connect).not.toHaveBeenCalled();
   });
 });

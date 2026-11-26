@@ -27,8 +27,8 @@ function runScript(script:string,databaseUrl:string):Promise<string>{
     child.stdout?.on('data',chunk=>{stdout+=String(chunk);});
     child.stderr?.on('data',chunk=>{stderr+=String(chunk);});
     child.on('error',reject);child.on('close',code=>{
-      if(code!==0)return reject(new Error(`Database backup failed: ${stderr.slice(-2000)}`));
-      const file=stdout.trim().split(/\r?\n/).at(-1);if(!file)return reject(new Error('Database backup did not return an artifact path'));
+      if(code!==0)return reject(new Error(`Datenbank-Backup fehlgeschlagen: ${stderr.slice(-2000)}`));
+      const file=stdout.trim().split(/\r?\n/).at(-1);if(!file)return reject(new Error('Datenbank-Backup hat keinen Artefaktpfad zurückgegeben'));
       resolvePromise(file);
     });
   });
@@ -41,7 +41,7 @@ async function loadTargets(tenantId:string){
 async function secretForTarget(target:TargetRow){
   if(target.target_kind==='local')return {};
   const secret=await resolveSecretPayload(target.secret_ref??undefined,target.encrypted_secret);
-  if(!secret)throw new Error(`Target ${target.id} has no configured secret`);
+  if(!secret)throw new Error(`Ziel ${target.id} hat kein konfiguriertes Geheimnis`);
   return secret;
 }
 
@@ -50,7 +50,7 @@ export async function retryUpload(adapter:BackupTargetAdapter,upload:BackupUploa
   for(let attempt=1;attempt<=maxAttempts;attempt++){
     try{await adapter.upload(upload);return attempt;}catch(error){lastError=error;if(attempt<maxAttempts)await new Promise(resolve=>setTimeout(resolve,Math.min(1000*2**(attempt-1),5000)));}
   }
-  throw lastError instanceof Error?lastError:new Error('Backup upload failed');
+  throw lastError instanceof Error?lastError:new Error('Backup-Upload fehlgeschlagen');
 }
 
 export async function runBackup(tenantId:string,actorUserId?:string){
@@ -58,10 +58,10 @@ export async function runBackup(tenantId:string,actorUserId?:string){
     const runId=randomUUID();
     try{
       try{await query('INSERT INTO backup_runs(id,tenant_id,status) VALUES($1,$2,$3)',[runId,tenantId,'running']);}
-      catch(error){if((error as {code?:string}).code==='23505')throw Object.assign(new Error('A backup is already running for this tenant'),{status:409});throw error;}
+      catch(error){if((error as {code?:string}).code==='23505')throw Object.assign(new Error('Für diesen Mandanten läuft bereits ein Backup'),{status:409});throw error;}
       await query('UPDATE backup_settings SET last_run_at=now(),last_status=$2,updated_at=now() WHERE tenant_id=$1',[tenantId,'running']);
       const script=resolve(process.cwd(),process.env.BACKUP_DB_SCRIPT??'../scripts/backup-db.sh');
-      if(!env.DATABASE_URL)throw new Error('DATABASE_URL is not configured');
+      if(!env.DATABASE_URL)throw new Error('DATABASE_URL ist nicht konfiguriert');
       const dumpPath=await runScript(script,env.DATABASE_URL);
       const dump=await readFile(dumpPath);
       const artifacts:Artifact[]=[{artifact_kind:'database',source_key:basename(dumpPath),sha256:hash(dump),size_bytes:dump.byteLength,content:dump}];
@@ -69,7 +69,7 @@ export async function runBackup(tenantId:string,actorUserId?:string){
         `SELECT object_key,sha256,size_bytes FROM dms_versions WHERE tenant_id=$1 AND lifecycle_state='available' ORDER BY object_key`,[tenantId])).rows;
       for(const row of rows){
         const blob=await dmsStorage.get(row.object_key);
-        if(blob.content.byteLength!==Number(row.size_bytes)||hash(blob.content)!==row.sha256)throw new Error(`DMS blob integrity check failed for ${row.object_key}`);
+        if(blob.content.byteLength!==Number(row.size_bytes)||hash(blob.content)!==row.sha256)throw new Error(`Integritätsprüfung des DMS-Blobs fehlgeschlagen für ${row.object_key}`);
         artifacts.push({artifact_kind:'dms_blob',source_key:row.object_key,sha256:row.sha256,size_bytes:blob.content.byteLength,content:blob.content});
       }
       const manifest=Buffer.from(JSON.stringify({version:'backup-v1',tenant_id:tenantId,run_id:runId,created_at:new Date().toISOString(),database:artifacts[0],dms_blobs:artifacts.filter(item=>item.artifact_kind==='dms_blob').map(({content:_,...item})=>item)},null,2));
@@ -85,29 +85,29 @@ export async function runBackup(tenantId:string,actorUserId?:string){
           await query('UPDATE backup_target_runs SET status=$4,attempts=$5,uploaded_at=now() WHERE tenant_id=$1 AND run_id=$2 AND target_id=$3',[tenantId,runId,target.id,'succeeded',attempts]);
           successfulTargets++;
         }catch(error){
-          const message=error instanceof Error?error.message:'Unknown target failure';failures.push(`${target.id}: ${message}`);
+          const message=error instanceof Error?error.message:'Unbekannter Fehler beim Backup-Ziel';failures.push(`${target.id}: ${message}`);
           await query('UPDATE backup_target_runs SET status=$4,error_message=$5 WHERE tenant_id=$1 AND run_id=$2 AND target_id=$3',[tenantId,runId,target.id,'failed',message]);
         }
       }
-      if(targets.length===0)throw new Error('No enabled backup targets configured');
-      if(successfulTargets===0)throw new Error(failures.join('; ')||'All backup targets failed');
+      if(targets.length===0)throw new Error('Keine aktivierten Sicherungsziele konfiguriert');
+      if(successfulTargets===0)throw new Error(failures.join('; ')||'Alle Backup-Ziele fehlgeschlagen');
       await query('UPDATE backup_runs SET status=$3,completed_at=now(),successful_targets=$4,manifest=$5 WHERE tenant_id=$1 AND id=$2',[tenantId,runId,'succeeded',successfulTargets,{artifact_count:artifacts.length,failed_targets:failures}]);
       await query('UPDATE backup_settings SET last_success_at=now(),last_status=$2,updated_at=now() WHERE tenant_id=$1',[tenantId,'succeeded']);
       try{await applyRetention(tenantId,actorUserId);}catch(error){
-        const message=error instanceof Error?error.message:'Unknown retention failure';
+        const message=error instanceof Error?error.message:'Unbekannter Fehler bei der Aufbewahrung';
         if(actorUserId)await recordAudit(tenantId,actorUserId,'backup.retention.failed','backup_run',runId,{error:message});
       }
       if(actorUserId)await recordAudit(tenantId,actorUserId,'backup.run.succeeded','backup_run',runId,{successful_targets:successfulTargets,artifact_count:artifacts.length});
-      void queueNotificationEvent(tenantId,'backup.succeeded',`backup:${runId}`,'Backup erfolgreich',`Backup-Lauf ${runId} wurde erfolgreich abgeschlossen.`, 'backup_run',runId).catch(error=>recordAudit(tenantId,actorUserId??null,'backup.notification.failed','backup_run',runId,{error:error instanceof Error?error.message:'Notification failed'}));
+      void queueNotificationEvent(tenantId,'backup.succeeded',`backup:${runId}`,'Backup erfolgreich',`Backup-Lauf ${runId} wurde erfolgreich abgeschlossen.`, 'backup_run',runId).catch(error=>recordAudit(tenantId,actorUserId??null,'backup.notification.failed','backup_run',runId,{error:error instanceof Error?error.message:'Benachrichtigung fehlgeschlagen'}));
       return {id:runId,status:'succeeded',successfulTargets,artifactCount:artifacts.length};
     }catch(error){
-      const message=error instanceof Error?error.message:'Unknown backup failure';
+      const message=error instanceof Error?error.message:'Unbekannter Backup-Fehler';
       if((error as {status?:number}).status!==409){
         await query('UPDATE backup_runs SET status=$3,completed_at=now(),error_message=$4 WHERE tenant_id=$1 AND id=$2',[tenantId,runId,'failed',message]);
         await query('UPDATE backup_settings SET last_status=$2,updated_at=now() WHERE tenant_id=$1',[tenantId,'failed']);
       }
       if(actorUserId)await recordAudit(tenantId,actorUserId,'backup.run.failed','backup_run',runId,{error:message});
-      void queueNotificationEvent(tenantId,'backup.failed',`backup:${runId}`,'Backup fehlgeschlagen',`Backup-Lauf ${runId} ist fehlgeschlagen. Prüfen Sie den Backup-Status.`, 'backup_run',runId).catch(error=>recordAudit(tenantId,actorUserId??null,'backup.notification.failed','backup_run',runId,{error:error instanceof Error?error.message:'Notification failed'}));
+      void queueNotificationEvent(tenantId,'backup.failed',`backup:${runId}`,'Backup fehlgeschlagen',`Backup-Lauf ${runId} ist fehlgeschlagen. Prüfen Sie den Backup-Status.`, 'backup_run',runId).catch(error=>recordAudit(tenantId,actorUserId??null,'backup.notification.failed','backup_run',runId,{error:error instanceof Error?error.message:'Benachrichtigung fehlgeschlagen'}));
       throw error;
     }
   });
@@ -149,7 +149,7 @@ export async function runDueBackups(){
     for(const setting of settings){
       if(!isScheduleDue({enabled:setting.enabled,kind:setting.schedule_kind,time:setting.schedule_time.slice(0,5),weekday:setting.schedule_weekday,timezone:setting.schedule_timezone,lastRunAt:setting.last_run_at}))continue;
       try{await runBackup(setting.tenant_id);}catch(error){
-        const message=error instanceof Error?error.message:'Scheduled backup failed';
+        const message=error instanceof Error?error.message:'Geplanter Backup-Lauf fehlgeschlagen';
         await recordAudit(setting.tenant_id,null,'backup.scheduler.failed','backup_settings',setting.tenant_id,{error:message}).catch(()=>undefined);
       }
     }

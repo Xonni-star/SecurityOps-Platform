@@ -29,7 +29,7 @@ export function startForwardingWorker(intervalMs=10000){
 export function stopForwardingWorker(){if(workerTimer){clearInterval(workerTimer);workerTimer=undefined;}}
 
 function safeError(error:unknown){
-  return (error instanceof Error?error.message:'Forwarding failed').replace(/(authorization|password|token|secret)(\s*[:=]\s*)[^\s,;]+/gi,'$1$2[redacted]').slice(0,500);
+  return (error instanceof Error?error.message:'Weiterleitung fehlgeschlagen').replace(/(authorization|password|token|secret)(\s*[:=]\s*)[^\s,;]+/gi,'$1$2[redacted]').slice(0,500);
 }
 
 export async function queueAlarmForwarding(tenantId:string,alarmId:string){
@@ -65,17 +65,17 @@ async function loadDelivery(id:string){
 }
 
 async function deliver(delivery:Awaited<ReturnType<typeof loadDelivery>>){
-  if(!delivery||!delivery.enabled)throw new Error('Forwarding destination is disabled');
+  if(!delivery||!delivery.enabled)throw new Error('Weiterleitungsziel ist deaktiviert');
   const payload=JSON.stringify({alarm_id:delivery.alarm_id,type:delivery.alarm_type,priority:delivery.priority_code,description:delivery.description});
   const configured=await secret(delivery);
   if(delivery.channel==='webhook'){
-    if(!delivery.endpoint)throw new Error('Webhook endpoint is not configured');
+    if(!delivery.endpoint)throw new Error('Webhook-Endpunkt ist nicht konfiguriert');
     const token= configured?.token??configured?.value;
     const response=await fetch(delivery.endpoint,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})},body:payload,signal:AbortSignal.timeout(10000)});
-    if(!response.ok)throw new Error(`Webhook returned ${response.status}`);
+    if(!response.ok)throw new Error(`Webhook antwortete mit Status ${response.status}`);
     return response.headers.get('x-request-id')??undefined;
   }
-  if(!delivery.recipient)throw new Error('Forwarding recipient is not configured');
+  if(!delivery.recipient)throw new Error('Weiterleitungsempfänger ist nicht konfiguriert');
   if(delivery.channel==='email'){await sendEmail(delivery.recipient,'SecurityOps Alarm',`Alarm ${delivery.alarm_id} (${delivery.priority_code}) wurde weitergeleitet.`);return undefined;}
   await sendSms(delivery.recipient,`SecurityOps Alarm ${delivery.priority_code}: ${delivery.alarm_id}`);return undefined;
 }

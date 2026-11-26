@@ -22,7 +22,7 @@ function scopeFor(req:Request,permission:string,siteId:string,ownerId?:string|nu
     userId:user.id,tenantId:user.tenantId,role:user.role,isSystemAdmin:user.isSystemAdmin===true,
     siteIds:user.siteIds??[],grants,
   },scope,{tenantId:user.tenantId,siteId,ownerId});
-  if(!allowed)throw Object.assign(new Error('Insufficient permissions for this handover scope'),{status:403});
+  if(!allowed)throw Object.assign(new Error('Unzureichende Berechtigungen für diesen Übergabebereich'),{status:403});
   return scope;
 }
 
@@ -102,7 +102,7 @@ handoversRouter.post('/handover-protocols',requirePermission('handover:write',{a
 handoversRouter.get('/handover-protocols/:id',requirePermission('handover:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
     const row=(await query('SELECT * FROM handover_records WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,String(req.params.id)])).rows[0];
-    if(!row)return res.status(404).json({error:'Handover not found'});
+    if(!row)return res.status(404).json({error:'Übergabe nicht gefunden'});
     scopeFor(req,'handover:read',row.site_id,row.created_by);
     const [participants,confirmations,events]=(await Promise.all([
       query('SELECT * FROM handover_participants WHERE tenant_id=$1 AND handover_id=$2 ORDER BY created_at',[req.user!.tenantId,row.id]),
@@ -123,9 +123,9 @@ handoversRouter.post('/handover-protocols/:id/participants',requirePermission('h
       tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'handover.participant',payload:{...req.body,handover_id:String(req.params.id)},
     },async tx=>{
       const record=await handover(tx,req.user!.tenantId,String(req.params.id));
-      if(!record)throw Object.assign(new Error('Handover not found'),{status:404});
+      if(!record)throw Object.assign(new Error('Übergabe nicht gefunden'),{status:404});
       scopeFor(req,'handover:write',record.site_id);
-      if(!participantIdentityIsValid({userId:body.user_id,employeeId:body.employee_id}))throw Object.assign(new Error('Exactly one participant identity is required'),{status:400});
+      if(!participantIdentityIsValid({userId:body.user_id,employeeId:body.employee_id}))throw Object.assign(new Error('Genau eine Beteiligtenidentität ist erforderlich'),{status:400});
       const participant=(await tx.query(
         `INSERT INTO handover_participants(tenant_id,handover_id,participant_role,user_id,employee_id,assigned_by,assigned_session_id,assigned_device_id)
          VALUES($1,$2,$3,$4,$5,$6,$7,(SELECT device_id FROM sessions WHERE tenant_id=$1 AND id=$7)) RETURNING *`,
@@ -145,11 +145,11 @@ handoversRouter.post('/handover-protocols/:id/participants/:participantId/revoke
       tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'handover.revoke',payload:{...req.body,handover_id:String(req.params.id),participant_id:String(req.params.participantId)},
     },async tx=>{
       const record=await handover(tx,req.user!.tenantId,String(req.params.id));
-      if(!record)throw Object.assign(new Error('Handover not found'),{status:404});
+      if(!record)throw Object.assign(new Error('Übergabe nicht gefunden'),{status:404});
       scopeFor(req,'handover:revoke',record.site_id);
       const participant=(await tx.query('SELECT * FROM handover_participants WHERE tenant_id=$1 AND handover_id=$2 AND id=$3',[req.user!.tenantId,record.id,String(req.params.participantId)])).rows[0];
-      if(!participant)throw Object.assign(new Error('Participant not found'),{status:404});
-      if(participant.state==='revoked')throw Object.assign(new Error('Participant already revoked'),{status:409});
+      if(!participant)throw Object.assign(new Error('Beteiligter nicht gefunden'),{status:404});
+      if(participant.state==='revoked')throw Object.assign(new Error('Beteiligter bereits widerrufen'),{status:409});
       await tx.query('UPDATE handover_participants SET state=\'revoked\' WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,participant.id]);
       await appendEvent(tx,{tenantId:req.user!.tenantId,handoverId:record.id,eventType:'participant_revoked',payload:{participant_id:participant.id,reason:body.reason},actorUserId:req.user!.id,sessionId:session(req)});
       await tx.query(`UPDATE handover_records SET status='open' WHERE tenant_id=$1 AND id=$2 AND status='confirmed'`,[req.user!.tenantId,record.id]);
@@ -166,12 +166,12 @@ handoversRouter.post('/handover-protocols/:id/confirmations',requirePermission('
       tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'handover.confirm',payload:{...req.body,handover_id:String(req.params.id)},
     },async tx=>{
       const record=await handover(tx,req.user!.tenantId,String(req.params.id));
-      if(!record)throw Object.assign(new Error('Handover not found'),{status:404});
+      if(!record)throw Object.assign(new Error('Übergabe nicht gefunden'),{status:404});
       const participant=(await tx.query('SELECT * FROM handover_participants WHERE tenant_id=$1 AND handover_id=$2 AND id=$3',[req.user!.tenantId,record.id,body.participant_id])).rows[0];
-      if(!participant||participant.state==='revoked')throw Object.assign(new Error('Active participant not found'),{status:404});
+      if(!participant||participant.state==='revoked')throw Object.assign(new Error('Aktiver Beteiligter nicht gefunden'),{status:404});
       const grants=normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions);
       const confirmationScope=effectivePermissionScope(grants,'handover:confirm',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
-      if(confirmationScope==='own'&&!canConfirmParticipant({actorUserId:req.user!.id,participantUserId:participant.user_id,participantEmployeeId:participant.employee_id,operator:operator(req)}))throw Object.assign(new Error('Only the bound participant may confirm'),{status:403});
+      if(confirmationScope==='own'&&!canConfirmParticipant({actorUserId:req.user!.id,participantUserId:participant.user_id,participantEmployeeId:participant.employee_id,operator:operator(req)}))throw Object.assign(new Error('Nur der zugeordnete Beteiligte darf bestätigen'),{status:403});
       const previous=(await tx.query('SELECT * FROM handover_confirmations WHERE tenant_id=$1 AND participant_id=$2 ORDER BY confirmed_at DESC LIMIT 1 FOR SHARE',[req.user!.tenantId,participant.id])).rows[0];
       const confirmation=(await tx.query(
         `INSERT INTO handover_confirmations(tenant_id,handover_id,participant_id,state,note,session_id,device_id,supersedes_confirmation_id)
@@ -197,13 +197,13 @@ handoversRouter.post('/handover-protocols/:id/confirmations/:confirmationId/revo
       tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'handover.revoke',payload:{...req.body,handover_id:String(req.params.id),confirmation_id:String(req.params.confirmationId)},
     },async tx=>{
       const record=await handover(tx,req.user!.tenantId,String(req.params.id));
-      if(!record)throw Object.assign(new Error('Handover not found'),{status:404});
+      if(!record)throw Object.assign(new Error('Übergabe nicht gefunden'),{status:404});
       const existing=(await tx.query(`SELECT c.*,p.user_id,p.employee_id FROM handover_confirmations c JOIN handover_participants p ON p.tenant_id=c.tenant_id AND p.id=c.participant_id
         WHERE c.tenant_id=$1 AND c.handover_id=$2 AND c.id=$3`,[req.user!.tenantId,record.id,String(req.params.confirmationId)])).rows[0];
-      if(!existing)throw Object.assign(new Error('Confirmation not found'),{status:404});
+      if(!existing)throw Object.assign(new Error('Bestätigung nicht gefunden'),{status:404});
       const grants=normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions);
       const confirmationScope=effectivePermissionScope(grants,'handover:confirm',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
-      if(confirmationScope==='own'&&!canConfirmParticipant({actorUserId:req.user!.id,participantUserId:existing.user_id,participantEmployeeId:existing.employee_id,operator:operator(req)}))throw Object.assign(new Error('Only the bound participant may revoke this confirmation'),{status:403});
+      if(confirmationScope==='own'&&!canConfirmParticipant({actorUserId:req.user!.id,participantUserId:existing.user_id,participantEmployeeId:existing.employee_id,operator:operator(req)}))throw Object.assign(new Error('Nur der zugeordnete Beteiligte darf diese Bestätigung widerrufen'),{status:403});
       const revoked=(await tx.query(
         `INSERT INTO handover_confirmations(tenant_id,handover_id,participant_id,state,note,session_id,device_id,supersedes_confirmation_id)
          VALUES($1,$2,$3,'revoked',$4,$5,(SELECT device_id FROM sessions WHERE tenant_id=$1 AND id=$5),$6) RETURNING *`,
@@ -224,7 +224,7 @@ handoversRouter.post('/handover-protocols/:id/corrections',requirePermission('ha
       tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'handover.correct',payload:{...req.body,handover_id:String(req.params.id)},
     },async tx=>{
       const record=await handover(tx,req.user!.tenantId,String(req.params.id));
-      if(!record)throw Object.assign(new Error('Handover not found'),{status:404});
+      if(!record)throw Object.assign(new Error('Übergabe nicht gefunden'),{status:404});
       scopeFor(req,'handover:correct',record.site_id);
       const event=await appendEvent(tx,{tenantId:req.user!.tenantId,handoverId:record.id,eventType:'corrected',payload:{reason:body.reason,changes:body.changes},actorUserId:req.user!.id,sessionId:session(req)});
       return event;

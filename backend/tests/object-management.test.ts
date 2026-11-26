@@ -138,7 +138,7 @@ describe('object management',()=>{
       }]);
       if(sql.includes('WITH action_source AS'))return result([
         {id:'task-1',site_id:site,site_name:'Headquarters',entity_id:'task-1',employee_id:null,severity:'high',category:'Aufgaben',title:'Überfällige Aufgabe: Report',detail:'Kunde: North Client',due_on:'2026-11-20',tab:'aufgaben',permission:'customers:read',target:`/sites/${site}/aufgaben?task=task-1`},
-        {id:'hazard-1',site_id:site,site_name:'Headquarters',entity_id:'hazard-1',employee_id:null,severity:'critical',category:'Gefährdungen',title:'Kritische Gefährdung: Fire',detail:'Risikoscore 22',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:`/sites/${site}/gefaehrdungen?hazard=hazard-1`},
+        {id:'hazard-1',site_id:site,site_name:'Headquarters',entity_id:'hazard-1',employee_id:null,severity:'critical',category:'Gefährdungen',title:'Kritische Gefährdung: Fire',detail:'Risikowert 22',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:`/sites/${site}/gefaehrdungen?hazard=hazard-1`},
         {id:'qualification-1',site_id:site,site_name:'Headquarters',entity_id:'q-1',employee_id:'employee-1',severity:'medium',category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen?qualification=q-1'},
       ]);
       return result([]);
@@ -615,7 +615,7 @@ describe('object management',()=>{
       .set('x-csrf-token','csrf-value')
       .send({site_id:site,starts_on:'2026-11-25',primary_assignment:true,reason:'Coverage requirement'});
     expect(response.status).toBe(403);
-    expect(response.body.error).toContain('tenant-wide');
+    expect(response.body.error).toContain('im gesamten Mandanten');
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('UPDATE employee_object_assignments'))).toBe(false);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO employee_object_assignments'))).toBe(false);
   });
@@ -710,7 +710,7 @@ describe('object management',()=>{
       .set('x-csrf-token','csrf-value')
       .send({name:'North building',location_type:'building',parent_id:customer});
     expect(response.status).toBe(400);
-    expect(response.body.error).toContain('Parent location');
+    expect(response.body.error).toContain('Übergeordneter Bereich');
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_locations'))).toBe(false);
   });
 
@@ -745,11 +745,11 @@ describe('object management',()=>{
     const wrongParent=await request(app).post(`/api/v1/sites/${site}/locations`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({name:'North area',location_type:'area',parent_id:parent});
     expect(wrongParent.status).toBe(400);
-    expect(wrongParent.body.error).toContain('Parent location must be a building');
+    expect(wrongParent.body.error).toContain('Übergeordneter Bereich muss ein building sein');
     const missingParent=await request(app).post(`/api/v1/sites/${site}/locations`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({name:'North zone',location_type:'zone'});
     expect(missingParent.status).toBe(400);
-    expect(missingParent.body.error).toContain('require a parent location');
+    expect(missingParent.body.error).toContain('erfordern einen übergeordneten Bereich');
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_locations'))).toBe(false);
   });
 
@@ -787,11 +787,11 @@ describe('object management',()=>{
     const location=await request(app).post(`/api/v1/sites/${site}/locations`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({name:'North building',location_type:'building',responsible_employee_id:employee});
     expect(location.status).toBe(400);
-    expect(location.body.error).toContain('assigned to this site');
+    expect(location.body.error).toContain('diesem Objekt zugeordnet sein');
     const hazard=await request(app).post(`/api/v1/sites/${site}/hazards`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({title:'Entry risk',category:'unauthorized_access',description:'Unassigned guard',likelihood:2,impact:3,responsible_employee_id:employee});
     expect(hazard.status).toBe(400);
-    expect(hazard.body.error).toContain('assigned to this site');
+    expect(hazard.body.error).toContain('diesem Objekt zugeordnet sein');
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_locations'))).toBe(false);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO object_hazards'))).toBe(false);
   });
@@ -811,7 +811,7 @@ describe('object management',()=>{
     const cycle=await request(app).patch(`/api/v1/sites/${site}/locations/${location}`)
       .set('Cookie',cookie).set('x-csrf-token','csrf-value').send({parent_id:child});
     expect(cycle.status).toBe(400);
-    expect(cycle.body.error).toContain('hierarchy cycle');
+    expect(cycle.body.error).toContain('Hierarchiezyklus');
     const invalidDates=await request(app).patch(`/api/v1/sites/${site}/hazards/${hazard}`)
       .set('Cookie',cookie).set('x-csrf-token','csrf-value').send({review_on:'2026-03-31'});
     expect(invalidDates.status).toBe(400);
@@ -961,7 +961,7 @@ describe('object management',()=>{
     const invalidVersion=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({title:'Evacuation',content:'Use the marked exit.',version:2,status:'draft'});
     expect(invalidVersion.status).toBe(400);
-    expect(invalidVersion.body.error).toContain('start at version 1');
+    expect(invalidVersion.body.error).toContain('mit Fassung 1 beginnen');
     const changedTitle=await request(app).post(`/api/v1/sites/${site}/instructions`).set('Cookie',cookie).set('x-csrf-token','csrf-value')
       .send({title:'Different title',content:'Use the marked exit.',version:2,status:'draft',supersedes_id:instruction});
     expect(changedTitle.status).toBe(400);

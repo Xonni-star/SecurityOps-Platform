@@ -79,7 +79,7 @@ describe('Objektübersicht',()=>{
     fireEvent.change(screen.getByRole('textbox',{name:'Objektnummer'}),{target:{value:''}});
     fireEvent.change(screen.getByRole('textbox',{name:'Adresse'}),{target:{value:''}});
     fireEvent.change(screen.getByRole('spinbutton',{name:'Sollbesetzung'}),{target:{value:'4'}});
-    fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
+    fireEvent.click(screen.getByRole('button',{name:'Änderungen speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0',expect.objectContaining({method:'PATCH',body:expect.stringContaining('"site_number":null')})));
     expect(JSON.parse(apiMock.mock.calls.find(([,options])=>options?.method==='PATCH')![1].body).address).toBeNull();
     expect(JSON.parse(apiMock.mock.calls.find(([,options])=>options?.method==='PATCH')![1].body).required_staff_count).toBe(4);
@@ -208,11 +208,11 @@ describe('Objektübersicht',()=>{
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Dienstanweisungen'}));
-    const status=await screen.findByRole('list',{name:'Kenntnisnahmestatus Evacuation v1'});
+    const status=await screen.findByRole('list',{name:'Bestätigungsstatus Evacuation, Fassung 1'});
     expect(within(status).getByText(/Mia Guard: Bestätigt am/)).toBeTruthy();
     expect(within(status).getByText('Leo Guard: Ausstehend')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Mitarbeiter für Kenntnisnahme'),{target:{value:'employee-2'}});
-    fireEvent.click(screen.getByRole('button',{name:'Kenntnisnahme erfassen'}));
+    fireEvent.change(screen.getByLabelText('Mitarbeiter für Bestätigung'),{target:{value:'employee-2'}});
+    fireEvent.click(screen.getByRole('button',{name:'Bestätigung erfassen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/instructions/instruction-1/acknowledgements',expect.objectContaining({method:'POST',body:'{"employee_id":"employee-2"}'})));
   });
 
@@ -293,7 +293,7 @@ describe('Objektübersicht',()=>{
     expect(await screen.findByText('Mia Guard')).toBeTruthy();
     fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
     expect(screen.getByText(/Novemberplan/)).toBeTruthy();
-    expect(screen.getByText(/night_guard/)).toBeTruthy();
+    expect(screen.getByText(/Nachtwache/)).toBeTruthy();
   });
 
   it('creates a site staffing assignment through the existing employee API with an audit reason',async()=>{
@@ -308,8 +308,8 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Mitarbeiter & Verantwortlichkeiten'}));
     fireEvent.change(screen.getByLabelText('Mitarbeiter'),{target:{value:'employee-1'}});
     fireEvent.change(screen.getByLabelText('Beginn'),{target:{value:'2026-11-25'}});
-    fireEvent.change(screen.getByLabelText('Rolle'),{target:{value:'Objektschutz'}});
-    fireEvent.change(screen.getByLabelText('Begründung für Audit'),{target:{value:'Coverage requirement'}});
+    fireEvent.change(screen.getByLabelText('Funktion'),{target:{value:'Objektschutz'}});
+    fireEvent.change(screen.getByLabelText('Begründung für die Protokollierung'),{target:{value:'Coverage requirement'}});
     fireEvent.click(screen.getByRole('button',{name:'Personalzuordnung anlegen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/employees/employee-1/object-assignments',expect.objectContaining({method:'POST'})));
     const create=apiMock.mock.calls.find(([path,options])=>path==='/employees/employee-1/object-assignments'&&options?.method==='POST')!;
@@ -341,7 +341,7 @@ describe('Objektübersicht',()=>{
       if(path==='/customers'||path==='/employees')return [];
       return {site:sites[0],customers:null,contracts:null,locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null};
     });
-    fireEvent.click(screen.getByRole('button',{name:'Zur Objektübersicht'}));
+    fireEvent.click(screen.getByRole('button',{name:'Zurück zur Übersicht'}));
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Kontrollgänge'}));
     expect(await screen.findAllByText('Keine Berechtigung für Kontrollgänge.')).toHaveLength(2);
@@ -370,7 +370,7 @@ describe('Objektübersicht',()=>{
     expect(screen.getByText(/Mia Guard/)).toBeTruthy();
     fireEvent.click(await screen.findByRole('button',{name:'Dokumente'}));
     expect(await screen.findByText('Site instructions')).toBeTruthy();
-    expect(screen.getByText(/Version 1 · available · 128 Bytes/)).toBeTruthy();
+    expect(screen.getByText(/Fassung 1 · Freigegeben · 128 Byte/)).toBeTruthy();
     expect(screen.getByRole('button',{name:'Dokument hochladen und prüfen'})).toBeTruthy();
   });
 
@@ -485,7 +485,7 @@ describe('Objektübersicht',()=>{
     expect(JSON.parse(maintenanceWrite[1].body).client_entry_id).toMatch(/^[0-9a-f-]{36}$/i);
     fireEvent.click(await screen.findByRole('button',{name:'Aufgaben & Maßnahmen'}));
     fireEvent.change(screen.getByLabelText('Kunde'),{target:{value:'customer-1'}});
-    fireEvent.change(screen.getByLabelText('Aufgabe / Wiedervorlage'),{target:{value:'Test emergency lights'}});
+    fireEvent.change(screen.getByLabelText('Aufgabe oder Wiedervorlage'),{target:{value:'Test emergency lights'}});
     fireEvent.click(screen.getByRole('button',{name:'Aufgabe anlegen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/customers/customer-1/tasks',expect.objectContaining({method:'POST'})));
     fireEvent.click(screen.getByRole('button',{name:'Als erledigt markieren'}));
@@ -509,7 +509,7 @@ describe('Objektübersicht',()=>{
     expect(screen.getByText(/Läuft bald ab/)).toBeTruthy();
     fireEvent.click(await screen.findByRole('button',{name:'Übersicht'}));
     expect(await screen.findByText(/Night shift transfer/)).toBeTruthy();
-    expect(screen.getByText(/1\/2 Bestätigungen/)).toBeTruthy();
+    expect(screen.getByText(/1 von 2 Bestätigungen/)).toBeTruthy();
   });
 
   it('assigns an object-assigned employee to an upcoming shift through scheduling',async()=>{
@@ -523,7 +523,7 @@ describe('Objektübersicht',()=>{
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
-    fireEvent.change(await screen.findByLabelText('Mitarbeiter für guard'),{target:{value:'employee-1'}});
+    fireEvent.change(await screen.findByLabelText('Mitarbeiter für Wachdienst'),{target:{value:'employee-1'}});
     fireEvent.click(screen.getByRole('button',{name:'Schicht besetzen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/scheduling/shifts/shift-1/assignments',expect.objectContaining({method:'POST'})));
     const assignment=apiMock.mock.calls.find(([path,options])=>path==='/scheduling/shifts/shift-1/assignments'&&options?.method==='POST')!;
@@ -598,7 +598,7 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Ausstattung & Technik'}));
     expect(await screen.findByText(/MAIN-2026-000001/)).toBeTruthy();
     expect(screen.getByText(/Überfällig/)).toBeTruthy();
-    expect(screen.getByText(/fällig am 1\.11\.2026/)).toBeTruthy();
+    expect(screen.getByText(/fällig am 01\.11\.2026/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button',{name:'Wartungsauftrag erfassen'}));
     fireEvent.change(screen.getByLabelText('Anlage'),{target:{value:'device-1'}});
     fireEvent.change(screen.getByLabelText('Beschreibung'),{target:{value:'Replace defective camera'}});
@@ -641,8 +641,8 @@ describe('Objektübersicht',()=>{
     fireEvent.click(await screen.findByRole('button',{name:'Dienstplanung'}));
     expect(await screen.findByText('Nicht einsatzfähig')).toBeTruthy();
     expect(screen.getByText(/Erforderliche Qualifikation fehlt/)).toBeTruthy();
-    expect(screen.getByRole('link',{name:/Nachweis night_guard/}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
-    expect(screen.getByText('missing_qualification')).toBeTruthy();
+    expect(screen.getByRole('link',{name:'Qualifikationsnachweis öffnen'}).getAttribute('href')).toBe('/employees/employee-1/qualifikationen');
+    expect(screen.getByText('Fehlt Qualifikation')).toBeTruthy();
     expect(screen.queryByText('Einsatzfähig')).toBeNull();
     expect(requestedPaths).toHaveBeenCalledWith('/sites/0/shifts/shift-1/eligibility');
   });
@@ -673,7 +673,8 @@ describe('Objektübersicht',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Chronik filtern'}));
     await waitFor(()=>expect(requestedPaths).toHaveBeenCalledWith('/sites/0/chronicle?type=maintenance_order.completed&from=2026-11-25&limit=100'));
     expect(await screen.findByText(/Wartung abgeschlossen/)).toBeTruthy();
-    expect(screen.queryByText(/Dokument hochgeladen/)).toBeNull();
+    const filteredList=screen.getByRole('heading',{name:'Serverchronik mit Filtern'}).parentElement!.querySelector('ol')!;
+    expect(within(filteredList as HTMLElement).queryByText(/Dokument hochgeladen/)).toBeNull();
     fireEvent.change(screen.getByLabelText('Chronik von'),{target:{value:'2030-01-01'}});
     fireEvent.click(screen.getByRole('button',{name:'Chronik filtern'}));
     await waitFor(()=>expect(requestedPaths).toHaveBeenCalledWith('/sites/0/chronicle?type=maintenance_order.completed&from=2030-01-01&limit=100'));
@@ -694,7 +695,7 @@ describe('Objektübersicht',()=>{
     const metric=(label:string)=>screen.getByText(label).previousElementSibling?.textContent;
     expect(metric('Gültige Dokumente')).toBe('7');
     expect(metric('Abgelaufene Dokumente')).toBe('2');
-    expect(metric('Dokumente ≤ 7 Tage')).toBe('3');
+    expect(metric('Dokumente bis 7 Tage vor Ablauf')).toBe('3');
     expect(metric('Fehlende Pflichtdokumente')).toBe('8');
     expect(metric('Offene Wartungsaufträge')).toBe('9');
     expect(metric('Überfällige Wartungsaufträge')).toBe('10');
@@ -772,12 +773,12 @@ describe('Objektübersicht',()=>{
     renderSites();
     fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
     expect(await screen.findByText(/Bald ablaufende Qualifikationen: 1/)).toBeTruthy();
-    expect(screen.getByText(/Ausstehende Dienstanweisungs-Kenntnisnahmen: 1/)).toBeTruthy();
+    expect(screen.getByText(/Ausstehende Bestätigungen zu Dienstanweisungen: 1/)).toBeTruthy();
     expect(screen.getByText(/Geplant 1 · offen 2 · in Bearbeitung 3/)).toBeTruthy();
     expect(await screen.findByRole('heading',{name:'Personalüberblick'})).toBeTruthy();
     expect(screen.getByText(/Erste Hilfe/)).toBeTruthy();
     expect(screen.getAllByText(/Leo Guard/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/employee.object_assignment.created/)).toBeTruthy();
+    expect(screen.getByText(/Objektzuordnung erstellt/)).toBeTruthy();
     expect(screen.getByRole('link',{name:'Wartungsauftrag öffnen'}).getAttribute('href')).toBe('/sites/0/technik');
     fireEvent.click(screen.getByRole('button',{name:'Journal'}));
     expect(await screen.findByRole('link',{name:'Wartungsauftrag öffnen'})).toBeTruthy();
@@ -785,7 +786,7 @@ describe('Objektübersicht',()=>{
 
   it('renders concrete dashboard priority actions and hides actions without permission',async()=>{
     const priorityActions=[
-      {id:'hazard-1',site_id:'0',site_name:'Objekt 01',entity_id:'hazard-1',employee_id:null,severity:'critical' as const,category:'Gefährdungen',title:'Kritische Gefährdung: Brand',detail:'Risikoscore 20',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:'/sites/0/gefaehrdungen?hazard=hazard-1'},
+      {id:'hazard-1',site_id:'0',site_name:'Objekt 01',entity_id:'hazard-1',employee_id:null,severity:'critical' as const,category:'Gefährdungen',title:'Kritische Gefährdung: Brand',detail:'Risikowert 20',due_on:'2026-11-24',tab:'gefaehrdungen',permission:'sites:read',target:'/sites/0/gefaehrdungen?hazard=hazard-1'},
       {id:'qualification-1',site_id:'0',site_name:'Objekt 01',entity_id:'qualification-1',employee_id:'employee-1',severity:'medium' as const,category:'Personal',title:'Qualifikation prüfen: Mia Guard',detail:'Nachweis fehlt',due_on:'2026-12-20',tab:'personal',permission:'qualifications:read',target:'/employees/employee-1/qualifikationen?qualification=qualification-1'},
     ];
     apiMock.mockImplementation(async(path:string)=>path==='/sites'?{sites:[],metrics:{total_sites:1,active_sites:1,preparation_sites:0,restricted_sites:0,critical_sites:1},priorityActions}:[]);
@@ -799,7 +800,7 @@ describe('Objektübersicht',()=>{
     expect(actions.textContent).toContain('Kritisch');
     expect(actions.textContent).toContain('Objekt 01');
     expect(actions.textContent).toContain('fällig 24.11.2026');
-    expect(actions.textContent).toContain('Risikoscore 20');
+    expect(actions.textContent).toContain('Risikowert 20');
 
     cleanup();
     permissionMock.mockImplementation(code=>code==='sites:read');

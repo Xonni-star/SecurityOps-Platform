@@ -106,9 +106,9 @@ describe('basic CRUD',()=>{
     apiMock.mockResolvedValueOnce([{id:'e-1',name:'Ava',email:'ava@example.com'}]).mockResolvedValueOnce({id:'e-2',name:'Ben'}).mockResolvedValueOnce([{id:'e-1',name:'Ava',email:'ava@example.com'},{id:'e-2',name:'Ben'}]);
     render(<MemoryRouter><Resource name="employees" fields={['name','email']}/></MemoryRouter>);
     expect(await screen.findByText('Ava — ava@example.com')).toBeTruthy();
-    fireEvent.change(screen.getByPlaceholderText('name'),{target:{value:'Ben'}});
-    fireEvent.change(screen.getByPlaceholderText('email'),{target:{value:'ben@example.com'}});
-    fireEvent.click(screen.getByRole('button',{name:'Add'}));
+    fireEvent.change(screen.getByPlaceholderText('Bezeichnung'),{target:{value:'Ben'}});
+    fireEvent.change(screen.getByPlaceholderText('E-Mail-Adresse'),{target:{value:'ben@example.com'}});
+    fireEvent.click(screen.getByRole('button',{name:'Eintrag anlegen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/employees',{method:'POST',body:JSON.stringify({name:'Ben',email:'ben@example.com'})}));
     expect(await screen.findByText('Ben')).toBeTruthy();
   });

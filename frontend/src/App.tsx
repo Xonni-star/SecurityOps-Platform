@@ -44,7 +44,7 @@ function ProtectedLayout(){
     if(!localStorage.getItem('securityops_authenticated')){setState('anonymous');return;}
     api<{user:ClientUser}>('/auth/me').then(result=>{
       if(!active)return;
-      if(!result?.user)throw new Error('Invalid session response');
+      if(!result?.user)throw new Error('Die Sitzung konnte nicht geprüft werden.');
       localStorage.setItem('securityops_user',JSON.stringify(result.user));
       setState('authenticated');
     }).catch(()=>{

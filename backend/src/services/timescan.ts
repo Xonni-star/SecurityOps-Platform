@@ -18,7 +18,7 @@ export function createTimeScanAdapter(baseUrl:string,accountRef:string,secret:st
       const url=new URL('/health',baseUrl);
       url.searchParams.set('account',accountRef);
       const response=await fetch(url,{method:'HEAD',headers:{accept:'application/json',authorization:`Bearer ${secret}`},signal:AbortSignal.timeout(5000)});
-      if(!response.ok)throw new Error(`TimeScan health check returned ${response.status}`);
+      if(!response.ok)throw new Error(`TimeScan-Statusprüfung antwortete mit Status ${response.status}`);
     },
     async listWorkTimes(from,to){
       const url=new URL('/work-times',baseUrl);
@@ -26,9 +26,9 @@ export function createTimeScanAdapter(baseUrl:string,accountRef:string,secret:st
       url.searchParams.set('from',from.toISOString());
       url.searchParams.set('to',to.toISOString());
       const response=await fetch(url,{headers:{accept:'application/json',authorization:`Bearer ${secret}`}});
-      if(!response.ok)throw new Error(`TimeScan returned ${response.status}`);
+      if(!response.ok)throw new Error(`TimeScan antwortete mit Status ${response.status}`);
       const payload=await response.json() as {entries?:TimeScanEntry[]};
-      if(!Array.isArray(payload.entries))throw new Error('TimeScan response has no entries');
+      if(!Array.isArray(payload.entries))throw new Error('TimeScan-Antwort enthält keine Einträge');
       return payload.entries;
     },
   };

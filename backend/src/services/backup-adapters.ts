@@ -12,9 +12,9 @@ export interface BackupTargetAdapter {upload(upload:BackupUpload):Promise<void>;
 export interface BackupTargetAdapter {delete(key:string):Promise<void>;}
 
 function safeKey(key:string){
-  if(!key||key.startsWith('/')||key.includes('\\')||key.split('/').some(part=>part===''||part==='.'||part==='..'))throw new Error('Unsafe backup artifact key');
+  if(!key||key.startsWith('/')||key.includes('\\')||key.split('/').some(part=>part===''||part==='.'||part==='..'))throw new Error('Unsicherer Backup-Artefaktschlüssel');
   const value=normalize(key);
-  if(value.startsWith('../')||value==='..'||value.startsWith('/'))throw new Error('Unsafe backup artifact key');
+  if(value.startsWith('../')||value==='..'||value.startsWith('/'))throw new Error('Unsicherer Backup-Artefaktschlüssel');
   return value;
 }
 
@@ -23,7 +23,7 @@ function remotePath(config:BackupTargetConfig,key:string){
   return [root,safeKey(key)].filter(Boolean).join('/');
 }
 function safeAdapterError(error:unknown,secret:Record<string,string>){
-  let message=error instanceof Error?error.message:'Backup target operation failed';
+  let message=error instanceof Error?error.message:'Backup-Zielvorgang fehlgeschlagen';
   for(const value of Object.values(secret).filter(Boolean))message=message.split(value).join('[redacted]');
   return new Error(message.slice(0,500));
 }
@@ -40,9 +40,9 @@ export class LocalBackupTargetAdapter implements BackupTargetAdapter {
 export class S3BackupTargetAdapter implements BackupTargetAdapter {
   private readonly client:S3Client;
   constructor(private readonly config:BackupTargetConfig,secret:Record<string,string>){
-    if(!config.bucket)throw new Error('S3 backup target requires a bucket');
+    if(!config.bucket)throw new Error('S3-Backup-Ziel erfordert einen Bucket');
     const endpoint=config.endpoint?.trim();
-    if(endpoint&&!/^https:\/\//i.test(endpoint))throw new Error('S3 endpoint must use HTTPS');
+    if(endpoint&&!/^https:\/\//i.test(endpoint))throw new Error('S3-Endpunkt muss HTTPS verwenden');
     this.client=new S3Client({...(endpoint?{endpoint}:{}),region:config.region??'us-east-1',forcePathStyle:config.forcePathStyle??Boolean(endpoint),credentials:secret.accessKey&&secret.secretKey?{accessKeyId:secret.accessKey,secretAccessKey:secret.secretKey}:undefined});
   }
   async upload(upload:BackupUpload){await this.client.send(new PutObjectCommand({Bucket:this.config.bucket!,Key:[this.config.prefix?.replace(/^\/+|\/+$/g,''),safeKey(upload.key)].filter(Boolean).join('/'),Body:upload.content,ContentType:upload.contentType??'application/octet-stream'}));}
@@ -54,7 +54,7 @@ const defaultRunner:CommandRunner=async(command,args,input,extraEnv)=>{
   await new Promise<void>((resolve,reject)=>{
     const child=spawnFile(command,args,{env:{...process.env,...extraEnv},stdio:['pipe','ignore','pipe']});
     let stderr='';child.stderr?.on('data',chunk=>{stderr+=String(chunk).slice(-2000);});
-    child.on('error',reject);child.on('close',code=>code===0?resolve():reject(new Error(`${command} failed with exit code ${code}: ${stderr}`)));child.stdin?.end(input);
+    child.on('error',reject);child.on('close',code=>code===0?resolve():reject(new Error(`${command} fehlgeschlagen mit Exit-Code ${code}: ${stderr}`)));child.stdin?.end(input);
   });
 };
 
@@ -63,30 +63,30 @@ export class CommandBackupTargetAdapter implements BackupTargetAdapter {
   async upload(upload:BackupUpload){
     const remote=remotePath(this.config,upload.key);
     if(this.kind==='smb'){
-      if(!this.config.host||!this.secret.username||!this.secret.password)throw new Error('SMB requires host, username and password');
+      if(!this.config.host||!this.secret.username||!this.secret.password)throw new Error('SMB erfordert Host, Benutzername und Passwort');
       await this.runner('smbclient',[this.config.host, '-p',String(this.config.port??445), '-U',this.secret.username, '-c',`put - ${remote}`],upload.content,{PASSWD:this.secret.password});
       return;
     }
-    throw new Error('SFTP adapter is not available through the command runner');
+    throw new Error('SFTP-Adapter ist über den Befehlsläufer nicht verfügbar');
   }
   async delete(key:string){
     const remote=remotePath(this.config,key);
     if(this.kind==='smb'){
-      if(!this.config.host||!this.secret.username||!this.secret.password)throw new Error('SMB requires host, username and password');
+      if(!this.config.host||!this.secret.username||!this.secret.password)throw new Error('SMB erfordert Host, Benutzername und Passwort');
       await this.runner('smbclient',[this.config.host,'-p',String(this.config.port??445),'-U',this.secret.username,'-c',`del ${remote}`],Buffer.alloc(0),{PASSWD:this.secret.password});
       return;
     }
-    throw new Error('SFTP adapter is not available through the command runner');
+    throw new Error('SFTP-Adapter ist über den Befehlsläufer nicht verfügbar');
   }
 }
 
 export class SftpBackupTargetAdapter implements BackupTargetAdapter {
   constructor(private readonly config:BackupTargetConfig,private readonly secret:Record<string,string>){}
   private async withClient<T>(work:(client:SftpClient)=>Promise<T>){
-    if(!this.config.host||!this.secret.username)throw new Error('SFTP requires host and username');
-    if(!this.secret.password&&!this.secret.privateKey)throw new Error('SFTP requires a password or private key');
-    if(this.config.hostKeyPolicy==='disabled'||!this.config.hostKeyFingerprint)throw new Error('SFTP host-key fingerprint is required');
-    if(!Number.isInteger(this.config.port??22)||Number(this.config.port??22)<1||Number(this.config.port??22)>65535)throw new Error('SFTP port must be between 1 and 65535');
+    if(!this.config.host||!this.secret.username)throw new Error('SFTP erfordert Host und Benutzername');
+    if(!this.secret.password&&!this.secret.privateKey)throw new Error('SFTP erfordert ein Passwort oder einen privaten Schlüssel');
+    if(this.config.hostKeyPolicy==='disabled'||!this.config.hostKeyFingerprint)throw new Error('SFTP-Host-Key-Fingerprint ist erforderlich');
+    if(!Number.isInteger(this.config.port??22)||Number(this.config.port??22)<1||Number(this.config.port??22)>65535)throw new Error('SFTP-Port muss zwischen 1 und 65535 liegen');
     const client=new SftpClient();
     try{
       await client.connect({
