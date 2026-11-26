@@ -33,6 +33,10 @@ const descriptions:Record<string,string>={
   '/qualifications':'Qualifikationen und Gültigkeiten von Mitarbeitern verwalten.',
 };
 
+const permissionAliases:Record<string,string[]>={
+  '/customer-reports':['customer_reports:export','customer_portal:read'],
+};
+
 const groups:{label:string;items:Item[]}[]=[
   {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
   {label:'Betrieb',items:[['/mobile','Wächter-App','alarms:write'],['/watchbook','Wachbuch','watchbook:read'],['/scheduling','Dienstplanung','scheduling:read'],['/handovers','Schichtübergaben','handover:read'],['/messages','Nachrichten','messages:read']]},
@@ -48,7 +52,7 @@ export function Layout(){
   const user=storedUser();
   const visible=groups.map(group=>({
     ...group,
-    items:group.items.filter(([, ,permission])=>hasPermission(permission)),
+    items:group.items.filter(([path, ,permission])=>(permissionAliases[path]??[permission]).some(hasPermission)),
   })).filter(group=>group.items.length);
   const employeeRoute=location.pathname==='/employees'||location.pathname.startsWith('/employees/');
   const customerRoute=location.pathname==='/customers'||location.pathname.startsWith('/customers/');
@@ -65,7 +69,7 @@ export function Layout(){
       <nav className="side-nav">
         {visible.map(group=><div className="nav-group" key={group.label}>
           <div className="nav-label">{group.label}</div>
-          {group.items.map(([path,label])=><Link className={location.pathname===path||(employeeRoute&&path==='/employees')||(customerRoute&&path==='/customers')||(siteRoute&&path==='/sites')?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
+          {group.items.map(([path,label])=><Link className={location.pathname===path||(employeeRoute&&path==='/employees')||(customerRoute&&path==='/customers')||(siteRoute&&path==='/sites')||(keyRoute&&path==='/keys')?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
             <span className="nav-icon">{label.charAt(0)}</span>{label}
           </Link>)}
         </div>)}

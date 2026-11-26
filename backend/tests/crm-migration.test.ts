@@ -55,7 +55,7 @@ test('customer management migration extends the CRM model with tenant-safe activ
 
 test('all repository migrations have a unique, gap-free version sequence',async()=>{
   const migrations=await loadMigrationFiles(join(process.cwd(),'migrations'));
-  expect(migrations[migrations.length-1]?.id).toBe('056_key_actions_pagination_indexes.sql');
+  expect(migrations[migrations.length-1]?.id).toBe('058_absence_status_double_booking.sql');
 });
 
 test('object staffing target migration adds a guarded site-level headcount',async()=>{

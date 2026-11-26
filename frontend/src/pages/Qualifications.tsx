@@ -1,5 +1,6 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {api} from '../lib/api';
+import {isUuid} from '../lib/validation';
 
 type Catalog={id:string;code:string;name:string;default_validity_days:number|null;active:boolean};
 type Qualification={id:string;code:string;name?:string;valid_from:string|null;valid_until:string|null;status:string};
@@ -12,10 +13,10 @@ export function Qualifications(){
   const [reminders,setReminders]=useState('90,60,30,7');
   const [form,setForm]=useState({code:'',valid_from:today(),valid_until:'',reason:''});
   const [error,setError]=useState('');
-  const loadCatalog=async()=>setCatalog((await api<Catalog[]>('/qualifications/catalog'))??[]);
-  const loadEmployee=async()=>{if(employeeId.trim())setItems((await api<Qualification[]>(`/employees/${employeeId.trim()}/qualifications`))??[]);};
+  const loadCatalog=async()=>{try{setCatalog((await api<Catalog[]>('/qualifications/catalog'))??[]);}catch(e){setError((e as Error).message);}};
+  const loadEmployee=async()=>{if(!isUuid(employeeId)){setItems([]);if(employeeId.trim())setError('Bitte eine gültige Mitarbeiter-UUID angeben.');return;}try{setItems((await api<Qualification[]>(`/employees/${employeeId.trim()}/qualifications`))??[]);}catch(e){setError((e as Error).message);}};
   useEffect(()=>{void loadCatalog();void api<{reminder_days:number[]}>('/qualifications/reminders').then(v=>{if(v)setReminders(v.reminder_days.join(','));}).catch(()=>undefined);},[]);
-  const save=async(e:FormEvent)=>{e.preventDefault();try{await api(`/employees/${employeeId}/qualifications`,{method:'POST',body:JSON.stringify({...form,valid_until:form.valid_until||null,reason:form.reason})});setForm(v=>({...v,reason:''}));await loadEmployee();}catch(e){setError((e as Error).message);}};
+  const save=async(e:FormEvent)=>{e.preventDefault();if(!isUuid(employeeId)){setError('Bitte eine gültige Mitarbeiter-UUID angeben.');return;}try{await api(`/employees/${employeeId}/qualifications`,{method:'POST',body:JSON.stringify({...form,valid_from:form.valid_from||null,valid_until:form.valid_until||null,reason:form.reason})});setError('');setForm(v=>({...v,reason:''}));await loadEmployee();}catch(e){setError((e as Error).message);}};
   const saveReminders=async()=>{try{await api('/qualifications/reminders',{method:'PUT',body:JSON.stringify({reminder_days:reminders.split(',').map(v=>Number(v.trim())).filter(Number.isFinite),reason:'Reminder-Konfiguration aktualisiert'})});}catch(e){setError((e as Error).message);}};
   return <section><h1>Qualifikationen</h1>{error&&<p role="alert">{error}</p>}
     <h2>Mitarbeiter-Qualifikationen</h2><label>Mitarbeiter-ID<input value={employeeId} onChange={e=>setEmployeeId(e.target.value)} onBlur={()=>void loadEmployee()}/></label>

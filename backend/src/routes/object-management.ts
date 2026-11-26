@@ -1514,7 +1514,7 @@ objectManagementRouter.post(
   requireAuth,
   requireCsrf,
   requirePermission('sites:write',{allowedScopes:['tenant','site','system']}),
-  requirePermission('customers:write'),
+  requirePermission('customers:write',{allowedScopes:['tenant','site','system']}),
   requireSiteScope('sites:write'),
   async(req,res,next)=>{
     try{

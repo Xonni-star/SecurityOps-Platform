@@ -7,6 +7,10 @@ import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} fr
 
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
+/** Field paths and messages only: never echo employee values back to the client or logs. */
+const validationFields=(error:z.ZodError)=>Object.fromEntries(error.issues.map(issue=>issue.code==='unrecognized_keys'
+  ?[issue.keys[0]??'_',`Feld ${issue.keys[0]} ist nicht erlaubt.`]
+  :[issue.path.join('.')||'_',issue.message]));
 
 const profileSchema=z.object({
   name:nonempty.max(240),
@@ -277,6 +281,8 @@ employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('em
   try{
     const id=uuid.parse(String(req.params.id));
     const body=profileSchema.parse(req.body);
+    if(body.hire_date&&body.termination_date&&body.termination_date<body.hire_date)
+      return res.status(400).json({error:'Invalid employee profile',fields:{termination_date:'Der Austritt darf nicht vor dem Eintritt liegen.'}});
     await withTransaction(async client=>{
       const current=(await client.query('SELECT id,name,email FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];
       if(!current)throw Object.assign(new Error('Employee not found'),{status:404});
@@ -300,12 +306,17 @@ employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('em
          VALUES($1,$2,'profile.updated',$3,$4)`,
         [req.user!.tenantId,id,req.user!.id,{reason:body.reason}],
       );
-      await recordAudit(req.user!.tenantId,req.user!.id,'employee.profile.updated','employee',id,{reason:body.reason});
+      await recordAudit(req.user!.tenantId,req.user!.id,'employee.profile.updated','employee',id,{reason:body.reason},client);
       return row;
     });
     const updated=(await query('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];
     res.json(updated);
-  }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid employee profile'});next(error);}
+  }catch(error){
+    if(error instanceof z.ZodError)return res.status(400).json({error:'Invalid employee profile',fields:validationFields(error)});
+    const status=(error as Error&{status?:number}).status;
+    if(status)return res.status(status).json({error:(error as Error).message});
+    next(error);
+  }
 });
 
 employeesRouter.post('/employees/:id/contracts',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{

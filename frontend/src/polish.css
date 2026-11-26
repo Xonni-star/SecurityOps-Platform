@@ -516,6 +516,10 @@
   color:#dbe7f7!important;
 }
 .employee-detail-form .span-2{grid-column:1/-1}
+.employee-detail-form .employee-edit-mode{color:#cfe6ff;font-size:11px;font-weight:700;margin:0 0 10px}
+.employee-detail-form .employee-save-success{color:#6fe4aa;font-size:11px;font-weight:700;margin:0 0 10px}
+.employee-detail-form .field-error{display:block;color:#ff9b9b;font-size:10px}
+.employee-detail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .employee-task-grid{
   display:grid;
   grid-template-columns:repeat(3,minmax(0,1fr));

@@ -1,6 +1,7 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {useNavigate,useParams,useSearchParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
+import type {ApiError} from '../lib/api';
 
 type Employee={
   id:string;
@@ -25,6 +26,15 @@ type Employee={
   user_id?:string|null;
   account_email?:string|null;
   account_role?:string|null;
+};
+
+/** Exactly the fields accepted by PATCH /employees/:id/profile. Never send the full profile row. */
+type ProfilePayload={
+  name:string;email:string;title:string|null;employee_number:string|null;first_name:string|null;
+  last_name:string|null;phone:string|null;mobile:string|null;address:string|null;
+  date_of_birth:string|null;hire_date:string|null;termination_date:string|null;
+  employment_status:string;employment_type:string;department:string|null;position:string|null;
+  work_location:string|null;weekly_hours:number|null;user_id:string|null;reason:string;
 };
 
 type Profile={
@@ -59,6 +69,10 @@ export function EmployeeDetail(){
   const [form,setForm]=useState<Employee|null>(null);
   const [reason,setReason]=useState('');
   const [error,setError]=useState('');
+  const [submitError,setSubmitError]=useState('');
+  const [fieldErrors,setFieldErrors]=useState<Record<string,string>>({});
+  const [saving,setSaving]=useState(false);
+  const [saved,setSaved]=useState(false);
   const active=tabs.some(([key])=>key===section)?section:'uebersicht';
 
   const load=async()=>{
@@ -73,14 +87,48 @@ export function EmployeeDetail(){
 
   useEffect(()=>{void load();},[employeeId]);
 
+  const updateField=(patch:Partial<Employee>)=>{
+    setForm(current=>current?{...current,...patch}:current);
+    setSaved(false);
+    setFieldErrors(current=>{
+      const next={...current};
+      for(const key of Object.keys(patch))delete next[key];
+      return next;
+    });
+  };
+
   const saveProfile=async(event:FormEvent)=>{
     event.preventDefault();
-    if(!employeeId||!form)return;
+    if(!employeeId||!form||saving)return;
+    const errors:Record<string,string>={};
+    if(!form.name.trim())errors.name='Bitte einen Namen angeben.';
+    if(!form.email.trim()||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))errors.email='Bitte eine gültige E-Mail-Adresse angeben.';
+    if(!reason.trim())errors.reason='Bitte einen Änderungsgrund angeben.';
+    if(form.hire_date&&form.termination_date&&form.termination_date<form.hire_date)errors.termination_date='Der Austritt darf nicht vor dem Eintritt liegen.';
+    if(form.weekly_hours!==null&&form.weekly_hours!==undefined&&(form.weekly_hours<0||form.weekly_hours>168))errors.weekly_hours='Bitte 0 bis 168 Stunden angeben.';
+    if(Object.keys(errors).length){
+      setFieldErrors(errors);setSubmitError('Bitte die markierten Felder prüfen.');setSaved(false);return;
+    }
+    const payload:ProfilePayload={
+      name:form.name.trim(),email:form.email.trim(),title:form.title??null,
+      employee_number:form.employee_number||null,first_name:form.first_name||null,last_name:form.last_name||null,
+      phone:form.phone||null,mobile:form.mobile||null,address:form.address||null,
+      date_of_birth:form.date_of_birth||null,hire_date:form.hire_date||null,termination_date:form.termination_date||null,
+      employment_status:form.employment_status,employment_type:form.employment_type,
+      department:form.department||null,position:form.position||null,work_location:form.work_location||null,
+      weekly_hours:form.weekly_hours??null,user_id:form.user_id||null,reason:reason.trim(),
+    };
+    setSaving(true);setSubmitError('');setFieldErrors({});setSaved(false);
     try{
-      await api(`/employees/${employeeId}/profile`,{method:'PATCH',body:JSON.stringify({...form,reason:reason||'Mitarbeiterdaten aktualisiert'})});
+      await api(`/employees/${employeeId}/profile`,{method:'PATCH',body:JSON.stringify(payload)});
       setReason('');
       await load();
-    }catch(e){setError((e as Error).message);}
+      setSaved(true);
+    }catch(e){
+      const failure=e as ApiError;
+      setSubmitError(failure instanceof Error&&failure.message?failure.message:'Stammdaten konnten nicht gespeichert werden.');
+      if(failure?.fields&&typeof failure.fields==='object')setFieldErrors(failure.fields);
+    }finally{setSaving(false);}
   };
 
   if(!profile){
@@ -130,30 +178,44 @@ export function EmployeeDetail(){
     </div>
   </>;
 
-  const renderStammdaten=()=>hasPermission('employees:write')&&form?<form className="employee-detail-form" onSubmit={saveProfile}>
-    <div className="form-grid">
-      <label>Name<input required value={form.name} onChange={event=>setForm({...form,name:event.target.value})}/></label>
-      <label>E-Mail<input required type="email" value={form.email} onChange={event=>setForm({...form,email:event.target.value})}/></label>
-      <label>Personalnummer<input value={form.employee_number||''} onChange={event=>setForm({...form,employee_number:event.target.value||null})}/></label>
-      <label>Vorname<input value={form.first_name||''} onChange={event=>setForm({...form,first_name:event.target.value||null})}/></label>
-      <label>Nachname<input value={form.last_name||''} onChange={event=>setForm({...form,last_name:event.target.value||null})}/></label>
-      <label>Telefon<input value={form.phone||''} onChange={event=>setForm({...form,phone:event.target.value||null})}/></label>
-      <label>Mobil<input value={form.mobile||''} onChange={event=>setForm({...form,mobile:event.target.value||null})}/></label>
-      <label>Geburtsdatum<input type="date" value={form.date_of_birth?.slice(0,10)||''} onChange={event=>setForm({...form,date_of_birth:event.target.value||null})}/></label>
-      <label>Abteilung<input value={form.department||''} onChange={event=>setForm({...form,department:event.target.value||null})}/></label>
-      <label>Position<input value={form.position||''} onChange={event=>setForm({...form,position:event.target.value||null})}/></label>
-      <label>Standort<input value={form.work_location||''} onChange={event=>setForm({...form,work_location:event.target.value||null})}/></label>
-      <label>Beschäftigungsstatus<select value={form.employment_status} onChange={event=>setForm({...form,employment_status:event.target.value})}><option value="active">Aktiv</option><option value="probation">Probezeit</option><option value="leave">Abwesenheit</option><option value="terminated">Ausgeschieden</option><option value="archived">Archiviert</option></select></label>
-      <label>Beschäftigungsart<select value={form.employment_type} onChange={event=>setForm({...form,employment_type:event.target.value})}><option value="employee">Angestellt</option><option value="temporary">Zeitarbeit</option><option value="contractor">Werkvertrag</option><option value="intern">Praktikum</option><option value="apprentice">Ausbildung</option><option value="freelancer">Freiberuflich</option></select></label>
-      <label>Eintritt<input type="date" value={form.hire_date?.slice(0,10)||''} onChange={event=>setForm({...form,hire_date:event.target.value||null})}/></label>
-      <label>Austritt<input type="date" value={form.termination_date?.slice(0,10)||''} onChange={event=>setForm({...form,termination_date:event.target.value||null})}/></label>
-      <label>Wöchentliche Stunden<input type="number" min="0" max="168" step="0.25" value={form.weekly_hours??''} onChange={event=>setForm({...form,weekly_hours:event.target.value===''?null:Number(event.target.value)})}/></label>
-      <label>Benutzerkonto-ID<input value={form.user_id||''} onChange={event=>setForm({...form,user_id:event.target.value||null})}/></label>
-      <label className="span-2">Adresse<textarea value={form.address||''} onChange={event=>setForm({...form,address:event.target.value||null})}/></label>
-      <label className="span-2">Änderungsgrund<input required value={reason} onChange={event=>setReason(event.target.value)} /></label>
-    </div>
-    <button type="submit">Stammdaten speichern</button>
-  </form>:<p>Keine Schreibberechtigung für Stammdaten.</p>;
+  const fieldProps=(key:string)=>({'aria-invalid':Boolean(fieldErrors[key])});
+  const errorFor=(key:string)=>fieldErrors[key]?<small className="field-error" role="alert">{fieldErrors[key]}</small>:null;
+
+  const renderStammdaten=()=>{
+    if(!hasPermission('employees:write'))return <p>Keine Schreibberechtigung für Stammdaten.</p>;
+    if(!form)return <p>Stammdaten werden geladen …</p>;
+    return <form className="employee-detail-form" onSubmit={saveProfile} noValidate>
+      <p className="employee-edit-mode" role="status">Bearbeitungsmodus – Änderungen werden erst nach dem Speichern übernommen.</p>
+      {submitError&&<p role="alert" className="error">{submitError}</p>}
+      {saved&&<p role="status" className="employee-save-success">Stammdaten wurden gespeichert.</p>}
+      <div className="form-grid">
+        <label>Name<input required {...fieldProps('name')} value={form.name} onChange={event=>updateField({name:event.target.value})}/>{errorFor('name')}</label>
+        <label>E-Mail<input required type="email" {...fieldProps('email')} value={form.email} onChange={event=>updateField({email:event.target.value})}/>{errorFor('email')}</label>
+        <label>Titel<input {...fieldProps('title')} value={form.title||''} onChange={event=>updateField({title:event.target.value||null})}/>{errorFor('title')}</label>
+        <label>Personalnummer<input {...fieldProps('employee_number')} value={form.employee_number||''} onChange={event=>updateField({employee_number:event.target.value||null})}/>{errorFor('employee_number')}</label>
+        <label>Vorname<input {...fieldProps('first_name')} value={form.first_name||''} onChange={event=>updateField({first_name:event.target.value||null})}/>{errorFor('first_name')}</label>
+        <label>Nachname<input {...fieldProps('last_name')} value={form.last_name||''} onChange={event=>updateField({last_name:event.target.value||null})}/>{errorFor('last_name')}</label>
+        <label>Telefon<input {...fieldProps('phone')} value={form.phone||''} onChange={event=>updateField({phone:event.target.value||null})}/>{errorFor('phone')}</label>
+        <label>Mobil<input {...fieldProps('mobile')} value={form.mobile||''} onChange={event=>updateField({mobile:event.target.value||null})}/>{errorFor('mobile')}</label>
+        <label>Geburtsdatum<input type="date" {...fieldProps('date_of_birth')} value={form.date_of_birth?.slice(0,10)||''} onChange={event=>updateField({date_of_birth:event.target.value||null})}/>{errorFor('date_of_birth')}</label>
+        <label>Standort<input {...fieldProps('work_location')} value={form.work_location||''} onChange={event=>updateField({work_location:event.target.value||null})}/>{errorFor('work_location')}</label>
+        <label>Abteilung<input {...fieldProps('department')} value={form.department||''} onChange={event=>updateField({department:event.target.value||null})}/>{errorFor('department')}</label>
+        <label>Position<input {...fieldProps('position')} value={form.position||''} onChange={event=>updateField({position:event.target.value||null})}/>{errorFor('position')}</label>
+        <label>Beschäftigungsstatus<select {...fieldProps('employment_status')} value={form.employment_status} onChange={event=>updateField({employment_status:event.target.value})}><option value="active">Aktiv</option><option value="probation">Probezeit</option><option value="leave">Abwesenheit</option><option value="terminated">Ausgeschieden</option><option value="archived">Archiviert</option></select>{errorFor('employment_status')}</label>
+        <label>Beschäftigungsart<select {...fieldProps('employment_type')} value={form.employment_type} onChange={event=>updateField({employment_type:event.target.value})}><option value="employee">Angestellt</option><option value="temporary">Zeitarbeit</option><option value="contractor">Werkvertrag</option><option value="intern">Praktikum</option><option value="apprentice">Ausbildung</option><option value="freelancer">Freiberuflich</option></select>{errorFor('employment_type')}</label>
+        <label>Eintritt<input type="date" {...fieldProps('hire_date')} value={form.hire_date?.slice(0,10)||''} onChange={event=>updateField({hire_date:event.target.value||null})}/>{errorFor('hire_date')}</label>
+        <label>Austritt<input type="date" {...fieldProps('termination_date')} value={form.termination_date?.slice(0,10)||''} onChange={event=>updateField({termination_date:event.target.value||null})}/>{errorFor('termination_date')}</label>
+        <label>Wöchentliche Stunden<input type="number" min="0" max="168" step="0.25" {...fieldProps('weekly_hours')} value={form.weekly_hours??''} onChange={event=>updateField({weekly_hours:event.target.value===''?null:Number(event.target.value)})}/>{errorFor('weekly_hours')}</label>
+        <label>Benutzerkonto-ID<input {...fieldProps('user_id')} value={form.user_id||''} onChange={event=>updateField({user_id:event.target.value||null})}/>{errorFor('user_id')}</label>
+        <label className="span-2">Adresse<textarea {...fieldProps('address')} value={form.address||''} onChange={event=>updateField({address:event.target.value||null})}/>{errorFor('address')}</label>
+        <label className="span-2">Änderungsgrund<input required {...fieldProps('reason')} value={reason} onChange={event=>{setReason(event.target.value);setFieldErrors(current=>{const next={...current};delete next.reason;return next;});}}/>{errorFor('reason')}</label>
+      </div>
+      <div className="employee-detail-actions">
+        <button type="submit" disabled={saving}>{saving?'Speichern …':'Stammdaten speichern'}</button>
+        <button type="button" disabled={saving} onClick={()=>{setForm({...employee});setReason('');setFieldErrors({});setSubmitError('');setSaved(false);}}>Abbrechen</button>
+      </div>
+    </form>;
+  };
 
   const simpleTable=(title:string,headers:string[],rows:(string|null|undefined)[][],rowClass?:(row:(string|null|undefined)[],index:number)=>string)=>{
     return <article className="employee-detail-table"><h3>{title}</h3><table><thead><tr>{headers.map(header=><th key={header}>{header}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index} className={rowClass?.(row,index)}>{row.map((value,column)=><td key={column}>{value||'–'}</td>)}</tr>)}</tbody></table>{rows.length===0&&<p className="employee-empty">Keine Daten erfasst.</p>}</article>;

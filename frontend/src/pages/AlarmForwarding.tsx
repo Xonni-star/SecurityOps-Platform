@@ -1,13 +1,31 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {api,hasPermission} from '../lib/api';
+import {isUuid} from '../lib/validation';
 type Destination={id:string;name:string;channel:string;endpoint:string|null;recipient:string|null;secret_ref:string|null;enabled:boolean};
 type Rule={id:string;name:string;alarm_type:string|null;priority_code:string|null;destination_id:string;destination_name:string;channel:string;enabled:boolean;max_attempts:number};
 type Delivery={id:string;alarm_id:string;destination_name:string;status:string;attempts:number;last_error:string|null;forwarded_at:string|null;acknowledged_at:string|null};
 export function AlarmForwarding(){
   const [destinations,setDestinations]=useState<Destination[]>([]);const [rules,setRules]=useState<Rule[]>([]);const [deliveries,setDeliveries]=useState<Delivery[]>([]);const [error,setError]=useState('');
   const load=async()=>{try{const [d,r,v]=await Promise.all([api<Destination[]>('/alarm-forwarding/destinations'),api<Rule[]>('/alarm-forwarding/rules'),api<Delivery[]>('/alarm-forwarding/deliveries')]);setDestinations(d||[]);setRules(r||[]);setDeliveries(v||[]);}catch(e){setError((e as Error).message);}};useEffect(()=>{void load();},[]);
-  async function addDestination(event:FormEvent<HTMLFormElement>){event.preventDefault();const f=new FormData(event.currentTarget);try{await api('/alarm-forwarding/destinations',{method:'POST',body:JSON.stringify({name:f.get('name'),channel:f.get('channel'),endpoint:f.get('endpoint')||undefined,recipient:f.get('recipient')||undefined,secret_ref:f.get('secret_ref')||undefined,reason:f.get('reason')})});event.currentTarget.reset();await load();}catch(e){setError((e as Error).message);}}
-  async function addRule(event:FormEvent<HTMLFormElement>){event.preventDefault();const f=new FormData(event.currentTarget);try{await api('/alarm-forwarding/rules',{method:'POST',body:JSON.stringify({name:f.get('name'),alarm_type:f.get('alarm_type')||undefined,priority_code:f.get('priority_code')||undefined,destination_id:f.get('destination_id'),max_attempts:Number(f.get('max_attempts')),reason:f.get('reason')})});event.currentTarget.reset();await load();}catch(e){setError((e as Error).message);}}
+  async function addDestination(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setError('');const f=new FormData(event.currentTarget);
+    const channel=String(f.get('channel'));const endpoint=String(f.get('endpoint')||'').trim();
+    const recipient=String(f.get('recipient')||'').trim();const secretRef=String(f.get('secret_ref')||'').trim();
+    if(channel==='webhook'&&!endpoint){setError('Für einen Webhook ist ein Endpoint erforderlich.');return;}
+    if(channel!=='webhook'&&!recipient){setError('Für E-Mail/SMS ist ein Empfänger erforderlich.');return;}
+    if(channel==='webhook'&&!secretRef){setError('Für einen Webhook ist eine Secret-Referenz erforderlich.');return;}
+    try{await api('/alarm-forwarding/destinations',{method:'POST',body:JSON.stringify({name:f.get('name'),channel,...(endpoint?{endpoint}:{}),...(recipient?{recipient}:{}),...(secretRef?{secret_ref:secretRef}:{}),reason:f.get('reason')})});event.currentTarget.reset();await load();}
+    catch(e){setError((e as Error).message);}
+  }
+  async function addRule(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setError('');const f=new FormData(event.currentTarget);
+    const alarmType=String(f.get('alarm_type')||'').trim();const priorityCode=String(f.get('priority_code')||'').trim();
+    const destinationId=String(f.get('destination_id')||'');
+    if(!alarmType&&!priorityCode){setError('Bitte einen Alarmtyp oder eine Priorität angeben.');return;}
+    if(!isUuid(destinationId)){setError('Bitte ein gültiges Ziel auswählen.');return;}
+    try{await api('/alarm-forwarding/rules',{method:'POST',body:JSON.stringify({name:f.get('name'),...(alarmType?{alarm_type:alarmType}:{}),...(priorityCode?{priority_code:priorityCode}:{}),destination_id:destinationId,max_attempts:Number(f.get('max_attempts')),reason:f.get('reason')})});event.currentTarget.reset();await load();}
+    catch(e){setError((e as Error).message);}
+  }
   async function acknowledge(id:string){try{await api(`/alarm-forwarding/deliveries/${id}/acknowledge`,{method:'POST'});await load();}catch(e){setError((e as Error).message);}}
   async function toggleDestination(item:Destination){const reason=window.prompt('Änderungsgrund');if(!reason||reason.trim().length<3)return;try{await api(`/alarm-forwarding/destinations/${item.id}`,{method:'PATCH',body:JSON.stringify({enabled:!item.enabled,reason})});await load();}catch(e){setError((e as Error).message);}}
   async function deleteDestination(id:string){const reason=window.prompt('Löschgrund');if(!reason||reason.trim().length<3)return;try{await api(`/alarm-forwarding/destinations/${id}`,{method:'DELETE',body:JSON.stringify({reason})});await load();}catch(e){setError((e as Error).message);}}

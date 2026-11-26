@@ -7,6 +7,7 @@ import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
 import {checkSmsStatus,checkSmtpStatus,checkTimeScanStatus} from '../services/provider-status.js';
 import {resolveSecret} from '../services/secrets.js';
+import {pdfReport} from '../services/pdf.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -32,19 +33,28 @@ async function reportRows(kind:string,tenantId:string,from:Date,to:Date,siteId?:
     case 'employees':return (await query(`SELECT id,employee_number,name,email,title,department,position,employment_status,employment_type,hire_date,termination_date,weekly_hours,created_at FROM employees WHERE tenant_id=$1 AND created_at BETWEEN $2 AND $3 ORDER BY name`,[tenantId,from,to])).rows;
     case 'sites':return (await query(`SELECT id,name,address,created_at FROM sites WHERE ${scope} ORDER BY name`,[tenantId,from,to])).rows;
     case 'patrols':return (await query(`SELECT ps.id,ps.route_id,r.name route_name,ps.control_point_id,cp.name control_point_name,ps.employee_id,e.name employee_name,ps.scanned_at,ps.deviation
-      FROM patrol_scans ps JOIN patrol_routes r ON r.id=ps.route_id JOIN control_points cp ON cp.id=ps.control_point_id
-      JOIN employees e ON e.id=ps.employee_id WHERE ps.tenant_id=$1 AND ps.scanned_at BETWEEN $2 AND $3
+      FROM patrol_scans ps
+      JOIN patrol_routes r ON r.tenant_id=ps.tenant_id AND r.id=ps.route_id
+      JOIN control_points cp ON cp.tenant_id=ps.tenant_id AND cp.id=ps.control_point_id
+      JOIN employees e ON e.tenant_id=ps.tenant_id AND e.id=ps.employee_id
+      WHERE ps.tenant_id=$1 AND ps.scanned_at BETWEEN $2 AND $3
       AND ($4::uuid IS NULL OR r.site_id=$4) AND ($5::uuid IS NULL OR ps.employee_id=$5) ORDER BY ps.scanned_at DESC`,[tenantId,from,to,siteId??null,employeeId??null])).rows;
     case 'alarms':return (await query(`SELECT a.id,a.type,a.status,a.source,a.description,a.triggered_at,a.acknowledged_at,a.resolved_at,p.code priority,s.name site_name,e.name employee_name
-      FROM alarms a LEFT JOIN alarm_priorities p ON p.id=a.priority_id LEFT JOIN sites s ON s.id=a.site_id LEFT JOIN employees e ON e.id=a.employee_id
+      FROM alarms a
+      LEFT JOIN alarm_priorities p ON p.tenant_id=a.tenant_id AND p.id=a.priority_id
+      LEFT JOIN sites s ON s.tenant_id=a.tenant_id AND s.id=a.site_id
+      LEFT JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=a.employee_id
       WHERE a.tenant_id=$1 AND a.triggered_at BETWEEN $2 AND $3 AND ($4::uuid IS NULL OR a.site_id=$4) AND ($5::uuid IS NULL OR a.employee_id=$5)
       ORDER BY a.triggered_at DESC`,[tenantId,from,to,siteId??null,employeeId??null])).rows;
     case 'incidents':return (await query(`SELECT i.id,i.description,i.status,i.created_at,i.updated_at,p.code priority,s.name site_name,e.name employee_name
-      FROM incidents i LEFT JOIN alarm_priorities p ON p.id=i.priority_id LEFT JOIN sites s ON s.id=i.site_id LEFT JOIN employees e ON e.id=i.employee_id
+      FROM incidents i
+      LEFT JOIN alarm_priorities p ON p.tenant_id=i.tenant_id AND p.id=i.priority_id
+      LEFT JOIN sites s ON s.tenant_id=i.tenant_id AND s.id=i.site_id
+      LEFT JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
       WHERE i.tenant_id=$1 AND i.created_at BETWEEN $2 AND $3 AND ($4::uuid IS NULL OR i.site_id=$4) AND ($5::uuid IS NULL OR i.employee_id=$5)
       ORDER BY i.created_at DESC`,[tenantId,from,to,siteId??null,employeeId??null])).rows;
     case 'work-time':return (await query(`SELECT w.id,w.external_id,w.started_at,w.ended_at,w.minutes,w.status,e.name employee_name
-      FROM work_time_entries w LEFT JOIN employees e ON e.id=w.employee_id WHERE w.tenant_id=$1 AND w.started_at BETWEEN $2 AND $3
+      FROM work_time_entries w LEFT JOIN employees e ON e.tenant_id=w.tenant_id AND e.id=w.employee_id WHERE w.tenant_id=$1 AND w.started_at BETWEEN $2 AND $3
       AND ($4::uuid IS NULL OR w.employee_id=$4) ORDER BY w.started_at DESC`,[tenantId,from,to,employeeId??null])).rows;
     default:throw Object.assign(new Error('Unknown report'),{status:400});
   }
@@ -83,28 +93,16 @@ phase5Router.get('/admin/provider-status',requirePermission('providers:read'),as
 
 phase5Router.get('/reports/:kind',requirePermission('reports:read'),async(req,res,next)=>{
   try{
-    const kind=String(req.params.kind);const {from,to}=range(req);const rows=await reportRows(kind,req.user!.tenantId,from,to,typeof req.query.site_id==='string'?req.query.site_id:undefined,typeof req.query.employee_id==='string'?req.query.employee_id:undefined) as Record<string,unknown>[];
+    const kind=String(req.params.kind);const {from,to}=range(req);
+    const filters=z.object({site_id:uuid.optional(),employee_id:uuid.optional()}).safeParse(req.query);
+    if(!filters.success)return res.status(400).json({error:'Invalid report filter'});
+    const rows=await reportRows(kind,req.user!.tenantId,from,to,filters.data.site_id,filters.data.employee_id) as Record<string,unknown>[];
     const format=req.query.format==='pdf'?'pdf':req.query.format==='json'?'json':'csv';await audit(req,'report.exported',kind,undefined,{format,count:rows.length});
     if(format==='json')return res.json(rows);
     const output=csv(rows);
     if(format==='csv')return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-report.csv"`).send(output);
     const text=(`${kind} report\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`).replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
-    const pdf=`%PDF-1.4
-1 0 obj<< /Type /Catalog /Pages 2 0 R>>endobj
-2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1>>endobj
-3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R>>>>>>endobj
-4 0 obj<< /Length ${text.length+35}>>stream
-BT /F1 9 Tf 36 756 Td (${text}) Tj ET
-endstream endobj
-5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica>>endobj
-xref
-0 6
-0000000000 65535 f 
-trailer<< /Size 6 /Root 1 0 R>>
-startxref
-0
-%%EOF`;
-    return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-report.pdf"`).send(Buffer.from(pdf));
+    return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-report.pdf"`).send(pdfReport(text));
   }catch(error){next(error);}
 });
 

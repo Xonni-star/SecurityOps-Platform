@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import {uuid} from "../lib/uuid";
 import {api} from '../lib/api';
+import {isUuid} from '../lib/validation';
 import {enqueue,listOutbox,syncOutbox,watchConnection,type MobileOutboxItem} from '../lib/offline';
 
 export function MobileGuard(){
@@ -16,6 +17,7 @@ export function MobileGuard(){
   async function sync(){const result=await syncOutbox();setMessage(`${result.synced} synchronisiert, ${result.conflicts} Konflikt(e), ${result.remaining} ausstehend`);return result;}
   async function scan(){
     if(!routeId||!employeeId||!nfcUid){setMessage('Route, Mitarbeiter und NFC-Kennung sind erforderlich.');return;}
+    if(!isUuid(routeId)||!isUuid(employeeId)){setMessage('Route und Mitarbeiter müssen gültige UUIDs sein.');return;}
     const body={nfc_uid:nfcUid,employee_id:employeeId,scanned_at:new Date().toISOString(),client_event_id:uuid()};
     if(!navigator.onLine){await enqueue({kind:'patrol_scan',path:`/api/v1/patrol-routes/${routeId}/scans`,body});setMessage('Offline gespeichert; wird nach Verbindung synchronisiert.');await refresh();return;}
     try{await api(`/patrol-routes/${routeId}/scans`,{method:'POST',body:JSON.stringify(body)});setMessage('Scan serverseitig bestätigt.');}
@@ -28,14 +30,18 @@ export function MobileGuard(){
     catch(error){await enqueue({kind:'panic',path:'/api/v1/alarms/panic',body});setMessage(`${error instanceof Error?error.message:'Netzwerkfehler'} Offline-Outbox verwendet.`);await refresh();}
   }
   async function enablePush(){
-    const registration=await navigator.serviceWorker?.ready;
-    const key=(window as Window & {__SECURITYOPS_VAPID_PUBLIC_KEY?:string}).__SECURITYOPS_VAPID_PUBLIC_KEY;
-    if(!registration||!key){setMessage('Push ist für diese Umgebung nicht konfiguriert.');return;}
-    const permission=await Notification.requestPermission();
-    if(permission!=='granted'){setMessage('Push-Berechtigung wurde nicht erteilt.');return;}
-    const subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
-    await api('/push-subscriptions',{method:'POST',body:JSON.stringify(subscription.toJSON())});
-    setMessage('Push-Benachrichtigungen aktiviert.');
+    try{
+      const registration=await navigator.serviceWorker?.ready;
+      const key=(window as Window & {__SECURITYOPS_VAPID_PUBLIC_KEY?:string}).__SECURITYOPS_VAPID_PUBLIC_KEY;
+      if(!registration||!key){setMessage('Push ist für diese Umgebung nicht konfiguriert.');return;}
+      const permission=await Notification.requestPermission();
+      if(permission!=='granted'){setMessage('Push-Berechtigung wurde nicht erteilt.');return;}
+      const subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+      const json=subscription.toJSON();
+      if(!json.endpoint||!json.keys?.p256dh||!json.keys?.auth){setMessage('Die Push-Subscription ist unvollständig.');return;}
+      await api('/push-subscriptions',{method:'POST',body:JSON.stringify({endpoint:json.endpoint,keys:{p256dh:json.keys.p256dh,auth:json.keys.auth}})});
+      setMessage('Push-Benachrichtigungen aktiviert.');
+    }catch(error){setMessage(error instanceof Error?error.message:'Push-Aktivierung fehlgeschlagen.');}
   }
   return <section className="mobile-guard">
     <h1>Wächter-App</h1><p className={online?'online':'offline'}>{online?'Online':'Offline'} · {message}</p>

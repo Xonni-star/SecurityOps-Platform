@@ -40,9 +40,10 @@ schedulingRouter.get('/scheduling/rule-profiles',requirePermission('scheduling:r
 });
 schedulingRouter.post('/scheduling/rule-profiles',requirePermission('scheduling:rules:write'),async(req,res,next)=>{
   try{
-    const body=z.object({name:z.string().trim().min(1).max(120),version:z.number().int().positive(),parameters}).strict().parse(req.body);
+    const body=z.object({name:z.string().trim().min(1).max(120),version:z.number().int().positive(),parameters,client_mutation_id:mutation.optional()}).strict().parse(req.body);
     const sessionId=ensureSession(req);
-    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:mutation.parse(req.get('Idempotency-Key')??req.body.client_mutation_id),action:'scheduling.rule_profile',payload:req.body},async tx=>{
+    const mutationId=mutation.parse(req.get('Idempotency-Key')??body.client_mutation_id);
+    const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId,action:'scheduling.rule_profile',payload:{...body,client_mutation_id:mutationId}},async tx=>{
       const row=(await tx.query(`INSERT INTO schedule_rule_profiles(tenant_id,name,version,parameters,created_by,created_session_id)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,version,parameters,created_at`,[req.user!.tenantId,body.name,body.version,body.parameters,req.user!.id,sessionId])).rows[0];
       await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',[req.user!.tenantId,req.user!.id,'scheduling.rule_profile.created','schedule_rule_profile',row.id,{version:body.version}]);

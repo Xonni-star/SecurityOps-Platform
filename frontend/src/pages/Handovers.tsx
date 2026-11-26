@@ -1,6 +1,7 @@
 import {FormEvent,useEffect,useState} from 'react';
 import {api} from '../lib/api';
 import {uuid} from "../lib/uuid";
+import {isUuid} from '../lib/validation';
 
 type Handover={id:string;site_id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type Participant={id:string;participant_role:string;user_id:string|null;employee_id:string|null;state:string};
@@ -20,6 +21,7 @@ export function Handovers(){
   useEffect(()=>{void load();},[]);
   const create=async(event:FormEvent)=>{
     event.preventDefault();
+    if(!isUuid(createForm.site_id)||(createForm.shift_id&&!isUuid(createForm.shift_id))){setError('Bitte gültige Objekt- und Schicht-IDs angeben.');return;}
     try{
       await api('/handover-protocols',{method:'POST',body:JSON.stringify({...createForm,shift_id:createForm.shift_id||null,client_mutation_id:uuid()})});
       setCreateForm({site_id:'',shift_id:'',title:''});await load();
@@ -32,9 +34,12 @@ export function Handovers(){
   const addParticipant=async(event:FormEvent)=>{
     event.preventDefault();
     if(!selected)return;
+    const userId=participantForm.user_id.trim();const employeeId=participantForm.employee_id.trim();
+    if(Boolean(userId)===Boolean(employeeId)){setError('Bitte genau eine Identität (Benutzer oder Mitarbeiter) angeben.');return;}
+    if((userId&&!isUuid(userId))||(employeeId&&!isUuid(employeeId))){setError('Die Identität muss eine gültige UUID sein.');return;}
     try{
       await api(`/handover-protocols/${selected.id}/participants`,{method:'POST',body:JSON.stringify({
-        participant_role:participantForm.participant_role,user_id:participantForm.user_id||null,employee_id:participantForm.employee_id||null,client_mutation_id:uuid(),
+        participant_role:participantForm.participant_role,user_id:userId||null,employee_id:employeeId||null,client_mutation_id:uuid(),
       })});
       setParticipantForm({participant_role:'outgoing',user_id:'',employee_id:''});await open(selected.id);await load();
     }catch(e){setError((e as Error).message);}

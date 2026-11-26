@@ -1,4 +1,6 @@
-import {BrowserRouter,Navigate,Route,Routes} from 'react-router-dom';
+import {useEffect,useState} from 'react';
+import {BrowserRouter,Link,Navigate,Route,Routes} from 'react-router-dom';
+import {api,type ClientUser} from './lib/api';
 import {Layout} from './components/Layout';
 import {Login} from './pages/Login';
 import {Resource} from './pages/Resource';
@@ -30,15 +32,45 @@ import {EmployeeDetail} from './pages/EmployeeDetail';
 import {Customers} from './pages/Customers';
 import {CustomerDetail} from './pages/CustomerDetail';
 
+function clearSession(){
+  localStorage.removeItem('securityops_authenticated');
+  localStorage.removeItem('securityops_user');
+}
+
 function ProtectedLayout(){
-  if(!localStorage.getItem('securityops_authenticated'))return <Navigate to="/login" replace />;
+  const [state,setState]=useState<'checking'|'authenticated'|'anonymous'>('checking');
+  useEffect(()=>{
+    let active=true;
+    if(!localStorage.getItem('securityops_authenticated')){setState('anonymous');return;}
+    api<{user:ClientUser}>('/auth/me').then(result=>{
+      if(!active)return;
+      if(!result?.user)throw new Error('Invalid session response');
+      localStorage.setItem('securityops_user',JSON.stringify(result.user));
+      setState('authenticated');
+    }).catch(()=>{
+      if(!active)return;
+      clearSession();
+      setState('anonymous');
+    });
+    return ()=>{active=false;};
+  },[]);
+  if(state==='checking')return <main className="auth-shell"><p role="status">Sitzung wird geprüft …</p></main>;
+  if(state==='anonymous')return <Navigate to="/login" replace />;
   return <Layout />;
+}
+
+function LoginRoute(){
+  return localStorage.getItem('securityops_authenticated')?<Navigate to="/" replace/>:<Login/>;
+}
+
+function NotFound(){
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand">SECURITY<span>OPS</span></div><h1>Seite nicht gefunden</h1><p className="muted">Der aufgerufene Bereich existiert nicht oder wurde verschoben.</p><Link className="primary full" to="/">Zur Übersicht</Link></section></main>;
 }
 
 export default function App(){
   return <BrowserRouter>
     <Routes>
-      <Route path="/login" element={<Login/>}/>
+      <Route path="/login" element={<LoginRoute/>}/>
       <Route element={<ProtectedLayout/>}>
         <Route path="/" element={<NslDashboard/>}/>
         <Route path="/mobile" element={<MobileGuard/>}/>
@@ -74,7 +106,7 @@ export default function App(){
         <Route path="/messages" element={<Messages/>}/>
         <Route path="/notifications" element={<Notifications/>}/>
       </Route>
-      <Route path="*" element={<Navigate to="/" replace/>}/>
+      <Route path="*" element={<NotFound/>}/>
     </Routes>
   </BrowserRouter>;
 }

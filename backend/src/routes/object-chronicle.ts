@@ -5,7 +5,7 @@ import {requireAuth,requirePermission} from '../middleware/auth.js';
 import {createSitePermissionReader} from '../services/site-permissions.js';
 
 const uuid=z.string().uuid();
-const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value=>!Number.isNaN(Date.parse(`${value}T00:00:00Z`)),'Invalid calendar date');
 
 export type ChronicleLink={
   target:string;label:string;permission:string;

@@ -4,6 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {publish} from '../services/realtime.js';
 import {queueNotificationEvent} from '../services/notifications.js';
+import {pdfReport} from '../services/pdf.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -104,22 +105,7 @@ phase4Router.get('/reports/alarms',requirePermission('reports:read'),async(req,r
     if(format==='csv'){res.type('text/csv').set('content-disposition','attachment; filename="alarm-report.csv"').send(csv);return;}
     const lines=['SecurityOps Alarm Report','',...rows.map(row=>headers.map(key=>`${key}: ${String(row[key]??'')}`).join(' | '))];
     const content=lines.join('\n').replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
-    const pdf=`%PDF-1.4
-1 0 obj<< /Type /Catalog /Pages 2 0 R>>endobj
-2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1>>endobj
-3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R>>>>>>endobj
-4 0 obj<< /Length ${content.length+35}>>stream
-BT /F1 9 Tf 36 756 Td (${content}) Tj ET
-endstream endobj
-5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica>>endobj
-xref
-0 6
-0000000000 65535 f 
-trailer<< /Size 6 /Root 1 0 R>>
-startxref
-0
-%%EOF`;
-    res.type('application/pdf').set('content-disposition','attachment; filename="alarm-report.pdf"').send(Buffer.from(pdf));
+    res.type('application/pdf').set('content-disposition','attachment; filename="alarm-report.pdf"').send(pdfReport(content));
   }catch(error){next(error);}
 });
 
@@ -181,7 +167,7 @@ phase4Router.post('/messages/:id/read',requirePermission('messages:write'),async
 phase4Router.get('/notifications',requirePermission('notifications:read'),async(req,res,next)=>{
   try{res.json((await query(`SELECT * FROM notifications WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 200`,[req.user!.tenantId,req.user!.id])).rows);}catch(error){next(error);}
 });
-phase4Router.post('/notifications/:id/read',requirePermission('notifications:read'),async(req,res,next)=>{
+phase4Router.post('/notifications/:id/read',requirePermission('notifications:write'),async(req,res,next)=>{
   try{const notification=(await query(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE tenant_id=$1 AND user_id=$2 AND id=$3 RETURNING *`,[req.user!.tenantId,req.user!.id,req.params.id])).rows[0];if(!notification)return res.status(404).json({error:'Notification not found'});res.json(notification);}catch(error){next(error);}
 });
 phase4Router.get('/notification-subscriptions',requirePermission('notifications:read'),async(req,res,next)=>{
