@@ -6,8 +6,9 @@ Datum: 2026-11-26 · Branch: `fix/employee-master-data-save` · Basis: `9e924a1`
 
 Der kritische Fehler beim dauerhaften Speichern von Mitarbeiter-Stammdaten wurde in der gesamten Kette Frontend → API → Datenbank analysiert, behoben und verifiziert. Zusätzlich wurden die im System auditierten Fehler derselben Klasse sowie ausgewählte Integritäts-, Autorisierungs- und Navigationsfehler korrigiert. Es wurden keine neuen Module, parallelen Datenstrukturen, zusätzlichen Sidebars oder Mock-Speicher eingeführt; bestehende RBAC-, RLS-, Audit- und API-Strukturen bleiben erhalten.
 
-- Haupt-Commit: `COMMIT_ID`
-- Pull Request: `PR_LINK`
+- Haupt-Commit: `e79b7b6b4fbb8dad2ce21c4db5f7d0398550f6f6` (`fix(employees): persist master data and harden related contracts`)
+- Ergänzender CI-Commit: `a069d18` (`ci: run employee profile and integrity integration suites`; über die GitHub-Weboberfläche erstellt, da das lokale OAuth-Token keinen `workflow`-Scope besitzt)
+- Pull Request: https://github.com/Xonni-star/SecurityOps-Platform/pull/57
 - Zielbranch: `master`
 
 ## 2. Fehlerzahlen
