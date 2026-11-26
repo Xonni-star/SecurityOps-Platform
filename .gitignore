@@ -5,6 +5,9 @@ dist
 !.env.example
 coverage
 loadtest-results
+test-results
+e2e-results
+playwright-report
 *.log
 .DS_Store
 

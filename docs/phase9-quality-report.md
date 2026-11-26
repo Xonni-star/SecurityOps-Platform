@@ -22,22 +22,38 @@ zeigt bei gelöschten oder nicht sichtbaren Zielen einen sicheren Fallback an.
 Es gibt keine zweite Detailroute, keinen parallelen Datenspeicher und keine
 zusätzliche Navigation.
 
+Die Kundenverwaltung nutzt dieselbe bestehende Route `/customers` und die
+vorhandenen Datenmodelle. Die Liste wird vollständig serverseitig durchsucht,
+gefiltert, sortiert und paginiert (`pageSize` 1–100, `X-Total-Count`,
+`X-Page-Count`); kombinierbare Filter, CSV-Export und atomare Sammelaktionen
+sind berechtigungsgeprüft und auditiert. Die A/B/C-Handlungsübersicht und die
+KPIs stammen aus echten Risiko-, Fristen-, Aufgaben-, Incident- und
+Stammdatenattributen; es gibt keine dekorativen Zahlen oder Browser-Filter
+über die Gesamtmenge. Die digitale Kundenakte besteht aus den bestehenden
+Bereichen und gibt nur die durch `visible_sections` erlaubten Abschnitte frei:
+`customers:read` öffnet die Akte auch dann, wenn Kontakte, Verträge, DMS,
+Aufgaben oder Historie separat gesperrt sind. Fristen und Erinnerungen werden
+aus den Vertragsbedingungen abgeleitet und über `contractId:code` dedupliziert.
+Aufgaben nutzen die eigenen Rechte `customer_tasks:read`/`customer_tasks:write`;
+Migration 053 ergänzt Indizes, Priorität und Rollen-Grants nicht-destruktiv.
+
 ## Verifizierte Checks
 
 | Check | Ergebnis |
 |---|---|
 | TypeScript Backend + Frontend | bestanden |
 | ESLint (`npm run lint`) | bestanden |
-| Backend Jest/Supertest | ohne PG-Variable: 44 Suites / 244 Tests bestanden, 3 Suites / 7 Tests übersprungen; mit `POSTGRES_TEST_DATABASE_URL`: 47 Suites / 251 Tests bestanden |
-| Frontend Vitest/Testing Library | 7 Dateien / 49 Tests bestanden |
-| PostgreSQL-Integration (RLS, CRM, Watchbook) | 3 Suites / 7 Tests gegen eine frisch migrierte, disposable Testdatenbank bestanden |
-| Production build | bestanden; größtes JS-Chunk 263 kB, keine Vite-Chunk-Warnung |
+| Backend Jest/Supertest | ohne PG-Variable: 44 Suites / 258 Tests bestanden, 3 Suites / 8 Tests übersprungen; mit `POSTGRES_TEST_DATABASE_URL`: 47 Suites / 266 Tests bestanden |
+| Frontend Vitest/Testing Library | 7 Dateien / 57 Tests bestanden |
+| PostgreSQL-Integration (RLS, CRM, Watchbook) | 3 Suites / 8 Tests gegen eine frisch migrierte, disposable Testdatenbank bestanden |
+| Production build | bestanden; größtes JS-Chunk 276 kB, keine Vite-Chunk-Warnung |
 | `npm audit --audit-level=high` | keine Findings |
 | `git diff --check` | sauber |
-| Echtes Browser-E2E (Playwright) | 9 Tests bestanden |
+| Echtes Browser-E2E (Playwright) | 10 Tests bestanden, inkl. vollständigem CRM-Workflow und eingeschränktem Viewer |
+| Visuelle Browserprüfung | Desktop 1440×900, Tablet 820×1180, Smartphone 390×844; je Übersicht/Akte/Ansprechpartner/Verträge/Aufgaben/Viewer: keine horizontale Überbreite, KPIs, A/B/C-Board, Tabs und Formulare gerendert (Screenshots + OCR-Textauszug geprüft) |
 | `npm run test:production-compose` | bestanden |
 | Isolierter Restore-Drill | bestanden |
-| GitHub Actions PR #53 | Jobs `verify`, `postgres-integration`, `production-compose`, `restore-drill`, `browser-e2e` definiert; Ergebnisse im jeweiligen PR-Check-Run |
+| GitHub Actions PR #54 | `verify`, `postgres-integration`, `production-compose`, `restore-drill`, `browser-e2e` alle erfolgreich für Commit `f53928a` |
 
 Die Coverage-Messung ist mit `npm run test:coverage` reproduzierbar. Die
 bisher im Bericht genannten festen Prozentwerte stammten aus einem früheren
@@ -56,6 +72,9 @@ Entwicklungsstand und wurden entfernt, statt sie als aktuell auszugeben.
   bei Replays nicht erneut ausgelöst.
 - Fehler-, Lade- und Leerzustände sind in der Objektverwaltung sichtbar;
   eingeschränkte Rollen sehen keine Schreibaktionen.
+- CSV-Export und Sammelaktionen der Kundenverwaltung benötigen eigene Rechte,
+  CSRF und Zod-validierte, auf 100 Datensätze begrenzte ID-Listen; fremde
+  Mandanten-IDs führen zu `404`, ohne dass ein Teilerfolg zurückbleibt.
 - Secrets-Scan fand keine Produktionsgeheimnisse. Der Demo-Login und der Seed-Hash
   sind ausdrücklich Entwicklungs-/Testmaterial und dürfen nicht produktiv verwendet
   werden.
@@ -86,7 +105,7 @@ dedizierte Migrationen bleiben Betriebsaufgaben.
 1. NFC-/Barcode-Hardwaretest auf Zielgeräten sowie echter Offline/Online-Drill.
 2. Staging-Lastlauf für Alarm-Ingest, WebSocket-Fanout und Report-Export.
 3. Produktionsseitiger Restore-Drill, TLS-/Monitoring-Abnahme und Push-Provider.
-4. PR #53 wartet auf Review/Merge, sofern dieser Bericht vor dem Merge gelesen wird.
+4. PR #54 (https://github.com/Xonni-star/SecurityOps-Platform/pull/54, Commit `f53928a`) hat alle fünf CI-Jobs grün und wartet auf Review/Merge.
 
 Diese Punkte blockieren nicht die Codequalität, blockieren aber eine vollständige
 fachliche Produktionsabnahme, solange die Zielinfrastruktur nicht bereitgestellt ist.

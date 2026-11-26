@@ -101,6 +101,31 @@ describe('Objektübersicht',()=>{
     expect(screen.getByRole('heading',{name:'Dienstanweisungen'})).toBeTruthy();
   });
 
+  it('searches customers server-side before linking them to an object',async()=>{
+    const context={
+      site:sites[0],customers:[],contracts:[],locations:[],hazards:[],instructions:[],journal:null,staffing:null,shifts:null,patrols:null,keys:null,keyBundles:null,documents:null,
+      alarms:null,incidents:null,customerTasks:null,maintenance:null,qualifications:null,handovers:null,
+    };
+    apiMock.mockImplementation(async(path:string,options?:RequestInit)=>{
+      if(path==='/sites')return sites.slice(0,1);
+      if(path==='/customers')return [];
+      if(path.startsWith('/customers?'))return [{id:'customer-remote',name:'Remote Kunde'}];
+      if(path==='/employees')return [];
+      if(options?.method==='POST'&&path.endsWith('/customer-links'))return {};
+      return context;
+    });
+    renderSites();
+    fireEvent.click(await screen.findByRole('button',{name:'Objekt 01'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Kunden & Verträge'}));
+    fireEvent.change(screen.getByLabelText('Kundensuche'),{target:{value:'Remote'}});
+    fireEvent.click(screen.getByRole('button',{name:'Kunden suchen'}));
+    await waitFor(()=>expect(requestedPaths).toHaveBeenCalledWith('/customers?pageSize=100&q=Remote'));
+    expect(await screen.findByRole('option',{name:'Remote Kunde'})).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Kunde verknüpfen'),{target:{value:'customer-remote'}});
+    fireEvent.click(screen.getByRole('button',{name:'Verknüpfen'}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/sites/0/customer-links',expect.objectContaining({method:'POST',body:JSON.stringify({customer_id:'customer-remote'})})));
+  });
+
   it('edits object hierarchy through the site-scoped API',async()=>{
     const context={
       site:sites[0],customers:[],contracts:[],

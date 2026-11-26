@@ -81,6 +81,11 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await expect(page.getByText('Objektleitung: E2E Streife')).toBeVisible();
 
   await page.getByRole('button',{name:'Kunden & Verträge'}).click();
+  await page.getByLabel('Kundensuche').fill(`E2E Objektkunde ${suffix}`);
+  const customerSearch=page.waitForResponse(response=>response.url().includes('/api/v1/customers?')&&response.url().includes('q=')&&response.request().method()==='GET');
+  await page.getByRole('button',{name:'Kunden suchen'}).click();
+  expect((await customerSearch).status()).toBe(200);
+  await expect(page.getByLabel('Kunde verknüpfen').locator(`option[value="${customer.id}"]`)).toBeAttached();
   await page.getByLabel('Kunde verknüpfen').selectOption(customer.id);
   const customerLink=page.waitForResponse(response=>response.url().includes(`/sites/${siteId}/customer-links`)&&response.request().method()==='POST');
   await page.getByRole('button',{name:'Verknüpfen',exact:true}).click();

@@ -236,6 +236,7 @@ export function Sites(){
   const [form,setForm]=useState<SiteForm>(emptySite);
   const [formOpen,setFormOpen]=useState(false);
   const [customerId,setCustomerId]=useState('');
+  const [customerSearch,setCustomerSearch]=useState('');
   const [contractCustomer,setContractCustomer]=useState('');
   const [contractId,setContractId]=useState('');
   const [availableContracts,setAvailableContracts]=useState<{id:string;contract_number:string;sites:{id:string}[]}[]>([]);
@@ -332,6 +333,14 @@ export function Sites(){
       await api(`/sites/${selected.site.id}`,{method:'PATCH',body:JSON.stringify({name:form.name,site_number:form.site_number.trim()||null,address:form.address.trim()||null,status:form.status,security_classification:form.security_classification,required_staff_count:form.required_staff_count,description:details.description,alias:details.alias.trim()||null,site_type:details.site_type.trim()||null,street:details.street.trim()||null,house_number:details.house_number.trim()||null,postal_code:details.postal_code.trim()||null,city:details.city.trim()||null,contact_person:details.contact_person.trim()||null,object_manager_employee_id:details.object_manager_employee_id||null,operations_manager_employee_id:details.operations_manager_employee_id||null})});
       await refreshContext();setError('');
     }catch(e){setError((e as Error).message);}
+  }
+  async function searchCustomers(event:FormEvent){
+    event.preventDefault();
+    try{
+      const params=new URLSearchParams({pageSize:'100'});
+      if(customerSearch.trim())params.set('q',customerSearch.trim());
+      setCustomers(await api<Customer[]>(`/customers?${params}`)??[]);setError('');
+    }catch(e){setCustomers([]);setError((e as Error).message);}
   }
   async function archiveLink(id:string){
     if(!selected||!window.confirm('Kundenverknüpfung archivieren?'))return;
@@ -867,7 +876,10 @@ export function Sites(){
       {active==='kunden'&&<div className="object-detail-content">
       <h3>Kundenbeziehungen</h3>
       {selected.customers===null?<p>Keine Berechtigung für Kundenbeziehungen.</p>:<ul>{selectedCustomers.map(customer=><li key={customer.customer_id}>{customer.customer_name} ({customer.relationship_type}, {customer.relationship_status}) {writable&&hasPermission('customers:write')&&customer.relationship_status!=='archived'&&<button type="button" onClick={()=>void archiveLink(customer.customer_id)}>Verknüpfung archivieren</button>}</li>)}</ul>}
-      {selected.customers!==null&&writable&&hasPermission('customers:write')&&<form onSubmit={linkCustomer}><select aria-label="Kunde verknüpfen" value={customerId} onChange={e=>setCustomerId(e.target.value)} required><option value="">Kunde verknüpfen …</option>{customers.filter(customer=>!selectedCustomers.some(link=>link.customer_id===customer.id&&link.relationship_status!=='archived')).map(customer=><option key={customer.id} value={customer.id}>{customer.name}{customer.customer_number?` · ${customer.customer_number}`:''}</option>)}</select><button>Verknüpfen</button></form>}
+      {selected.customers!==null&&writable&&hasPermission('customers:write')&&<>
+        <form className="object-customer-search" onSubmit={searchCustomers}><input aria-label="Kundensuche" value={customerSearch} onChange={e=>setCustomerSearch(e.target.value)} placeholder="Kunde suchen …"/><button type="submit">Kunden suchen</button></form>
+        <form onSubmit={linkCustomer}><select aria-label="Kunde verknüpfen" value={customerId} onChange={e=>setCustomerId(e.target.value)} required><option value="">Kunde verknüpfen …</option>{customers.filter(customer=>!selectedCustomers.some(link=>link.customer_id===customer.id&&link.relationship_status!=='archived')).map(customer=><option key={customer.id} value={customer.id}>{customer.name}{customer.customer_number?` · ${customer.customer_number}`:''}</option>)}</select><button>Verknüpfen</button></form>
+      </>}
       <h3>Verträge</h3>{selected.contracts===null?<p>Keine Berechtigung für Verträge.</p>:<ul>{selectedContracts.map(contract=><li key={contract.id}>{contract.contract_number} · {contract.customer_name} · {contract.status}</li>)}</ul>}
       {selected.customers!==null&&hasPermission('contracts:write')&&hasPermission('customer_contacts:read')&&<form onSubmit={linkContract}><label>Kunde<select value={contractCustomer} onChange={e=>void chooseContractCustomer(e.target.value)} required><option value="">Kunde auswählen</option>{selectedCustomers.filter(customer=>customer.relationship_status==='active').map(customer=><option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name}</option>)}</select></label><label>Vertrag<select value={contractId} onChange={e=>setContractId(e.target.value)} required><option value="">Vertrag auswählen</option>{availableContracts.filter(contract=>!contract.sites.some(site=>site.id===siteId)).map(contract=><option key={contract.id} value={contract.id}>{contract.contract_number}</option>)}</select></label><button>Vertrag verknüpfen</button></form>}
       </div>}
