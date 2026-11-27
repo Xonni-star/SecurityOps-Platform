@@ -32,6 +32,9 @@ import {Employees} from './pages/Employees';
 import {EmployeeDetail} from './pages/EmployeeDetail';
 import {Customers} from './pages/Customers';
 import {CustomerDetail} from './pages/CustomerDetail';
+import {OperativeLeitstelle} from './pages/OperativeLeitstelle';
+import {Einsatz} from './pages/Einsatz';
+import {EinsatzIncidentDetail} from './pages/EinsatzIncidentDetail';
 
 function clearSession(){
   localStorage.removeItem('securityops_authenticated');
@@ -106,6 +109,9 @@ export default function App(){
         <Route path="/map" element={<LiveMap/>}/>
         <Route path="/telemetry" element={<Telemetry/>}/>
         <Route path="/incidents" element={<Incidents/>}/>
+        <Route path="/operative-leitstelle" element={<OperativeLeitstelle/>}/>
+        <Route path="/einsatz/vorfaelle/:id" element={<EinsatzIncidentDetail/>}/>
+        <Route path="/einsatz/*" element={<Einsatz/>}/>
         <Route path="/messages" element={<Messages/>}/>
         <Route path="/notifications" element={<Notifications/>}/>
       </Route>

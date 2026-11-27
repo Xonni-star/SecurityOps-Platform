@@ -3,7 +3,7 @@ import {useState} from 'react';
 import {hasPermission,logout,storedUser} from '../lib/api';
 import '../polish.css';
 
-type Item=[string,string,string];
+type Item=[string,string,string,string?];
 
 type PageMeta={title:string;description:string;group:string};
 
@@ -12,6 +12,8 @@ const pageMeta:Record<string,PageMeta>={
   '/map':{title:'Live-Karte',description:'Aktuelle Positionen und Standorte der eingesetzten Geräte im Überblick.',group:'Leitstelle'},
   '/alarms':{title:'Alarme',description:'Alarme prüfen, priorisieren, übernehmen und revisionssicher bearbeiten.',group:'Leitstelle'},
   '/incidents':{title:'Einsätze',description:'Einsätze und Ereignisse dokumentieren, verfolgen und abschließen.',group:'Leitstelle'},
+  '/operative-leitstelle':{title:'Operative Leitstelle',description:'Tageslage, Handlungsbedarf, Besetzung, Nachweise und Maßnahmen der operativen Leitstelle.',group:'Leitstelle'},
+  '/einsatz':{title:'Einsatzmanagement',description:'Vorfälle, Alarme, Maßnahmen, Eskalationen und Auswertungen revisionssicher bearbeiten.',group:'Leitstelle'},
   '/patrols':{title:'Kontrollgänge',description:'Kontrollgänge, Kontrollpunkte und Abweichungen im Überblick.',group:'Leitstelle'},
   '/mobile':{title:'Mobile Einsatz-App',description:'Mobile Leitstellenfunktionen für den Einsatz vor Ort.',group:'Betrieb'},
   '/watchbook':{title:'Wachbuch',description:'Wachbucheinträge nachvollziehbar erfassen, korrigieren und schließen.',group:'Betrieb'},
@@ -37,10 +39,12 @@ const pageMeta:Record<string,PageMeta>={
 
 const permissionAliases:Record<string,string[]>={
   '/customer-reports':['customer_reports:export','customer_portal:read'],
+  '/operative-leitstelle':['nsl:read','operations_measures:read'],
+  '/einsatz':['incidents:read','alarms:read','operations_measures:read'],
 };
 
 const groups:{label:string;items:Item[]}[]=[
-  {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
+  {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/operative-leitstelle','Operative Leitstelle','nsl:read','⌖'],['/einsatz','Einsatzmanagement','incidents:read','◈'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
   {label:'Betrieb',items:[['/mobile','Mobile Einsatz-App','alarms:write'],['/watchbook','Wachbuch','watchbook:read'],['/scheduling','Dienstplanung','scheduling:read'],['/handovers','Schichtübergaben','handover:read'],['/messages','Nachrichten','messages:read']]},
   {label:'Verwaltung',items:[['/employees','Mitarbeiter','employees:read'],['/customers','Kunden','customers:read'],['/sites','Objekte','sites:read'],['/devices','Geräte','devices:read'],['/keys','Schlüssel','keys:read'],['/nfc-devices','NFC-Geräte','nfc_devices:read'],['/qualifications','Qualifikationen','employees:read']]},
   {label:'Dokumente & Auswertungen',items:[['/dms','Dokumente','dms:read'],['/reports','Auswertungen','reports:read'],['/customer-reports','Kundenberichte','customer_reports:export']]},
@@ -76,8 +80,8 @@ export function Layout(){
       <nav className="side-nav" aria-label="Hauptnavigation">
         {visible.map(group=><div className="nav-group" key={group.label}>
           <div className="nav-label">{group.label}</div>
-          {group.items.map(([path,label])=><Link className={location.pathname===path||(isDetailPath&&path===currentPath)?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
-            <span className="nav-icon">{label.charAt(0)}</span>{label}
+          {group.items.map(([path,label,_permission,icon])=><Link className={location.pathname===path||(isDetailPath&&path===currentPath)?'nav-item active':'nav-item'} key={path} to={path} onClick={()=>setOpen(false)}>
+            <span className="nav-icon" aria-hidden="true">{icon??label.charAt(0)}</span>{label}
           </Link>)}
         </div>)}
       </nav>
