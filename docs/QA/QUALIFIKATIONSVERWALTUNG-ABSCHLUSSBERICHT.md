@@ -29,6 +29,7 @@ Vollständige Analyse, Überarbeitung und Umsetzung einer zentralen, revisionsf�
 8. **E2E-Admin fehlte:** Der Operator besitzt bewusst nicht `account_security:manage`. Statt RBAC zu schwächen, stellt der isolierte Fixture-Tenant einen Admin mit deaktivierter MFA-Policy bereit.
 9. **Wirkungsloser Platzhalter entfernt:** Eine nie zutreffende `isConflictErrorBody()`-Prüfung wurde aus dem Katalog-Create-Pfad entfernt.
 10. **Lokale DMS-Testumgebung:** ClamAV war nur im Compose-Netzwerk erreichbar; für den Upload-Test wurde der Hostport 3310 über eine temporäre Override-Datei außerhalb des Repos veröffentlicht.
+11. **CI-Docker-Build rot:** `frontend/tests/qualifications.test.tsx` nutzte `Array.prototype.at()`, das bei der Frontend-`tsconfig` (`ES2020`) im frischen Docker-Image nicht verfügbar ist. Beide Stellen wurden auf Indexzugriffe umgestellt; `docker compose build frontend` ist damit grün.
 
 ## 4. Dateien geändert
 
@@ -61,6 +62,7 @@ Die Migrationen `063` und `064` sind additiv und lokal angewendet. Nach dem Anwe
 - `npm test -w backend -- --runInBand --silent`: **54 Suites / 487 Tests grün**, 7 Suites / 37 Tests bewusst übersprungen (524 Gesamttests).
 - `npm test -w frontend`: **14 Dateien / 159 Tests grün**.
 - `npm run build`: **grün**; einzige Meldung ist die bestehende Vite-Warnung zu Chunks > 500 kB.
+- `docker compose build frontend`: **grün** (exakt der Docker-Kontext, der in `browser-e2e` und `production-compose` verwendet wird).
 - `npx playwright test e2e/qualification-management.spec.ts --workers=1`: **12/12 Szenarien grün** (10,4 s).
 - Browser-Rundgang: Übersicht, Detaildialog, Mitarbeiterprofil und Objektakte ohne Konsolenfehler; alle `/api/v1/qualifications*`-Requests `200`.
 

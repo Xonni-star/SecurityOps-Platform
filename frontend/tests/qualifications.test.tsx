@@ -100,7 +100,7 @@ describe('Qualifikationsverwaltung',()=>{
     fireEvent.change(screen.getByLabelText('Sortierrichtung'),{target:{value:'desc'}});
     fireEvent.change(screen.getByLabelText('Einträge pro Seite'),{target:{value:'50'}});
     await waitFor(()=>{
-      const url=String(fetchMock.mock.calls.at(-1)?.[0]);
+      const url=String(fetchMock.mock.calls[fetchMock.mock.calls.length-1]?.[0]);
       expect(url).toContain('/api/v1/qualifications/overview?');
       expect(url).toContain('status=expired');
       expect(url).toContain('sort=employee');
@@ -109,7 +109,7 @@ describe('Qualifikationsverwaltung',()=>{
       expect(url).toContain('page=1');
     });
     fireEvent.click(screen.getByRole('button',{name:'Weiter'}));
-    await waitFor(()=>expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('page=2'));
+    await waitFor(()=>expect(String(fetchMock.mock.calls[fetchMock.mock.calls.length-1]?.[0])).toContain('page=2'));
   });
 
   async function catalogForm(){
