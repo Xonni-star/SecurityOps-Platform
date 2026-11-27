@@ -145,7 +145,7 @@ export const openapi={
     '/nfc-devices/{id}/reactivate':{post:{summary:'Gesperrtes NFC-Gerät über den kontrollierten Workflow reaktivieren',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/nfc-devices/{id}/recover':{post:{summary:'Wiedergefundenes NFC-Gerät nach Prüfung in Quarantäne übernehmen',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/nfc-devices/{id}/archive':{post:{summary:'NFC-Gerät logisch archivieren ohne historische Nachweise zu verändern',security:[{sessionCookie:[],csrfToken:[]}] }},
-    '/nfc-devices/{id}/replace':{post:{summary:'NFC-Gerät transaktional ersetzen (nur verloren oder gesperrt); Übernahme und eingeschränkte Kandidaten erfordern ausdrückliche Bestätigung',security:[{sessionCookie:[],csrfToken:[]}] }},
+    '/nfc-devices/{id}/replace':{post:{summary:'NFC-Gerät transaktional ersetzen (nur verloren oder gesperrt); Übernahme und eingeschränkte Kandidaten erfordern ausdrückliche, an die Ersatzgeräte-ID gebundene Bestätigung',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/watchbook/categories':crudPath('watchbook-categories'),'/watchbook/priorities':crudPath('watchbook-priorities'),
     '/watchbook/entries':{get:{summary:'Aktuelle digitale Wachbuch-Einträge auflisten',security:[{sessionCookie:[]}]},post:{summary:'Idempotenten, unveränderlichen Wachbuch-Eintrag erstellen',security:[{sessionCookie:[],csrfToken:[]}]}},
     '/watchbook/entries/{id}/history':{get:{summary:'Unveränderliche Fassungshistorie des Wachbuchs auflisten',security:[{sessionCookie:[]}] }},

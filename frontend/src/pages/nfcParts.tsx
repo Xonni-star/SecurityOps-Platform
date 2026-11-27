@@ -28,7 +28,8 @@ export type NfcOptions={
   employees:{id:string;name:string}[];
   devices?:{id:string;identifier:string;device_type:string;manufacturer:string;status:string;
     employee_id?:string|null;site_id?:string|null;control_point_id?:string|null;
-    employee_name?:string|null;site_name?:string|null;control_point_name?:string|null}[];
+    employee_name?:string|null;site_name?:string|null;control_point_name?:string|null;
+    archived_at?:string|null;replaced_at?:string|null}[];
 };
 
 export type NfcAssignmentKind='none'|'site'|'control_point'|'employee';
@@ -217,8 +218,136 @@ export function nfcAssignmentDetail(assignment:Record<string,string|null>|undefi
   return commonText.notAssigned;
 }
 
-function hasReplacementAssignment(device:NonNullable<NfcOptions['devices']>[number]|undefined):boolean{
+export type NfcReplaceCandidate=NonNullable<NfcOptions['devices']>[number];
+
+function hasReplacementAssignment(device:NfcReplaceCandidate|undefined):boolean{
   return !!device&&!!(device.employee_id||device.site_id||device.control_point_id);
+}
+
+/**
+ * Der komplette fachliche Zustand eines Austauschs. Bestätigungen sind Teil
+ * dieses Zustands und werden gemeinsam mit der Zusammenfassung gesnapshottet.
+ */
+export type NfcReplaceForm={
+  identifier:string;device_type:string;manufacturer:string;
+  mode:'new'|'existing';existing_device_id:string;
+  reason:string;notes:string;copy_assignment:boolean;
+  acknowledge_existing:boolean;acknowledge_restricted:boolean;
+};
+
+export type NfcReplaceSummary={
+  oldDevice:string;replacement:string;takeover:string;reason:string;notes:string;
+  oldConsequence:string;replacementConsequence:string;
+};
+
+export const emptyNfcReplaceForm=(device?:NfcDevice):NfcReplaceForm=>({
+  identifier:'',device_type:device?.device_type??'tag',manufacturer:device?.manufacturer??'',
+  mode:'new',existing_device_id:'',reason:'',notes:'',copy_assignment:false,
+  acknowledge_existing:false,acknowledge_restricted:false,
+});
+
+export function nfcReplaceRestricted(candidate:NfcReplaceCandidate|undefined):boolean{
+  return !!candidate&&['lost','blocked'].includes(candidate.status);
+}
+
+/**
+ * Ein Change geht immer über diese Funktion. Gerätewechsel und Moduswechsel
+ * verwerfen die Einzelbestätigungen, weil sie sich auf ein anderes Gerät
+ * bezogen haben. Die Übernahmeentscheidung betrifft die Bestätigung der
+ * bestehenden Zuordnung. Jede Änderung macht außerdem den bestätigten
+ * Snapshot ungültig (siehe nfcReplaceSnapshot).
+ */
+export function updateNfcReplaceForm(current:NfcReplaceForm,patch:Partial<NfcReplaceForm>):NfcReplaceForm{
+  const next={...current,...patch};
+  if('mode' in patch||'existing_device_id' in patch||'copy_assignment' in patch){
+    next.acknowledge_existing=false;
+  }
+  if('mode' in patch||'existing_device_id' in patch){
+    next.acknowledge_restricted=false;
+  }
+  return next;
+}
+
+/** Zusammenfassung ausschließlich aus dem aktuellen Formular- und Gerätezustand. */
+export function nfcReplaceSummary(form:NfcReplaceForm,oldDevice:NfcDevice,
+  candidate:NfcReplaceCandidate|undefined):NfcReplaceSummary{
+  const oldDeviceLabel=[oldDevice.identifier,nfcStatusText(oldDevice),nfcAssignmentLabel(oldDevice)].join(' · ');
+  const replacement=form.mode==='new'
+    ?[form.identifier.trim()||'Noch keine Kennung',commonText.notAssigned,'Neu nach Austausch aktiv',
+      nfcTypeLabel(form.device_type),form.manufacturer.trim()||'Noch kein Hersteller'].join(' · ')
+    :candidate
+      ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status),
+        nfcTypeLabel(candidate.device_type),candidate.manufacturer].join(' · ')
+      :'Noch kein Ersatzgerät ausgewählt';
+  const takeover=form.copy_assignment
+    ?'Die bisherige Zuordnung wird auf das Ersatzgerät übernommen.'
+    :'Die bisherige Zuordnung wird nicht übernommen und nur in der Historie dokumentiert.';
+  const takesOver=form.copy_assignment&&!!(oldDevice.employee_id||oldDevice.site_id||oldDevice.control_point_id);
+  return {
+    oldDevice:oldDeviceLabel,
+    replacement,
+    takeover,
+    reason:form.reason.trim()||'Noch nicht angegeben',
+    notes:form.notes.trim()||'Keine',
+    oldConsequence:'Das alte Gerät wird als ersetzt markiert, verliert seine Zuordnung und bleibt in Historie, Scans und Dokumenten vollständig erhalten.',
+    replacementConsequence:takesOver
+      ?'Das Ersatzgerät wird aktiv und übernimmt die Zuordnung des alten Geräts; seine bisherige Zuordnung bleibt in der Historie dokumentiert.'
+      :'Das Ersatzgerät wird aktiv, ohne die Zuordnung des alten Geräts zu übernehmen; dessen Zuordnung bleibt nur in der Historie.'
+        +(nfcReplaceRestricted(candidate)?' Sein gesperrter oder verlorener Status wird dabei aufgehoben.':''),
+  };
+}
+
+/** Unveränderlicher, exakt vergleichbarer Snapshot des bestätigten Vorgangs. */
+export function nfcReplaceSnapshot(form:NfcReplaceForm,summary:NfcReplaceSummary):string{
+  return JSON.stringify({form:{
+    identifier:form.identifier.trim(),device_type:form.device_type,manufacturer:form.manufacturer.trim(),
+    mode:form.mode,existing_device_id:form.existing_device_id,reason:form.reason.trim(),notes:form.notes.trim(),
+    copy_assignment:form.copy_assignment,acknowledge_existing:form.acknowledge_existing,
+    acknowledge_restricted:form.acknowledge_restricted,
+  },summary});
+}
+
+export function nfcReplaceIsConfirmed(form:NfcReplaceForm,summary:NfcReplaceSummary,snapshot:string|null):boolean{
+  return !!snapshot&&snapshot===nfcReplaceSnapshot(form,summary);
+}
+
+export function validateNfcReplace(form:NfcReplaceForm,candidate:NfcReplaceCandidate|undefined):string{
+  if(form.reason.trim().length<3)return commonText.reasonRequired;
+  if(form.mode==='new'){
+    if(!form.identifier.trim()||!form.manufacturer.trim())return 'Bitte Kennung und Hersteller des Ersatzgeräts angeben.';
+    if(!['tag','reader'].includes(form.device_type))return 'Bitte einen gültigen Gerätetyp auswählen.';
+  }else{
+    if(!form.existing_device_id)return 'Bitte ein vorhandenes Ersatzgerät auswählen.';
+    if(!candidate)return 'Das ausgewählte Ersatzgerät ist nicht mehr verfügbar. Bitte erneut prüfen.';
+    if(['replaced','archived'].includes(candidate.status)||candidate.replaced_at||candidate.archived_at){
+      return 'Das ausgewählte Ersatzgerät ist nicht mehr verfügbar. Bitte erneut prüfen.';
+    }
+    if(hasReplacementAssignment(candidate)&&!form.acknowledge_existing)return 'Bitte die bestehende Zuordnung des Ersatzgeräts bestätigen.';
+    if(nfcReplaceRestricted(candidate)&&!form.acknowledge_restricted)return 'Bitte Status, Kennung und Zuordnung des Ersatzgeräts freigeben.';
+  }
+  return '';
+}
+
+/**
+ * Einziger Payload-Bauer für beide Dialoghost-Seiten. Die Bestätigung wird
+ * zusätzlich an die konkrete Ersatzgeräte-ID gebunden, damit das Backend
+ * eine für ein anderes Gerät erteilte Bestätigung erkennen und ablehnen kann.
+ */
+export function nfcReplacePayload(form:NfcReplaceForm,candidate:NfcReplaceCandidate|undefined):Record<string,unknown>{
+  const payload:Record<string,unknown>={
+    reason:form.reason.trim(),notes:form.notes.trim(),copy_assignment:form.copy_assignment,
+  };
+  if(form.mode==='existing'){
+    payload.new_device_id=form.existing_device_id;
+    payload.acknowledged_device_id=form.existing_device_id;
+    if(hasReplacementAssignment(candidate)&&form.acknowledge_existing)payload.acknowledge_existing_assignment=true;
+    if(nfcReplaceRestricted(candidate)&&form.acknowledge_restricted)payload.acknowledge_restricted=true;
+  }else{
+    payload.identifier=form.identifier.trim();
+    payload.device_type=form.device_type;
+    payload.manufacturer=form.manufacturer.trim();
+  }
+  return payload;
 }
 
 export function nfcScanOutcome(scan:NfcScanRecord):string{
@@ -372,7 +501,7 @@ export function NfcRecoverDialog({identifier,assignment,identifierConfirmation,o
 }
 
 export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceType,manufacturer,onManufacturer,
-  mode,onMode,existingDeviceId,onExistingDeviceId,devices,oldDeviceLabel,candidateAssignment,
+  mode,onMode,existingDeviceId,onExistingDeviceId,devices,summary,
   reason,onReason,notes,onNotes,copyAssignment,onCopyAssignment,
   acknowledgeExisting,onAcknowledgeExisting,acknowledgeRestricted,onAcknowledgeRestricted,
   confirmed,onConfirmed,error,busy,onConfirm,onClose}:{
@@ -381,7 +510,7 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
   mode:'new'|'existing';onMode:(value:'new'|'existing')=>void;
   existingDeviceId:string;onExistingDeviceId:(value:string)=>void;
   devices:NonNullable<NfcOptions['devices']>;
-  oldDeviceLabel:string;candidateAssignment:string;
+  summary:NfcReplaceSummary;
   reason:string;onReason:(value:string)=>void;notes:string;onNotes:(value:string)=>void;
   copyAssignment:boolean;onCopyAssignment:(value:boolean)=>void;
   acknowledgeExisting:boolean;onAcknowledgeExisting:(value:boolean)=>void;
@@ -391,7 +520,7 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
 }){
   const submit=(event:FormEvent)=>{event.preventDefault();onConfirm();};
   const candidate=devices?.find(device=>device.id===existingDeviceId);
-  const restricted=!!candidate&&['lost','blocked'].includes(candidate.status);
+  const restricted=nfcReplaceRestricted(candidate);
   return <NfcDialog title="Ersatzgerät festlegen" onClose={onClose} wide>
     <form className="object-inline-form" onSubmit={submit}>
       <p>Das bisherige Gerät wird als ersetzt markiert. Seine Historie bleibt vollständig erhalten.</p>
@@ -435,13 +564,13 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
       </label>}
       <div className="object-detail-content">
         <h4>Zusammenfassung vor dem Austausch</h4>
-        <p><strong>Altes Gerät (Kennung · Status · bisherige Zuordnung):</strong> {oldDeviceLabel}</p>
-        <p><strong>Ersatzgerät (Kennung · Zuordnung · Status):</strong> {candidateAssignment}</p>
-        <p><strong>Übernahmeentscheidung:</strong> {copyAssignment
-          ?'Die bisherige Zuordnung wird auf das Ersatzgerät übernommen.'
-          :'Die bisherige Zuordnung wird nicht übernommen und nur in der Historie dokumentiert.'}</p>
-        <p><strong>Austauschgrund:</strong> {reason.trim()||'Noch nicht angegeben'}</p>
-        <p><strong>Notizen:</strong> {notes.trim()||'Keine'}</p>
+        <p><strong>Altes Gerät (Kennung · Status · bisherige Zuordnung):</strong> {summary.oldDevice}</p>
+        <p><strong>Ersatzgerät (Kennung · Zuordnung · Status · Typ · Hersteller):</strong> {summary.replacement}</p>
+        <p><strong>Übernahmeentscheidung:</strong> {summary.takeover}</p>
+        <p><strong>Austauschgrund:</strong> {summary.reason}</p>
+        <p><strong>Notizen:</strong> {summary.notes}</p>
+        <p><strong>Folgen für das alte Gerät:</strong> {summary.oldConsequence}</p>
+        <p><strong>Folgen für das Ersatzgerät:</strong> {summary.replacementConsequence}</p>
       </div>
       <label className="object-check"><input type="checkbox" required checked={confirmed}
         onChange={event=>onConfirmed(event.target.checked)}/>

@@ -262,7 +262,7 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
       .send({reason:'Austausch vorbereiten'})).status).toBe(200);
     const before=await pool.query('SELECT status,control_point_id FROM nfc_devices WHERE id=$1',[oldDevice.body.id]);
     const failed=await request(app!).post(`/api/v1/nfc-devices/${oldDevice.body.id}/replace`).set(headersA)
-      .send({new_device_id:candidate.body.id,reason:'Defekt',copy_assignment:false,
+      .send({new_device_id:candidate.body.id,acknowledged_device_id:candidate.body.id,reason:'Defekt',copy_assignment:false,
         acknowledge_existing_assignment:true,acknowledge_restricted:true});
     expect(failed.status).toBe(409);
     expect(failed.body.error).toContain('Kontrollpunkt');

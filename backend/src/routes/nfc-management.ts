@@ -528,6 +528,10 @@ nfcManagementRouter.post('/nfc-devices/:id/replace',security,async(req,res,next)
       model:z.string().trim().max(200).optional(),serial_number:z.string().trim().max(200).optional(),
       description:z.string().trim().max(2000).optional(),
       reason,notes:z.string().trim().max(2000).optional(),copy_assignment:z.boolean(),
+      // Die Bestätigungen werden serverseitig an genau das Ersatzgerät
+      // gebunden, das der Benutzer geprüft hat. Ein für Gerät A erteilter
+      // Scope darf nicht mit Gerät B kombiniert werden.
+      acknowledged_device_id:uuid.optional(),
       acknowledge_existing_assignment:z.literal(true).optional(),
       acknowledge_restricted:z.literal(true).optional(),
     }).strict().parse(req.body);
@@ -567,6 +571,12 @@ nfcManagementRouter.post('/nfc-devices/:id/replace',security,async(req,res,next)
           'SELECT id FROM nfc_device_replacements WHERE tenant_id=$1 AND new_device_id=$2',
           [tenantId,String(existing.id)])).rows[0];
         if(alreadyUsed)fail(409,'Dieses Gerät wurde bereits als Ersatzgerät verwendet');
+        if((body.acknowledge_existing_assignment||body.acknowledge_restricted)&&!body.acknowledged_device_id){
+          fail(400,'Die Bestätigung muss dem ausgewählten Ersatzgerät zugeordnet sein');
+        }
+        if(body.acknowledged_device_id&&body.acknowledged_device_id!==body.new_device_id){
+          fail(409,'Die Bestätigung gilt für ein anderes Ersatzgerät. Bitte die aktuelle Zusammenfassung erneut prüfen.');
+        }
         replacementAssignment=assignmentOf(existing);
         previousReplacementStatus=String(existing.status);
         // Bestehende Zuordnungen dürfen nie unbemerkt überschrieben werden.
@@ -634,6 +644,7 @@ nfcManagementRouter.post('/nfc-devices/:id/replace',security,async(req,res,next)
         old_device_id:id,new_device_id:String(replacement.id),previous_status:old.status,
         previous_replacement_status:previousReplacementStatus,reason:body.reason,
         copy_assignment:body.copy_assignment,
+        acknowledged_device_id:body.acknowledged_device_id??null,
         acknowledge_existing_assignment:body.acknowledge_existing_assignment===true,
         acknowledge_restricted:body.acknowledge_restricted===true,
         old_assignment:oldAssignment,replacement_previous_assignment:replacementAssignment,new_assignment:next,
