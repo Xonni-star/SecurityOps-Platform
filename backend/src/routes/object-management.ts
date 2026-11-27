@@ -4,6 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
 import {classifyDocument,classifyRequirement,documentStatusCounts,documentWarningCounts} from '../services/dms-document-status.js';
+import {classifyQualification,daysUntil,qualificationLocalDate} from '../services/qualification-status.js';
 import {withMaintenanceStatus} from '../services/maintenance-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
@@ -15,10 +16,11 @@ type ClassifiedObjectDocumentRow={
 
 type QualificationRow={
   id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;
-  valid_from:string|null;valid_until:string|null;status:string;computed_status:string;
+  valid_from:string|null;valid_until:string|null;status:string;computed_status?:string;status_label?:string;
   days_until_expiry?:number|null;document_id?:string|null;issuing_authority?:string|null;
   notes?:string|null;revoked_at?:string|Date|null;updated_at?:string|Date|null;
-  catalog_active?:boolean|null;evidence_title?:string|null;evidence_document_status?:string|null;
+  catalog_active?:boolean|null;required_document_type?:string|null;required_documents?:string[]|string|null;
+  evidence_title?:string|null;evidence_document_status?:string|null;
   evidence_approval_status?:string|null;evidence_valid_from?:string|Date|null;
   evidence_valid_until?:string|Date|null;evidence_review_on?:string|Date|null;
   evidence_reviewed_at?:string|Date|null;evidence_lifecycle_state?:string|null;
@@ -45,26 +47,16 @@ const evidenceLabels:Record<string,string>={
   pruefung_ausstehend:'Nachweisprüfung ausstehend',noch_nicht_gueltig:'Nachweis noch nicht gültig',
   missing:'Kein Nachweis verknüpft',not_found:'Verknüpfter Nachweis nicht gefunden',
 };
-const blockingIssueCodes=new Set(['revoked','invalid','expired','expired_evidence','unapproved_evidence','missing_evidence']);
+const blockingIssueCodes=new Set(['revoked','invalid','expired','not_yet_valid','expired_evidence','unapproved_evidence','missing_evidence']);
 const invalidIssueCodes=new Set(['revoked','invalid','expired','expired_evidence']);
 const issueSeverity:Record<string,QualificationIssue['severity']>={
   revoked:'critical',invalid:'critical',expired:'critical',expired_evidence:'critical',
-  unapproved_evidence:'high',missing_evidence:'high',expiring:'medium',none:'medium',
+  not_yet_valid:'high',unapproved_evidence:'high',missing_evidence:'high',expiring:'medium',none:'medium',
 };
 
 function asDateValue(value:unknown):string|Date|null{
   if(value===null||value===undefined)return null;
   return value instanceof Date?value:String(value);
-}
-function utcDayValue(value:unknown,now=new Date()):number{
-  const date=value instanceof Date?value:new Date(`${String(value).slice(0,10)}T00:00:00Z`);
-  const valid=Number.isNaN(date.getTime())?now:date;
-  return Date.UTC(valid.getUTCFullYear(),valid.getUTCMonth(),valid.getUTCDate());
-}
-function daysUntilValue(value:unknown,now=new Date()):number|null{
-  if(value===null||value===undefined||value==='')return null;
-  const today=Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate());
-  return Math.round((utcDayValue(value,now)-today)/86_400_000);
 }
 function timestampValue(value:unknown):string|null{
   if(value===null||value===undefined)return null;
@@ -86,39 +78,52 @@ function classifyEvidence(row:QualificationRow,now=new Date()):{status:string;la
   },now);
   return {status:classification.computed_status,label:evidenceLabels[classification.computed_status]??classification.status_label};
 }
-function qualificationIssue(row:QualificationRow,days:number|null,evidence:{status:string;label:string}):QualificationIssue{
-  const status=String(row.status??'');
-  if(status==='revoked'||row.revoked_at)return {
-    code:'revoked',label:'Widerrufen',detail:row.revoked_at?`Widerrufen am ${timestampValue(row.revoked_at)?.slice(0,10)}`:'Qualifikationsnachweis wurde widerrufen',severity:'critical',
+function qualificationIssue(
+  row:QualificationRow,
+  days:number|null,
+  evidence:{status:string;label:string},
+  classification:{issue_code:string;label:string},
+):QualificationIssue{
+  const code=classification.issue_code;
+  const labels:Record<string,string>={
+    none:'Gültig',expiring:'Läuft bald ab',expired:'Abgelaufen',not_yet_valid:'Noch nicht gültig',
+    revoked:'Widerrufen',invalid:'Ungültig',missing_evidence:'Nachweis fehlt',unapproved_evidence:'Nachweis nicht freigegeben',
+    expired_evidence:'Nachweis abgelaufen',
   };
-  if(status==='invalid'||row.catalog_active===false)return {
-    code:'invalid',label:'Ungültig',detail:'Qualifikation ist ungültig oder im Katalog nicht mehr aktiv',severity:'critical',
-  };
-  if(status==='expired'||days!==null&&days<0)return {
-    code:'expired',label:'Abgelaufen',detail:days!==null?`Seit ${Math.abs(days)} Tagen abgelaufen`:'Qualifikation ist abgelaufen',severity:'critical',
-  };
-  if(row.computed_status==='expiring'||days!==null&&days<=90)return {
-    code:'expiring',label:'Läuft bald ab',detail:days!==null?`Noch ${days} Tage gültig`:'Qualifikation läuft in Kürze ab',severity:'medium',
-  };
-  if(evidence.status==='missing'||evidence.status==='not_found')return {
-    code:'missing_evidence',label:'Nachweis fehlt',detail:evidence.label,severity:'high',
-  };
-  if(evidence.status==='abgelaufen'||evidence.status==='noch_nicht_gueltig')return {
-    code:'expired_evidence',label:'Nachweis nicht gültig',detail:evidence.label,severity:'critical',
-  };
-  if(['nicht_freigegeben','pruefung_ausstehend'].includes(evidence.status))return {
-    code:'unapproved_evidence',label:'Nachweis nicht freigegeben',detail:evidence.label,severity:'high',
-  };
-  return {code:'none',label:'Gültig',detail:'Keine offene Qualifikationswarnung',severity:'medium'};
+  let detail:string;
+  if(code==='revoked')detail=row.revoked_at?`Widerrufen am ${timestampValue(row.revoked_at)?.slice(0,10)}`:'Qualifikationsnachweis wurde widerrufen';
+  else if(code==='expired')detail=days!==null?`Seit ${Math.abs(days)} Tagen abgelaufen`:'Qualifikation ist abgelaufen';
+  else if(code==='expiring')detail=days!==null?`Noch ${days} Tage gültig`:'Qualifikation läuft in Kürze ab';
+  else if(code==='not_yet_valid')detail=`Gültig ab ${String(row.valid_from??'').slice(0,10)}`;
+  else if(code==='missing_evidence'||code==='unapproved_evidence')detail=evidence.label;
+  else detail=classification.label;
+  return {code,label:labels[code]??classification.label,detail,severity:issueSeverity[code]??'medium'};
 }
 function enrichQualifications(rows:QualificationRow[],now=new Date()):EnrichedQualification[]{
   return rows.map(row=>{
-    const days=row.days_until_expiry??daysUntilValue(row.valid_until,now);
+    const days=daysUntil(row.valid_until,now);
     const evidence=classifyEvidence(row,now);
+    let requiredDocuments:string[]=[];
+    if(typeof row.required_documents==='string'){
+      try{requiredDocuments=JSON.parse(row.required_documents) as string[];}catch{requiredDocuments=[];}
+    }else requiredDocuments=row.required_documents??[];
+    const requiresEvidence=Boolean(row.required_document_type)||requiredDocuments.length>0;
+    const classification=classifyQualification({
+      storedStatus:row.status,
+      revokedAt:row.revoked_at,
+      catalogActive:row.catalog_active,
+      validFrom:row.valid_from,
+      validUntil:row.valid_until,
+      evidenceStatus:evidence.status,
+      requiresEvidence,
+      now,
+    });
     return {
       ...row,
+      computed_status:classification.status,
+      status_label:classification.label,
       days_until_expiry:days,
-      issue:qualificationIssue(row,days,evidence),
+      issue:qualificationIssue(row,days,evidence,classification),
       evidence_status:evidence.status,
       evidence_label:evidence.label,
       evidence_document_id:row.document_id??null,
@@ -556,23 +561,36 @@ objectManagementRouter.get(
             )
           UNION ALL
           SELECT oa.site_id,
-            CASE WHEN q.status IN ('revoked','invalid','expired') OR q.valid_until<CURRENT_DATE THEN 'critical'::text
-                 WHEN q.document_id IS NULL THEN 'high'::text ELSE 'medium'::text END,
+            CASE WHEN q.status='revoked' OR q.revoked_at IS NOT NULL THEN 'critical'::text
+                 WHEN q.status='invalid' OR c.active=false THEN 'critical'::text
+                 WHEN q.status='expired' OR q.valid_until<CURRENT_DATE THEN 'critical'::text
+                 WHEN q.valid_from>CURRENT_DATE THEN 'high'::text
+                 WHEN (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
+                      AND (q.document_id IS NULL OR d.approval_status IS DISTINCT FROM 'approved') THEN 'high'::text
+                 ELSE 'medium'::text END,
             'Personal','Qualifikation prüfen: '||e.name||' · '||COALESCE(c.name,q.code),
-            CASE WHEN q.status='revoked' THEN 'Qualifikation widerrufen'
+            CASE WHEN q.status='revoked' OR q.revoked_at IS NOT NULL THEN 'Qualifikation widerrufen'
                  WHEN q.status='invalid' OR c.active=false THEN 'Qualifikation ungültig oder Katalogeintrag inaktiv'
-                 WHEN q.valid_until<CURRENT_DATE THEN 'Qualifikation abgelaufen'
-                 WHEN q.document_id IS NULL THEN 'Kein Nachweis verknüpft'
+                 WHEN q.status='expired' OR q.valid_until<CURRENT_DATE THEN 'Qualifikation abgelaufen'
+                 WHEN q.valid_from>CURRENT_DATE THEN 'Qualifikation noch nicht gültig'
+                 WHEN (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
+                      AND q.document_id IS NULL THEN 'Kein Nachweis verknüpft'
+                 WHEN (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
+                      AND d.approval_status IS DISTINCT FROM 'approved' THEN 'Nachweis nicht freigegeben'
                  ELSE 'Qualifikation läuft bald ab' END,
             q.valid_until,'personal','qualifications:read',q.id::text,q.employee_id::text
           FROM employee_qualifications q
           JOIN employee_object_assignments oa ON oa.tenant_id=q.tenant_id AND oa.employee_id=q.employee_id
             AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
           JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
-          LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
+          LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
+            AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
+          LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
           WHERE q.tenant_id=$1 AND oa.site_id=ANY($8::uuid[])
-            AND (q.status IN ('revoked','invalid','expired') OR q.valid_until<CURRENT_DATE
-              OR q.valid_until<=CURRENT_DATE+INTERVAL '90 days' OR q.document_id IS NULL)
+            AND (q.status IN ('revoked','invalid','expired') OR q.revoked_at IS NOT NULL OR q.valid_until<CURRENT_DATE
+              OR q.valid_from>CURRENT_DATE OR q.valid_until<=CURRENT_DATE+INTERVAL '90 days'
+              OR ((c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
+                  AND (q.document_id IS NULL OR d.approval_status IS DISTINCT FROM 'approved')))
         )
         SELECT a.*,s.name AS site_name,
           CASE WHEN a.severity='critical' THEN 'A' WHEN a.severity='high' THEN 'B' ELSE 'C' END AS priority,
@@ -944,18 +962,11 @@ objectManagementRouter.get(
       const qualifications=canReadStaffing&&canReadSiteData('qualifications:read')?(await query<QualificationRow>(
         `SELECT q.id,q.employee_id,e.name AS employee_name,q.code,c.name AS qualification_name,
           q.valid_from,q.valid_until,q.status,q.document_id,q.issuing_authority,q.notes,q.revoked_at,q.updated_at,
-          c.active AS catalog_active,
+          c.active AS catalog_active,c.required_document_type,c.required_documents,
           d.title AS evidence_title,d.document_status AS evidence_document_status,
           d.approval_status AS evidence_approval_status,d.valid_from AS evidence_valid_from,
           d.valid_until AS evidence_valid_until,d.review_on AS evidence_review_on,d.reviewed_at AS evidence_reviewed_at,
-          latest.lifecycle_state AS evidence_lifecycle_state,
-          CASE WHEN q.status IN ('revoked','invalid') THEN q.status
-            WHEN q.valid_until IS NULL THEN 'valid'
-            WHEN q.valid_until<CURRENT_DATE THEN 'expired'
-            WHEN q.valid_until<=CURRENT_DATE+INTERVAL '90 days' THEN 'expiring'
-            ELSE 'valid' END AS computed_status,
-           CASE WHEN q.status IN ('revoked','invalid') OR q.valid_until IS NULL THEN NULL
-             ELSE (q.valid_until::date - CURRENT_DATE)::int END AS days_until_expiry
+          latest.lifecycle_state AS evidence_lifecycle_state
          FROM employee_qualifications q
          JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
          LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
@@ -1094,7 +1105,7 @@ objectManagementRouter.get(
         return counts;
       },{planned:0,open:0,in_progress:0,overdue:0,completed:0,cancelled:0}):null;
       const now=new Date();
-      const today=now.toISOString().slice(0,10);
+      const today=qualificationLocalDate(now);
       const day=(value:unknown):string|null=>{
         if(value===null||value===undefined||value==='')return null;
         return value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);

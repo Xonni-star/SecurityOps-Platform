@@ -34,6 +34,8 @@ type WatchbookPriority={code:string;name:string};
 type InstructionAcknowledgement={employee_id:string;employee_name:string;acknowledged_at:string};
 type QualificationIssue={code:string;label:string;detail:string;severity:'critical'|'high'|'medium'};
 type EmployeeQualification={id:string;employee_id:string;employee_name:string;code:string;qualification_name:string|null;valid_from:string|null;valid_until:string|null;status:string;computed_status:string;days_until_expiry?:number|null;issue?:QualificationIssue|null;evidence_status?:string|null;evidence_label?:string|null;evidence_document_id?:string|null;evidence_document_title?:string|null;last_checked_at?:string|null;employee_url?:string|null};
+type QualificationRequirement={id:string;site_id:string;catalog_id:string;code:string;qualification_name:string;category:string|null;required:boolean;active:boolean;responsible_employee_id:string|null;responsible_employee_name?:string|null;notes:string|null;catalog_active?:boolean;created_at?:string;updated_at?:string};
+type QualificationCatalogOption={id:string;code:string;name:string;active:boolean};
 type HandoverSummary={id:string;shift_id:string|null;title:string;status:string;created_at:string;participant_count:number;confirmation_count:number};
 type DocumentRequirement={id:string;document_type:string;required:boolean;responsible_employee_id:string|null;responsible_employee_name:string|null;missing:boolean;requirement_status?:DocumentStatus;status_label?:string;matching_document_id?:string|null;is_approved?:boolean;is_currently_valid?:boolean;is_reviewed?:boolean;review_state?:'none'|'pending'|'due_soon'|'overdue';days_until_expiry?:number|null};
 type MaintenanceOrder={id:string;site_id:string;device_id:string;device_name:string|null;asset_number:string|null;order_number:string;maintenance_type:string;description:string;priority_code:string;due_on:string|null;status:string;computed_status:'planned'|'open'|'in_progress'|'overdue'|'completed'|'cancelled';status_label:string;overdue:boolean;responsible_employee_id:string|null;responsible_employee_name:string|null;performed_work:string|null;result:string|null;remarks:string|null;next_maintenance_on:string|null;documents:{id:string;document_id:string;document_title?:string|null;document_status?:string|null;computed_status?:string|null}[];created_at:string};
@@ -340,6 +342,12 @@ export function Sites(){
   const [editDocumentTitle,setEditDocumentTitle]=useState('');
   const [editDocumentMetadata,setEditDocumentMetadata]=useState(emptyDocumentMetadata);
   const [documentRequirementForm,setDocumentRequirementForm]=useState({document_type:'',responsible_employee_id:'',required:true});
+  const [qualificationRequirements,setQualificationRequirements]=useState<QualificationRequirement[]|null>(null);
+  const [qualificationRequirementsLoading,setQualificationRequirementsLoading]=useState(false);
+  const [qualificationRequirementsError,setQualificationRequirementsError]=useState('');
+  const [qualificationCatalog,setQualificationCatalog]=useState<QualificationCatalogOption[]>([]);
+  const [qualificationRequirementForm,setQualificationRequirementForm]=useState({catalog_id:'',required:true,active:true,responsible_employee_id:'',notes:'',reason:''});
+  const [editingQualificationRequirementId,setEditingQualificationRequirementId]=useState<string|null>(null);
   const documentInput=useRef<HTMLInputElement>(null);
   const [taskCustomerId,setTaskCustomerId]=useState('');
   const [taskTitle,setTaskTitle]=useState('');
@@ -386,13 +394,15 @@ export function Sites(){
   }
   useEffect(()=>{if(!siteId){setSelected(null);void load();return;}void open(siteId);},[siteId]);
   async function open(id:string){
-    setDetailLoading(true);
+    setDetailLoading(true);setQualificationRequirementsLoading(true);setQualificationRequirements(null);setQualificationRequirementsError('');
     try{
       setSelected(null);
-      const [context,customerRows,employeeRows]=await Promise.all([
+      const [context,customerRows,employeeRows,catalogRows,requirementRows]=await Promise.all([
         api<Context>(`/sites/${id}/object-context`),
         writable&&hasPermission('customers:write')?api<Customer[]>('/customers'):Promise.resolve([]),
         hasPermission('employees:read')?api<Employee[]>('/employees'):Promise.resolve([]),
+        hasPermission('qualifications:read')?Promise.resolve(api<QualificationCatalogOption[]>('/qualifications/catalog')).catch(()=>[]):Promise.resolve([]),
+        hasPermission('qualifications:read')?Promise.resolve(api<QualificationRequirement[]>(`/sites/${id}/qualification-requirements`)).catch(()=>null):Promise.resolve(null),
       ]);
       if(context){
         setSelected(context);
@@ -400,14 +410,21 @@ export function Sites(){
         setForm({name:site.name,site_number:site.site_number??'',address:site.address??'',status:site.status,security_classification:site.security_classification,required_staff_count:site.required_staff_count??0});
         setDetails({alias:site.alias??'',site_type:site.site_type??'',description:site.description??'',street:site.street??'',house_number:site.house_number??'',postal_code:site.postal_code??'',city:site.city??'',contact_person:site.contact_person??'',object_manager_employee_id:site.object_manager_employee_id??'',operations_manager_employee_id:site.operations_manager_employee_id??''});
       }
-      setCustomers(customerRows??[]);setEmployees(employeeRows??[]);setDetailError('');
-    }catch(e){setSelected(null);setDetailError(withErrorHint(e));}
-    finally{setDetailLoading(false);}
+      setCustomers(customerRows??[]);setEmployees(employeeRows??[]);
+      setQualificationCatalog(Array.isArray(catalogRows)?catalogRows:[]);
+      setQualificationRequirements(Array.isArray(requirementRows)?requirementRows:[]);
+      setDetailError('');
+    }catch(e){setSelected(null);setDetailError(withErrorHint(e));setQualificationRequirements(null);}
+    finally{setDetailLoading(false);setQualificationRequirementsLoading(false);}
   }
   async function refreshContext(){
     if(!selected)return;
-    const context=await api<Context>(`/sites/${selected.site.id}/object-context`);
+    const [context,requirementRows]=await Promise.all([
+      api<Context>(`/sites/${selected.site.id}/object-context`),
+      hasPermission('qualifications:read')?Promise.resolve(api<QualificationRequirement[]>(`/sites/${selected.site.id}/qualification-requirements`)).catch(()=>null):Promise.resolve(null),
+    ]);
     if(context)setSelected(context);
+    if(hasPermission('qualifications:read'))setQualificationRequirements(Array.isArray(requirementRows)?requirementRows:[]);
   }
   async function saveDetails(event:FormEvent){
     event.preventDefault();if(!selected)return;
@@ -564,6 +581,37 @@ export function Sites(){
     if(!selected||!window.confirm(`Möchten Sie den Pflichtdokumenttyp „${requirement.document_type}“ entfernen? Bestehende Dokumente bleiben erhalten.`))return;
     try{await api(`/sites/${selected.site.id}/document-requirements/${requirement.id}`,{method:'DELETE'});await refreshContext();setError('');}
     catch(e){setError(withErrorHint(e));}
+  }
+  function startQualificationRequirementEdit(requirement:QualificationRequirement){
+    setEditingQualificationRequirementId(requirement.id);
+    setQualificationRequirementForm({catalog_id:requirement.catalog_id,required:requirement.required,active:requirement.active,responsible_employee_id:requirement.responsible_employee_id??'',notes:requirement.notes??'',reason:''});
+    setQualificationRequirementsError('');
+  }
+  function resetQualificationRequirementForm(){
+    setEditingQualificationRequirementId(null);
+    setQualificationRequirementForm({catalog_id:'',required:true,active:true,responsible_employee_id:'',notes:'',reason:''});
+  }
+  async function saveQualificationRequirement(event:FormEvent){
+    event.preventDefault();
+    if(!selected||!qualificationRequirementForm.catalog_id)return;
+    if(!qualificationRequirementForm.reason.trim()){setQualificationRequirementsError(commonText.reasonRequired);return;}
+    const body={catalog_id:qualificationRequirementForm.catalog_id,required:qualificationRequirementForm.required,active:qualificationRequirementForm.active,responsible_employee_id:qualificationRequirementForm.responsible_employee_id||null,notes:qualificationRequirementForm.notes.trim()||null,reason:qualificationRequirementForm.reason.trim()};
+    try{
+      await api(editingQualificationRequirementId
+          ?`/sites/${selected.site.id}/qualification-requirements/${editingQualificationRequirementId}`
+          :`/sites/${selected.site.id}/qualification-requirements`,
+        {method:editingQualificationRequirementId?'PATCH':'POST',body:JSON.stringify(body)});
+      resetQualificationRequirementForm();setQualificationRequirementsError('');await refreshContext();setError('');
+    }catch(e){setQualificationRequirementsError(withErrorHint(e));}
+  }
+  async function deactivateQualificationRequirement(requirement:QualificationRequirement){
+    if(!selected)return;
+    if(!qualificationRequirementForm.reason.trim()){setQualificationRequirementsError(commonText.reasonRequired);return;}
+    try{
+      await api(`/sites/${selected.site.id}/qualification-requirements/${requirement.id}`,{method:'DELETE',body:JSON.stringify({reason:qualificationRequirementForm.reason.trim()})});
+      if(editingQualificationRequirementId===requirement.id)resetQualificationRequirementForm();
+      setQualificationRequirementsError('');await refreshContext();setError('');
+    }catch(e){setQualificationRequirementsError(withErrorHint(e));}
   }
   async function downloadDocument(document:SiteDocument,version:DmsVersion){
     try{
@@ -1064,6 +1112,22 @@ export function Sites(){
         <span className="object-qualification-meta"> · {qualificationEvidence(qualification)}{qualification.last_checked_at?` · zuletzt geprüft ${formatDateTime(qualification.last_checked_at)}`:''}</span>
         {hasPermission('qualifications:read')&&<Link to={qualification.employee_url??`/employees/${qualification.employee_id}/qualifikationen`}>Nachweis öffnen</Link>}
       </li>)}</ul>}
+      <h3>Pflichtqualifikationen des Objekts</h3>
+      {qualificationRequirementsLoading?<p role="status">Pflichtqualifikationen werden geladen …</p>:qualificationRequirements===null?<p>Keine Berechtigung für Qualifikationsanforderungen.</p>:qualificationRequirements.length===0?<p>Keine Pflichtqualifikationen für dieses Objekt hinterlegt.</p>:<ul>{qualificationRequirements.map(requirement=><li key={requirement.id} className={`${requirement.active&&requirement.required?'':'object-warning'} ${recordFocusClass('requirement',requirement.id)}`.trim()}><strong>{requirement.qualification_name??qualificationLabel(requirement.code)}</strong> · {requirement.code} · {requirement.required?'Pflicht':'Optional'} · {requirement.active?'Aktiv':'Deaktiviert'}{requirement.category?` · ${requirement.category}`:''}{requirement.catalog_active===false?' · Katalogeintrag deaktiviert':''}{requirement.responsible_employee_name?` · Verantwortlich: ${requirement.responsible_employee_name}`:''}{requirement.notes?` · ${requirement.notes}`:''}
+        {hasPermission('qualifications:write')&&<><button type="button" onClick={()=>startQualificationRequirementEdit(requirement)}>Anforderung bearbeiten</button>{requirement.active&&<button type="button" onClick={()=>void deactivateQualificationRequirement(requirement)}>Anforderung deaktivieren</button>}</>}
+      </li>)}</ul>}
+      {qualificationRequirementsError&&<p role="alert">{qualificationRequirementsError}</p>}
+      {hasPermission('qualifications:write')&&qualificationRequirements!==null&&<form onSubmit={saveQualificationRequirement} aria-label="Pflichtqualifikation hinterlegen">
+        <h4>{editingQualificationRequirementId?'Pflichtqualifikation bearbeiten':'Neue Pflichtqualifikation hinterlegen'}</h4>
+        <label>Pflichtqualifikation aus Katalog<select required value={qualificationRequirementForm.catalog_id} onChange={event=>setQualificationRequirementForm({...qualificationRequirementForm,catalog_id:event.target.value})}><option value="">Bitte wählen</option>{qualificationCatalog.filter(entry=>entry.active||entry.id===qualificationRequirementForm.catalog_id).map(entry=><option key={entry.id} value={entry.id}>{entry.name} ({entry.code})</option>)}</select></label>
+        {hasPermission('employees:read')&&<label>Verantwortlich für die Qualifikation<select value={qualificationRequirementForm.responsible_employee_id} onChange={event=>setQualificationRequirementForm({...qualificationRequirementForm,responsible_employee_id:event.target.value})}><option value="">Nicht zugewiesen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>}
+        <label>Notizen<textarea value={qualificationRequirementForm.notes} onChange={event=>setQualificationRequirementForm({...qualificationRequirementForm,notes:event.target.value})}/></label>
+        <label><input type="checkbox" checked={qualificationRequirementForm.required} onChange={event=>setQualificationRequirementForm({...qualificationRequirementForm,required:event.target.checked})}/> Pflichtqualifikation</label>
+        <label><input type="checkbox" checked={qualificationRequirementForm.active} onChange={event=>setQualificationRequirementForm({...qualificationRequirementForm,active:event.target.checked})}/> Aktiv</label>
+        <label>Begründung<input required value={qualificationRequirementForm.reason} onChange={event=>setQualificationRequirementForm({...qualificationRequirementForm,reason:event.target.value})} placeholder="Grund für die Anforderung"/></label>
+        <button>{editingQualificationRequirementId?'Anforderung speichern':'Pflichtqualifikation speichern'}</button>
+        {editingQualificationRequirementId&&<button type="button" onClick={resetQualificationRequirementForm}>Abbrechen</button>}
+      </form>}
       <h3>Zuordnungshistorie</h3>
       {selected.assignmentHistory==null?<p>Keine Berechtigung für die Zuordnungshistorie.</p>:selected.assignmentHistory.length===0?<p>Keine Zuordnungshistorie vorhanden.</p>:<ul>{selected.assignmentHistory.map(assignment=><li key={assignment.id} className={recordFocusClass('assignment',assignment.id)}><strong>{assignment.employee_name}</strong>{assignment.employee_number?` · Personalnr. ${assignment.employee_number}`:''} · {assignmentTypeLabel(assignment.assignment_type)}{assignment.role?` · ${shiftRoleLabel(assignment.role)}`:''} · {formatDateOnly(assignment.starts_on)??commonText.notAvailable}{assignment.ends_on?` – ${formatDateOnly(assignment.ends_on)??commonText.notAvailable}`:' – laufend'}</li>)}</ul>}
       {hasPermission('qualifications:read')&&<button type="button" onClick={()=>navigate('/employees')}>Personalverwaltung öffnen</button>}

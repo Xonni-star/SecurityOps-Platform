@@ -74,7 +74,16 @@ phase5Router.get('/reports/statistics',requirePermission('reports:read'),async(r
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE deviation<>'none')::integer deviations FROM patrol_scans WHERE tenant_id=$1 AND scanned_at BETWEEN $2 AND $3`,[tenant,from,to]),
       query(`SELECT COALESCE(SUM(minutes),0)::integer minutes,COUNT(*)::integer entries FROM work_time_entries WHERE tenant_id=$1 AND started_at BETWEEN $2 AND $3`,[tenant,from,to]),
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE employment_status IN ('active','probation'))::integer active,COUNT(*) FILTER(WHERE employment_status IN ('terminated','archived'))::integer inactive FROM employees WHERE tenant_id=$1`,[tenant]),
-      query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE status='valid' AND valid_until IS NOT NULL AND valid_until<CURRENT_DATE)::integer expired,COUNT(*) FILTER(WHERE status='valid' AND valid_until IS NOT NULL AND valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days')::integer expiring FROM employee_qualifications WHERE tenant_id=$1`,[tenant]),
+      query(`SELECT COUNT(*)::integer total,
+        COUNT(*) FILTER(WHERE q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL
+          OR (q.valid_until IS NOT NULL AND q.valid_until<(now() AT TIME ZONE 'Europe/Berlin')::date))::integer expired,
+        COUNT(*) FILTER(WHERE q.status='valid' AND q.revoked_at IS NULL
+          AND (q.valid_from IS NULL OR q.valid_from<=(now() AT TIME ZONE 'Europe/Berlin')::date)
+          AND q.valid_until IS NOT NULL
+          AND q.valid_until BETWEEN (now() AT TIME ZONE 'Europe/Berlin')::date
+            AND (now() AT TIME ZONE 'Europe/Berlin')::date+INTERVAL '90 days')::integer expiring,
+        COUNT(*) FILTER(WHERE q.status IN ('revoked','invalid') OR q.revoked_at IS NOT NULL)::integer invalid_revoked
+        FROM employee_qualifications q WHERE q.tenant_id=$1`,[tenant]),
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE starts_at<=now() AND ends_at>=now())::integer current FROM employee_absences WHERE tenant_id=$1 AND status IN ('requested','approved')`,[tenant]),
     ]);
     res.json({from,to,alarms:alarms.rows[0],incidents:incidents.rows[0],patrols:patrols.rows[0],work_time:work.rows[0],employees:employees.rows[0],qualifications:qualifications.rows[0],absences:absences.rows[0]});

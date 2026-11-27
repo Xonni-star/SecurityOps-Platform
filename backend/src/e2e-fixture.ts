@@ -5,6 +5,8 @@ import { env } from "./config/env.js";
 const fixture = process.env.E2E_FIXTURE === "isolated";
 const email = process.env.E2E_EMAIL;
 const password = process.env.E2E_PASSWORD;
+const adminEmail = process.env.E2E_ADMIN_EMAIL ?? "e2e-qm-admin@example.invalid";
+const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? password;
 const tenantName = process.env.E2E_TENANT_NAME ?? "e2e-phase-4";
 
 if (
@@ -35,6 +37,7 @@ const ids = {
   qualification: "00000000-0000-4000-8000-000000000113",
   authorUser: "00000000-0000-4000-8000-000000000114",
   viewerUser: "00000000-0000-4000-8000-000000000118",
+  adminUser: "00000000-0000-4000-8000-000000000119",
   fixtureSession: "00000000-0000-4000-8000-000000000115",
   ruleProfile: "00000000-0000-4000-8000-000000000116",
   operationalDevice: "00000000-0000-4000-8000-000000000117",
@@ -69,6 +72,22 @@ try {
       ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
         role='viewer',mfa_secret_ciphertext=NULL,mfa_secret_nonce=NULL,mfa_secret_tag=NULL,mfa_enrolled_at=NULL,updated_at=now()`,
     [ids.viewerUser, ids.tenant, "e2e-viewer@example.invalid", hash],
+  );
+  // Der Fixture-Admin besitzt die Katalog-/Erinnerungs-Rechte des admin-Rolle.
+  // MFA ist ausschließlich für diesen isolierten Test-Tenant deaktiviert; die
+  // Produktionspolicy bleibt unberührt.
+  await client.query(
+    `INSERT INTO users(id,tenant_id,email,password_hash,role,mfa_secret_ciphertext,mfa_secret_nonce,mfa_secret_tag,mfa_enrolled_at)
+      VALUES($1,$2,$3,$4,'admin',NULL,NULL,NULL,NULL)
+      ON CONFLICT(id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
+        role='admin',mfa_secret_ciphertext=NULL,mfa_secret_nonce=NULL,mfa_secret_tag=NULL,mfa_enrolled_at=NULL,updated_at=now()`,
+    [ids.adminUser, ids.tenant, adminEmail, await argon2.hash(adminPassword!, { type: argon2.argon2id })],
+  );
+  await client.query(
+    `INSERT INTO tenant_mfa_policies(tenant_id,required_roles,updated_at)
+      VALUES($1,ARRAY[]::text[],now())
+      ON CONFLICT(tenant_id) DO UPDATE SET required_roles=ARRAY[]::text[],updated_at=now()`,
+    [ids.tenant],
   );
   await client.query(
     `INSERT INTO sessions(id,tenant_id,user_id,token_hash,csrf_token,expires_at)
@@ -174,6 +193,7 @@ try {
   console.log(
     JSON.stringify({
       email,
+      adminEmail,
       authorEmail: "e2e-author@example.invalid",
       tenantId: ids.tenant,
       siteId: ids.site,

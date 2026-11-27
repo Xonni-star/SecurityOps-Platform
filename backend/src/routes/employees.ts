@@ -3,6 +3,7 @@ import {z} from 'zod';
 import {query,withTransaction} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
+import {classifyQualification,daysUntil,evidenceStatusOf} from '../services/qualification-status.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
@@ -101,6 +102,11 @@ const absenceSchema=z.object({
 export const employeesRouter=Router();
 employeesRouter.use('/employees',requireAuth);
 
+// Zentrale Gültigkeitsregeln für die kompakten Mitarbeiteransichten. Die
+// vollständige Klassifikation liegt in services/qualification-status.ts.
+const qualificationProblem=`q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL OR (q.valid_until IS NOT NULL AND q.valid_until<CURRENT_DATE) OR (q.valid_from IS NOT NULL AND q.valid_from>CURRENT_DATE)`;
+const qualificationCurrentlyValid=`q.status='valid' AND q.revoked_at IS NULL AND (q.valid_from IS NULL OR q.valid_from<=CURRENT_DATE) AND (q.valid_until IS NULL OR q.valid_until>=CURRENT_DATE)`;
+
 employeesRouter.get('/employees/overview',requirePermission('employees:read'),async(req,res,next)=>{
   try{
     const rows=(await query(
@@ -116,18 +122,17 @@ employeesRouter.get('/employees/overview',requirePermission('employees:read'),as
         CASE
           WHEN EXISTS (
             SELECT 1 FROM employee_qualifications q
-            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id
-              AND (q.status IN ('expired','revoked','invalid') OR q.valid_until<CURRENT_DATE)
+            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND (${qualificationProblem})
           ) THEN 'abgelaufen'
           WHEN EXISTS (
             SELECT 1 FROM employee_qualifications q
             WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id
-              AND q.status='valid' AND q.valid_until IS NOT NULL
+              AND ${qualificationCurrentlyValid} AND q.valid_until IS NOT NULL
               AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'
           ) THEN 'läuft bald ab'
           WHEN EXISTS (
             SELECT 1 FROM employee_qualifications q
-            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND q.status='valid'
+            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND ${qualificationCurrentlyValid}
           ) THEN 'gültig'
           ELSE 'keine Daten'
         END AS qualification_status
@@ -153,12 +158,14 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
           COUNT(*) FILTER(WHERE employment_status='terminated')::int terminated
          FROM employees WHERE tenant_id=$1`,[tenant]),
       query<{count:number}>(
-        `SELECT COUNT(*)::int count FROM employee_qualifications
-         WHERE tenant_id=$1 AND status='valid' AND valid_until IS NOT NULL
-           AND valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'`,[tenant]),
+        `SELECT COUNT(*)::int count FROM employee_qualifications q
+         WHERE q.tenant_id=$1 AND q.status='valid' AND q.revoked_at IS NULL
+           AND (q.valid_from IS NULL OR q.valid_from<=CURRENT_DATE)
+           AND q.valid_until IS NOT NULL
+           AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'`,[tenant]),
       query<{count:number}>(
-        `SELECT COUNT(*)::int count FROM employee_qualifications
-         WHERE tenant_id=$1 AND (status IN ('expired','revoked','invalid') OR valid_until<CURRENT_DATE)`,[tenant]),
+        `SELECT COUNT(*)::int count FROM employee_qualifications q
+         WHERE q.tenant_id=$1 AND (${qualificationProblem})`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(DISTINCT a.employee_id)::int count FROM schedule_assignments a
          JOIN schedule_shifts s ON s.tenant_id=a.tenant_id AND s.id=a.shift_id
@@ -185,7 +192,7 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
            AND NOT EXISTS (
              SELECT 1 FROM employee_qualifications q
              WHERE q.tenant_id=c.tenant_id AND q.employee_id=e.id AND q.code=c.code
-               AND q.status='valid' AND (q.valid_until IS NULL OR q.valid_until>=CURRENT_DATE)
+               AND ${qualificationCurrentlyValid}
            )`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employees e
@@ -196,7 +203,7 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
       query<{employee:string;code:string;valid_until:string}>(
         `SELECT e.name employee,q.code,COALESCE(q.valid_until::text,'') valid_until
          FROM employee_qualifications q JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
-         WHERE q.tenant_id=$1 AND q.status='valid' AND q.valid_until IS NOT NULL
+         WHERE q.tenant_id=$1 AND ${qualificationCurrentlyValid} AND q.valid_until IS NOT NULL
          AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'
          ORDER BY q.valid_until,e.name LIMIT 10`,
         [tenant],
@@ -263,8 +270,18 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
     if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
     const [contracts,qualifications,absences,objectAssignments,workTime,documents,availability]=await Promise.all([
       query('SELECT * FROM employee_contracts WHERE tenant_id=$1 AND employee_id=$2 ORDER BY starts_on DESC',[req.user!.tenantId,id]),
-      query(`SELECT q.*,c.name AS catalog_name,c.category
-             FROM employee_qualifications q LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
+      query(`SELECT q.*,c.name AS catalog_name,c.category,c.active AS catalog_active,c.required_document_type,c.required_documents,
+             d.title AS document_title,d.approval_status AS document_approval_status,
+             d.valid_from AS document_valid_from,d.valid_until AS document_valid_until,
+             dv.lifecycle_state AS document_lifecycle_state
+             FROM employee_qualifications q
+             LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
+               AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
+             LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+             LEFT JOIN LATERAL (
+               SELECT v.lifecycle_state FROM dms_versions v
+                WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id ORDER BY v.version_no DESC LIMIT 1
+             ) dv ON TRUE
              WHERE q.tenant_id=$1 AND q.employee_id=$2 ORDER BY q.valid_until NULLS LAST`,[req.user!.tenantId,id]),
       query('SELECT * FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2 ORDER BY starts_at DESC',[req.user!.tenantId,id]),
       query(`SELECT oa.*,s.name AS site_name
@@ -281,10 +298,32 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
              GROUP BY d.id ORDER BY d.created_at DESC`,[req.user!.tenantId,id]),
       query('SELECT * FROM employee_availability WHERE tenant_id=$1 AND employee_id=$2 ORDER BY weekday,starts_time',[req.user!.tenantId,id]),
     ]);
+    const enrichedQualifications=qualifications.rows.map(row=>{
+      const requiredDocuments=Array.isArray(row.required_documents)?row.required_documents as unknown[]:[];
+      const evidence=evidenceStatusOf({
+        document_id:row.document_id,
+        evidence_document_status:row.document_status??row.document_approval_status,
+        evidence_approval_status:row.document_approval_status,
+        evidence_lifecycle_state:row.document_lifecycle_state,
+        evidence_valid_from:row.document_valid_from,
+        evidence_valid_until:row.document_valid_until,
+      });
+      const classification=classifyQualification({
+        storedStatus:row.status,
+        revokedAt:row.revoked_at,
+        catalogActive:row.catalog_active,
+        validFrom:row.valid_from,
+        validUntil:row.valid_until,
+        evidenceStatus:evidence??undefined,
+        requiresEvidence:Boolean(row.required_document_type)||requiredDocuments.length>0,
+      });
+      return {...row,computed_status:classification.status,status_label:classification.label,
+        days_until_expiry:daysUntil(row.valid_until),document_status:evidence};
+    });
     res.json({
       employee,
       contracts:contracts.rows,
-      qualifications:qualifications.rows,
+      qualifications:enrichedQualifications,
       absences:absences.rows,
       object_assignments:objectAssignments.rows,
       work_time:workTime.rows,

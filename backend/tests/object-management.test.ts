@@ -400,7 +400,8 @@ describe('object management',()=>{
         {code:'handover:read',scope:'site'},
       ],
     };
-    const qualification={id:'qualification-1',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',computed_status:'expiring'};
+    const qualification={id:'qualification-1',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',
+      status:'valid',valid_until:'2026-12-20',computed_status:'expiring'};
     const handover={id:'handover-1',title:'Night shift transfer',status:'open',participant_count:2,confirmation_count:1};
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([scoped]);
@@ -414,7 +415,7 @@ describe('object management',()=>{
     expect(response.status).toBe(200);
     expect(response.body.qualifications).toEqual([expect.objectContaining({
       ...qualification,
-      days_until_expiry:null,
+      days_until_expiry:expect.any(Number),
       issue:expect.objectContaining({code:'expiring',severity:'medium'}),
       evidence_status:'missing',
       evidence_label:'Kein Nachweis verknüpft',
@@ -441,7 +442,7 @@ describe('object management',()=>{
     };
     const qualifications=[
       {id:'q-revoked',employee_id:'employee-1',employee_name:'Mia Guard',code:'first_aid',qualification_name:'Erste Hilfe',status:'revoked',computed_status:'revoked',valid_until:'2030-01-01',days_until_expiry:1200,document_id:'document-1',revoked_at:'2026-11-01T10:00:00Z',updated_at:'2026-11-20T09:00:00Z'},
-      {id:'q-missing',employee_id:'employee-2',employee_name:'Leo Guard',code:'security',qualification_name:'Sicherheitsdienst',status:'valid',computed_status:'valid',valid_until:'2030-01-01',days_until_expiry:1200,updated_at:'2026-11-21T09:00:00Z'},
+      {id:'q-missing',employee_id:'employee-2',employee_name:'Leo Guard',code:'security',qualification_name:'Sicherheitsdienst',status:'valid',computed_status:'valid',valid_until:'2030-01-01',days_until_expiry:1200,required_document_type:'Sicherheitsdienstausweis',updated_at:'2026-11-21T09:00:00Z'},
       {id:'q-expiring',employee_id:'employee-3',employee_name:'Nora Guard',code:'first_aid',qualification_name:'Erste Hilfe',status:'valid',computed_status:'expiring',valid_until:'2026-12-20',days_until_expiry:25,updated_at:'2026-11-22T09:00:00Z'},
     ];
     const staffing=[
