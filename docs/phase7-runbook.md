@@ -13,8 +13,11 @@ zuständige Datenschutzrolle eskaliert.
 Staging und Produktion verwenden getrennte Datenbanken, Domains, Cookies und
 Secret-Sätze. Secrets werden ausschließlich über den Deployment-Secret-Store bzw.
 `.env.production` außerhalb des Repositories injiziert. Erforderlich sind mindestens
-`POSTGRES_USER`, `POSTGRES_PASSWORD`, `CORS_ORIGIN` sowie die jeweils aktivierten
-SMTP-, SMS- und TimeScan-Secrets.
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `CORS_ORIGIN`, `MFA_ENCRYPTION_KEY`,
+`KEY_QR_SECRET`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` sowie die jeweils
+aktivierten SMTP-, SMS- und TimeScan-Secrets. Während einer QR-Schlüsselrotation
+kommt `KEY_QR_SECRET_PREVIOUS` für maximal 15 Minuten hinzu; der Ablauf steht in
+[`key-qr-rotation.md`](key-qr-rotation.md).
 
 ## Deployment
 
@@ -23,7 +26,9 @@ SMTP-, SMS- und TimeScan-Secrets.
    Erstinstallation, nicht für laufende Migrationen gedacht.
 3. Produktions-Compose starten:
    `docker compose --env-file .env.production -f docker-compose.production.yml up -d --build`
-4. `curl --fail https://<domain>/ready` und die WebSocket-Verbindung prüfen.
+4. `curl --fail https://<domain>/ready` und `curl --fail https://<domain>/ready/dms`
+   sowie die WebSocket-Verbindung prüfen. `/ready/dms` meldet nur `ready`, wenn
+   MinIO-Bucket und ClamAV erreichbar sind.
 5. UAT-Smoke-Szenario aus `docs/phase7-uat-checklist.md` durchführen.
 
 Der Workflow `.github/workflows/deploy.yml` deployt manuell nach Staging oder

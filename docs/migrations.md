@@ -267,4 +267,7 @@ adds `keys:create`, `keys:update`, `keys:export`, `keys:view_history`,
 viewer grants. Existing `keys:*` codes are unchanged. `key_reminder_state.days`
 permits `-1` (overdue) plus the configurable `0`, `1`, `3` and `7` day offsets;
 `KEY_REMINDER_DAYS` accepts only that supported subset, so configuration can never
-write a value rejected by the constraint.
+write a value rejected by the constraint. `KEY_QR_SECRET` and
+`KEY_QR_SECRET_PREVIOUS` are environment-only signing keys; no migration stores
+or rotates them. The multiple-token-per-key design already permits old and new
+reference hashes to coexist during a rotation, so no schema change is needed.

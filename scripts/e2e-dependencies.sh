@@ -35,41 +35,19 @@ try {
 console.log(`DMS bucket ready: ${bucket}`);
 '
 
-echo "Preparing isolated ClamAV test scanner"
-if ! docker compose exec -T backend node -e '
-const net = require("node:net");
-const socket = net.createConnection({host: "127.0.0.1", port: 3310});
-socket.on("connect", () => { socket.end(); process.exit(0); });
-socket.on("error", () => process.exit(1));
-' >/dev/null 2>&1; then
-  docker compose exec -d backend node -e '
-const net = require("node:net");
-net.createServer(socket => {
-  socket.resume();
-  socket.on("error", () => undefined);
-  socket.on("end", () => {
-    if (!socket.destroyed) socket.end("stream: OK\0");
-  });
-}).on("error", error => {
-  console.error(error);
-  process.exit(1);
-}).listen(3310, "0.0.0.0", () => console.log("Isolated ClamAV test scanner ready on 3310"));
-'
-fi
-
-for _ in $(seq 1 30); do
-  if docker compose exec -T backend node -e '
-const net = require("node:net");
-const socket = net.createConnection({host: "127.0.0.1", port: 3310});
-socket.on("connect", () => { socket.end(); process.exit(0); });
-socket.on("error", () => process.exit(1));
-' >/dev/null 2>&1; then
+echo "Waiting for the real ClamAV service and DMS storage"
+# Der frühere E2E-Fake-Scanner im Backend-Container ist bewusst entfernt: er
+# hat jeden Upload ungeprüft freigegeben. E2E läuft jetzt gegen denselben
+# echten ClamAV-Dienst wie der Regelbetrieb. Die offizielle EICAR-Testsignatur
+# wird ausschließlich in den isolierten Backend-Tests verwendet.
+for _ in $(seq 1 60); do
+  if docker compose exec -T backend wget -qO- http://127.0.0.1:3000/ready/dms >/dev/null 2>&1; then
     echo "E2E dependencies ready"
     exit 0
   fi
   sleep 1
 done
 
-echo "Isolated ClamAV test scanner did not become ready" >&2
-docker compose logs --no-color backend | tail -50 >&2
+echo "DMS storage or real ClamAV scanner did not become ready" >&2
+docker compose logs --no-color clamav backend | tail -80 >&2
 exit 1

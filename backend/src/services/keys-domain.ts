@@ -79,9 +79,11 @@ export type QrTokenVerification=
   {valid:true;tenantId:string;keyId:string;expiresAt:string}
   |{valid:false;reason:'malformed'|'invalid_signature'|'expired'|'tenant_mismatch'|'key_mismatch'};
 
-/** Constant-time HMAC verification with tenant, key and expiry binding. */
+/** Constant-time HMAC verification with tenant, key and expiry binding.
+ *  Several secrets may be passed during a rotation: the active one first,
+ *  followed by retired secrets whose references have not expired yet. */
 export function verifyKeyQrToken(
-  secret:string,
+  secret:string|string[],
   token:string,
   expected:{tenantId:string;keyId?:string},
   now=new Date(),
@@ -97,9 +99,13 @@ export function verifyKeyQrToken(
   if(typeof tid!=='string'||typeof kid!=='string'||typeof exp!=='string')return fail('malformed');
   const expiresAt=new Date(exp);
   if(!Number.isFinite(expiresAt.getTime()))return fail('malformed');
-  const expectedSignature=crypto.createHmac('sha256',secret).update(payloadPart).digest();
+  const secrets=Array.isArray(secret)?secret:[secret];
   const providedSignature=Buffer.from(signaturePart,'base64url');
-  if(expectedSignature.length!==providedSignature.length||!crypto.timingSafeEqual(expectedSignature,providedSignature))return fail('invalid_signature');
+  const signatureValid=secrets.some(candidate=>{
+    const expectedSignature=crypto.createHmac('sha256',candidate).update(payloadPart).digest();
+    return expectedSignature.length===providedSignature.length&&crypto.timingSafeEqual(expectedSignature,providedSignature);
+  });
+  if(!signatureValid)return fail('invalid_signature');
   if(tid!==expected.tenantId)return fail('tenant_mismatch');
   if(expected.keyId&&kid!==expected.keyId)return fail('key_mismatch');
   if(expiresAt.getTime()<=now.getTime())return fail('expired');

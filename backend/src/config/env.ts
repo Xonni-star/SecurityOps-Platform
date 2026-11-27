@@ -21,23 +21,49 @@ function shannonEntropy(value:string):number{
     return sum-probability*Math.log2(probability);
   },0);
 }
+function assertStrongQrSecret(value:string,label:string,otherSecrets:string[]=[]){
+  const weak=value.length<32||value.length>512
+    ||Array.from(value).some(character=>/\s/.test(character)||character.charCodeAt(0)<=31||character.charCodeAt(0)===127)
+    ||new Set(value).size<12||/(.)\1{5,}/.test(value)
+    ||shannonEntropy(value)<3.5
+    ||knownWeakQrSecrets.has(value.toLowerCase())
+    ||otherSecrets.some(secret=>secret&&secret===value);
+  if(weak)throw new Error(`${label} must be a strong random secret (at least 32 characters, high entropy, no whitespace or repeated patterns, distinct from all other secrets)`);
+}
+const isPersistentRuntime=(nodeEnv:string)=>nodeEnv!=='development'&&nodeEnv!=='test';
 /**
  * QR signing secrets are never taken from other secrets and never fall back to
- * a compiled-in value in production. A missing secret only gets a cryptographically
- * random, per-process secret in an explicitly non-production environment.
+ * a compiled-in value outside purely local development/test. A missing secret
+ * only gets a cryptographically random, per-process secret in those environments.
  */
-export function parseKeyQrSecret(nodeEnv:string,configured:string|undefined):{secret:string;source:'configured'|'ephemeral'}{
+export function parseKeyQrSecret(nodeEnv:string,configured:string|undefined,otherSecrets:string[]=[]):{secret:string;source:'configured'|'ephemeral'}{
   if(configured!==undefined){
-    const weak=configured.length<32||configured.length>512
-      ||Array.from(configured).some(character=>/\s/.test(character)||character.charCodeAt(0)<=31||character.charCodeAt(0)===127)
-      ||new Set(configured).size<12||/(.)\1{5,}/.test(configured)
-      ||shannonEntropy(configured)<3.5
-      ||knownWeakQrSecrets.has(configured.toLowerCase());
-    if(weak)throw new Error('KEY_QR_SECRET must be a strong random secret (at least 32 characters, high entropy, no whitespace or repeated patterns)');
+    assertStrongQrSecret(configured,'KEY_QR_SECRET',otherSecrets);
     return {secret:configured,source:'configured'};
   }
-  if(nodeEnv==='production')throw new Error('KEY_QR_SECRET is required in production; generate one with: openssl rand -hex 32');
+  if(isPersistentRuntime(nodeEnv))throw new Error(nodeEnv==='production'
+    ?'KEY_QR_SECRET is required in production; generate one with: openssl rand -hex 32'
+    :`KEY_QR_SECRET is required in ${nodeEnv}; generate one with: openssl rand -hex 32`);
   return {secret:crypto.randomBytes(32).toString('base64url'),source:'ephemeral'};
+}
+/**
+ * The active secret signs new QR references. Previous secrets are accepted for
+ * verification only, so already issued references survive a rolling restart for
+ * their remaining 15-minute lifetime. Reissuing a QR still revokes the old
+ * reference immediately via the database hash check.
+ */
+export function parseKeyQrSecrets(
+  nodeEnv:string,
+  configured:string|undefined,
+  previousConfigured:string|undefined,
+  otherSecrets:string[]=[],
+):{secrets:string[];previous:string[];source:'configured'|'ephemeral'}{
+  const active=parseKeyQrSecret(nodeEnv,configured,otherSecrets);
+  const previous=(previousConfigured??'').split(',').map(value=>value.trim()).filter(Boolean);
+  for(const value of previous){
+    assertStrongQrSecret(value,'KEY_QR_SECRET_PREVIOUS',[active.secret,...otherSecrets,...previous.filter(other=>other!==value)]);
+  }
+  return {secrets:[active.secret,...previous],previous,source:active.source};
 }
 const schema=z.object({
   NODE_ENV:z.string().default('development'),
@@ -67,6 +93,7 @@ const schema=z.object({
   BACKUP_SECRET_KEY:optionalString,
   WATCHBOOK_HASH_SECRET:optionalString,
   KEY_QR_SECRET:optionalString,
+  KEY_QR_SECRET_PREVIOUS:optionalString,
   KEY_REMINDER_DAYS:reminderDays,
   KEY_REMINDER_INTERVAL_MS:z.coerce.number().int().min(60000).max(604800000).default(3600000),
   DMS_STORAGE_PROVIDER:z.enum(['minio']).default('minio'),
@@ -85,11 +112,15 @@ const schema=z.object({
   LOG_LEVEL:z.string().default('info'),
 });
 const parsedEnv=schema.parse(process.env);
-const keyQrConfig=parseKeyQrSecret(parsedEnv.NODE_ENV,parsedEnv.KEY_QR_SECRET);
+const otherQrSecrets=[parsedEnv.MFA_ENCRYPTION_KEY,parsedEnv.BACKUP_SECRET_KEY,parsedEnv.WATCHBOOK_HASH_SECRET]
+  .filter((value):value is string=>Boolean(value));
+const keyQrConfig=parseKeyQrSecrets(parsedEnv.NODE_ENV,parsedEnv.KEY_QR_SECRET,parsedEnv.KEY_QR_SECRET_PREVIOUS,otherQrSecrets);
 if(keyQrConfig.source==='ephemeral'){
   console.warn('KEY_QR_SECRET is not configured; an ephemeral development-only QR secret is in use. Issued QR references will be invalid after a restart.');
 }
-export const keyQrSecret=keyQrConfig.secret;
+export const keyQrSecret=keyQrConfig.secrets[0];
+/** Active secret first, then retired secrets still accepted during rotation. */
+export const keyQrSecrets=keyQrConfig.secrets;
 export const keyQrSecretSource=keyQrConfig.source;
 
 export function parseAllowedOrigins(nodeEnv:string,configuredOrigin:string|undefined):string[]{

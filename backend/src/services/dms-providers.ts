@@ -1,12 +1,14 @@
 import {createHash} from 'node:crypto';
 import net from 'node:net';
-import {DeleteObjectCommand,GetObjectCommand,PutObjectCommand,S3Client} from '@aws-sdk/client-s3';
+import {DeleteObjectCommand,GetObjectCommand,HeadBucketCommand,PutObjectCommand,S3Client} from '@aws-sdk/client-s3';
 import {env} from '../config/env.js';
 
 export interface BlobStorageAdapter {
   put(key:string, content:Buffer, contentType:string):Promise<void>;
   get(key:string):Promise<{content:Buffer;contentType?:string}>;
   delete(key:string):Promise<void>;
+  /** Optional readiness probe used by /ready/dms. */
+  ready?():Promise<void>;
 }
 
 export interface MalwareScanResult {
@@ -16,6 +18,8 @@ export interface MalwareScanResult {
 
 export interface MalwareScannerAdapter {
   scan(content:Buffer):Promise<MalwareScanResult>;
+  /** Optional readiness probe used by /ready/dms. */
+  ready?():Promise<void>;
 }
 
 export class MinioS3BlobStorageAdapter implements BlobStorageAdapter {
@@ -47,6 +51,10 @@ export class MinioS3BlobStorageAdapter implements BlobStorageAdapter {
   async delete(key:string){
     await this.client.send(new DeleteObjectCommand({Bucket:this.bucket,Key:key}));
   }
+
+  async ready(){
+    await this.client.send(new HeadBucketCommand({Bucket:this.bucket}));
+  }
 }
 
 export class ClamAvMalwareScannerAdapter implements MalwareScannerAdapter {
@@ -66,6 +74,24 @@ export class ClamAvMalwareScannerAdapter implements MalwareScannerAdapter {
         const length=Buffer.alloc(4);length.writeUInt32BE(chunk.length);socket.write(length);socket.write(chunk);
       }
       socket.end(Buffer.alloc(4));
+    });
+  }
+
+  ready(){
+    return new Promise<void>((resolve,reject)=>{
+      const socket=net.createConnection({host:this.host,port:this.port});
+      const chunks:Buffer[]=[];
+      const timer=setTimeout(()=>{socket.destroy();reject(new Error('Zeitüberschreitung beim ClamAV-Ping'));},this.timeoutMs);
+      socket.on('data',chunk=>chunks.push(Buffer.from(chunk)));
+      socket.on('error',error=>{clearTimeout(timer);reject(error);});
+      socket.on('close',()=>{
+        clearTimeout(timer);
+        const result=Buffer.concat(chunks).toString('utf8').replace(/\0+$/,'').trim();
+        if(result==='PONG')resolve();
+        else reject(new Error(`Unerwartete ClamAV-Ping-Antwort: ${result}`));
+      });
+      socket.write(Buffer.from('zPING\0'));
+      socket.end();
     });
   }
 }

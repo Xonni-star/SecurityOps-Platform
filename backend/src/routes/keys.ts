@@ -7,7 +7,7 @@ import {runIdempotentMutation} from '../services/offline-sync.js';
 import type {SyncMutationAction} from '../services/offline-sync.js';
 import {recordAudit} from '../services/audit.js';
 import {queueNotificationEvent} from '../services/notifications.js';
-import {keyQrSecret} from '../config/env.js';
+import {keyQrSecret,keyQrSecrets} from '../config/env.js';
 import {bundleStatus,buildKeyQrToken,canReturnKey,hashKeyQrToken,holderIsValid,transitionKeyStatus,validateBundleReturn,verifyKeyQrToken} from '../services/keys-domain.js';
 
 const uuid=z.string().uuid();
@@ -836,7 +836,7 @@ keysRouter.get('/keys/:id/qr/verify',requirePermission('keys:qr:read',{allowedSc
   try{
     const key=await readKey({query},req,['keys:qr:read']);
     const token=typeof req.query.ref==='string'?req.query.ref:'';
-    const verification=verifyKeyQrToken(keyQrSecret,token,{tenantId:req.user!.tenantId,keyId:key.id});
+    const verification=verifyKeyQrToken(keyQrSecrets,token,{tenantId:req.user!.tenantId,keyId:key.id});
     const stored=verification.valid?(await query('SELECT id FROM key_qr_tokens WHERE tenant_id=$1 AND key_id=$2 AND token_hash=$3 AND expires_at>now()',
       [req.user!.tenantId,key.id,hashKeyQrToken(token)])).rows[0]:undefined;
     if(!verification.valid||!stored){

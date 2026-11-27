@@ -58,6 +58,8 @@ API_PORT=$api_port
 # Ephemeral CI/integration-test markers only; never use these values in production.
 MFA_ENCRYPTION_KEY=ci-production-compose-test-only-not-a-secret
 KEY_QR_SECRET=ci-production-compose-test-qr-secret-9f2c7a41e6b8d350
+MINIO_ROOT_USER=ci-compose-test-minio
+MINIO_ROOT_PASSWORD=ci-compose-test-minio-secret-9f2c7a41e6b8d350
 EOF
 
 baseline_migration_count="$(find "$work_dir/backend/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
@@ -69,14 +71,14 @@ wait_for() {
     sleep 2
   done
   "${compose[@]}" ps
-  "${compose[@]}" logs --no-color db backend frontend
+  "${compose[@]}" logs --no-color db minio minio-init clamav backend frontend
   return 1
 }
 
 assert_health() {
   for _ in $(seq 1 45); do
     all_healthy=true
-    for service in db backend frontend; do
+    for service in db minio clamav backend frontend; do
       container="$("${compose[@]}" ps -q "$service")"
       status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
       if [ "$status" != healthy ]; then all_healthy=false; fi
@@ -84,7 +86,7 @@ assert_health() {
     if [ "$all_healthy" = true ]; then return 0; fi
     sleep 2
   done
-  for service in db backend frontend; do
+  for service in db minio clamav backend frontend; do
     container="$("${compose[@]}" ps -q "$service")"
     status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
     echo "$service health is $status" >&2
@@ -100,6 +102,7 @@ echo "Starting fresh production stack"
 "${compose[@]}" up -d --build
 wait_for "http://127.0.0.1:$api_port/ready"
 wait_for "http://127.0.0.1:$http_port/ready"
+wait_for "http://127.0.0.1:$api_port/ready/dms"
 assert_health
 test "$(psql "SELECT count(*) FROM securityops_migrations;")" = "$expected_migrations"
 test "$(psql "SELECT count(*) FROM securityops_migrations WHERE baseline=false;")" = "$expected_migrations"

@@ -89,6 +89,113 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
   const register=async(identifier:string,body:Record<string,unknown>={})=>request(app!)
     .post('/api/v1/nfc-devices').set(headersA).send({identifier,device_type:'tag',manufacturer:'Acme',...body});
 
+  // Die folgenden Hilfsfunktionen erzeugen eine echte, reproduzierbare
+  // Konkurrenzsituation auf Datenbankebene. Die Verzögerung liegt in einem
+  // temporären Trigger, der erst nach dem SELECT ... FOR UPDATE der Route und
+  // kurz vor dem UPDATE auf status='replaced' feuert. Damit hält Transaktion 1
+  // die Row-Sperre wirklich, während Transaktion 2 in FOR UPDATE wartet. Der
+  // Nachweis erfolgt nicht über Zeitmessung, sondern über pg_locks: der Warter
+  // hält eine tuple-Sperre auf nfc_devices und wartet auf die transactionid
+  // des Inhabers; beide Sessions halten außerdem eine RowShareLock-Relations-
+  // sperre auf nfc_devices. Das belegt zwei gleichzeitig aktive Transaktionen
+  // mit echter Sperrkollision an derselben Tabelle.
+  const waitForLockContention=async(timeoutMs=1400)=>{
+    type Contention={waiterPid:number;holderPid:number;mode:string;waitEvent:string|null};
+    const deadline=Date.now()+timeoutMs;
+    let observed:Contention|null=null;
+    while(Date.now()<deadline&&!observed){
+      const {rows}=await pool.query<{
+        pid:number;locktype:string;granted:boolean;mode:string;relation:string|null;
+        wait_event_type:string|null;wait_event:string|null;
+      }>(`
+        SELECT l.pid,l.locktype,l.granted,l.mode,l.relation::regclass::text AS relation,
+          a.wait_event_type,a.wait_event
+        FROM pg_locks l
+        JOIN pg_stat_activity a ON a.pid=l.pid
+        WHERE a.datname=current_database()
+      `);
+      const waiter=rows.find(row=>row.locktype==='transactionid'&&!row.granted
+        &&row.wait_event_type==='Lock'&&row.wait_event==='transactionid');
+      const holder=waiter
+        ?rows.find(row=>row.locktype==='transactionid'&&row.granted&&row.pid!==waiter.pid)
+        :undefined;
+      const waiterTuple=waiter
+        ?rows.find(row=>row.pid===waiter.pid&&row.locktype==='tuple'&&row.relation==='nfc_devices')
+        :undefined;
+      const relationLockers=rows
+        .filter(row=>row.locktype==='relation'&&row.relation==='nfc_devices'&&row.mode==='RowShareLock')
+        .map(row=>row.pid);
+      if(waiter&&holder&&waiterTuple&&relationLockers.includes(waiter.pid)&&relationLockers.includes(holder.pid)){
+        observed={waiterPid:waiter.pid,holderPid:holder.pid,mode:waiter.mode,waitEvent:waiter.wait_event_type};
+      }else{
+        await new Promise(resolve=>setTimeout(resolve,5));
+      }
+    }
+    return observed;
+  };
+
+  const withReplacementDelay=async<T>(marker:string,work:()=>Promise<T>)=>{
+    const suffix=randomUUID().replaceAll('-','');
+    const functionName=`nfc_parallel_delay_${suffix}`;
+    const triggerName=`nfc_parallel_delay_${suffix}`;
+    const literal=`'${marker.replaceAll("'","''")}'`;
+    await pool.query(`CREATE FUNCTION public.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF TG_OP='UPDATE' AND OLD.identifier=${literal} AND NEW.status='replaced' THEN
+          PERFORM pg_sleep(1.5);
+        END IF;
+        RETURN NEW;
+      END $fn$`);
+    await pool.query(`CREATE TRIGGER ${triggerName} BEFORE UPDATE ON nfc_devices
+      FOR EACH ROW EXECUTE FUNCTION public.${functionName}()`);
+    try{return await work();}
+    finally{
+      await pool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON nfc_devices`);
+      await pool.query(`DROP FUNCTION IF EXISTS public.${functionName}()`);
+    }
+  };
+
+  const withReplacementRollback=async<T>(marker:string,work:()=>Promise<T>)=>{
+    const suffix=randomUUID().replaceAll('-','');
+    const functionName=`nfc_rollback_${suffix}`;
+    const triggerName=`nfc_rollback_${suffix}`;
+    const literal=`'${marker.replaceAll("'","''")}'`;
+    await pool.query(`CREATE FUNCTION public.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.notes=${literal} THEN RAISE EXCEPTION 'QA rollback'; END IF;
+        RETURN NEW;
+      END $fn$`);
+    await pool.query(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON nfc_device_replacements
+      FOR EACH ROW EXECUTE FUNCTION public.${functionName}()`);
+    try{return await work();}
+    finally{
+      await pool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON nfc_device_replacements`);
+      await pool.query(`DROP FUNCTION IF EXISTS public.${functionName}()`);
+    }
+  };
+
+  type ConcurrentResult={status:number;body:Record<string,any>};
+  const runConcurrentReplacement=async(oldMarker:string,newDeviceIds:[string,string])=>{
+    const created=await register(oldMarker);
+    const oldId=created.body.id as string;
+    expect((await request(app!).post(`/api/v1/nfc-devices/${oldId}/report-lost`).set(headersA)
+      .send({lost_at:'2026-11-27',reason:'Paralleltest'})).status).toBe(200);
+    let contention:Awaited<ReturnType<typeof waitForLockContention>>=null;
+    const send=(new_device_id:string)=>request(app!).post(`/api/v1/nfc-devices/${oldId}/replace`).set(headersA)
+      .send({new_device_id,reason:'Paralleler Austausch',copy_assignment:false})
+      .then(response=>({status:response.status,body:response.body} as ConcurrentResult));
+    const responses=await withReplacementDelay(oldMarker,async()=>{
+      // Beide Requests werden im selben Event-Loop-Tick gestartet. Der Monitor
+      // läuft parallel und beobachtet die Datenbank, während der Trigger die
+      // erste Transaktion nach dem Row-Lock bewusst offen hält.
+      const monitor=waitForLockContention().then(value=>{contention=value;});
+      const results=await Promise.all([send(newDeviceIds[0]),send(newDeviceIds[1])]);
+      await monitor;
+      return results;
+    });
+    return {oldId,responses,contention};
+  };
+
   it('registers active devices, assigns one target in tenant A and preserves assignment history',async()=>{
     const identifier=uid();
     const created=await register(identifier);
@@ -356,5 +463,105 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     expect(reused.body.error).toContain('bereits als Ersatzgerät verwendet');
     const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[second.body.id]);
     expect(state.rows[0].status).toBe('blocked');
+  },60_000);
+
+  it('performs exactly one of two concurrent replacements with different candidates',async()=>{
+    const oldMarker=uid();
+    const candidateA=await register(uid());
+    const candidateB=await register(uid());
+    const {oldId,responses,contention}=await runConcurrentReplacement(oldMarker,[candidateA.body.id,candidateB.body.id]);
+
+    // Nachweis der echten Parallelität: zwei verschiedene Backend-Sessions,
+    // beide mit RowShareLock auf nfc_devices; der Warter hält die tuple-Sperre
+    // und blockiert auf der transactionid des Inhabers.
+    expect(contention).not.toBeNull();
+    expect(contention!.waiterPid).not.toBe(contention!.holderPid);
+    expect(contention!.mode).toBe('ShareLock');
+    expect(contention!.waitEvent).toBe('Lock');
+
+    expect(responses.map(result=>result.status).sort()).toEqual([201,409]);
+    const success=responses.find(result=>result.status===201)!;
+    const rejected=responses.find(result=>result.status===409)!;
+    expect(rejected.body.error).toContain('bereits ersetzt');
+    const winnerId=success.body.device.id as string;
+    expect([candidateA.body.id,candidateB.body.id]).toContain(winnerId);
+    const loserId=winnerId===candidateA.body.id?candidateB.body.id:candidateA.body.id;
+
+    const oldState=(await pool.query<{status:string;replaced_at:Date|null;employee_id:string|null;site_id:string|null;control_point_id:string|null}>(
+      'SELECT status,replaced_at,employee_id,site_id,control_point_id FROM nfc_devices WHERE id=$1',[oldId])).rows[0];
+    expect(oldState.status).toBe('replaced');
+    expect(oldState.replaced_at).not.toBeNull();
+    expect(oldState.employee_id).toBeNull();
+    expect(oldState.site_id).toBeNull();
+    expect(oldState.control_point_id).toBeNull();
+
+    const replacements=await pool.query<{new_device_id:string}>(
+      'SELECT new_device_id FROM nfc_device_replacements WHERE tenant_id=$1 AND old_device_id=$2',[tenantA,oldId]);
+    expect(replacements.rowCount).toBe(1);
+    expect(replacements.rows[0].new_device_id).toBe(winnerId);
+
+    const loserState=(await pool.query<{status:string;employee_id:string|null;site_id:string|null;control_point_id:string|null}>(
+      'SELECT status,employee_id,site_id,control_point_id FROM nfc_devices WHERE id=$1',[loserId])).rows[0];
+    expect(loserState).toEqual(expect.objectContaining({status:'active',employee_id:null,site_id:null,control_point_id:null}));
+    const loserUsage=await pool.query('SELECT id FROM nfc_device_replacements WHERE tenant_id=$1 AND new_device_id=$2',[tenantA,loserId]);
+    expect(loserUsage.rowCount).toBe(0);
+
+    const audit=await pool.query("SELECT id FROM audit_events WHERE tenant_id=$1 AND event_type='nfc_device.replaced' AND entity_id=$2",[tenantA,oldId]);
+    expect(audit.rowCount).toBe(1);
+    const history=await pool.query<{assignment:Record<string,unknown>}>(
+      'SELECT assignment FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2',[tenantA,oldId]);
+    expect(history.rowCount).toBe(1);
+    expect(history.rows[0].assignment).toEqual({employee_id:null,site_id:null,control_point_id:null});
+
+    const repeated=await request(app!).post(`/api/v1/nfc-devices/${oldId}/replace`).set(headersA)
+      .send({new_device_id:loserId,reason:'Wiederholung',copy_assignment:false});
+    expect(repeated.status).toBe(409);
+    expect(repeated.body.error).toContain('bereits ersetzt');
+    const afterRepeat=await pool.query('SELECT new_device_id FROM nfc_device_replacements WHERE tenant_id=$1 AND old_device_id=$2',[tenantA,oldId]);
+    expect(afterRepeat.rowCount).toBe(1);
+    expect(afterRepeat.rows[0].new_device_id).toBe(winnerId);
+  },60_000);
+
+  it('performs exactly one of two concurrent replacements with the same candidate',async()=>{
+    const oldMarker=uid();
+    const candidate=await register(uid());
+    const {oldId,responses,contention}=await runConcurrentReplacement(oldMarker,[candidate.body.id,candidate.body.id]);
+
+    expect(contention).not.toBeNull();
+    expect(contention!.waiterPid).not.toBe(contention!.holderPid);
+    expect(responses.map(result=>result.status).sort()).toEqual([201,409]);
+    expect(responses.find(result=>result.status===409)!.body.error).toContain('bereits ersetzt');
+
+    const replacements=await pool.query('SELECT new_device_id FROM nfc_device_replacements WHERE tenant_id=$1 AND old_device_id=$2',[tenantA,oldId]);
+    expect(replacements.rowCount).toBe(1);
+    expect(replacements.rows[0].new_device_id).toBe(candidate.body.id);
+    const audit=await pool.query("SELECT id FROM audit_events WHERE tenant_id=$1 AND event_type='nfc_device.replaced' AND entity_id=$2",[tenantA,oldId]);
+    expect(audit.rowCount).toBe(1);
+    const candidateState=(await pool.query<{status:string}>('SELECT status FROM nfc_devices WHERE id=$1',[candidate.body.id])).rows[0];
+    expect(candidateState.status).toBe('active');
+  },60_000);
+
+  it('rolls back the complete replacement when a database error occurs inside the transaction',async()=>{
+    const old=await register(uid());
+    const oldId=old.body.id as string;
+    expect((await request(app!).post(`/api/v1/nfc-devices/${oldId}/report-lost`).set(headersA)
+      .send({lost_at:'2026-11-27',reason:'Rollbacktest'})).status).toBe(200);
+    const candidate=await register(uid());
+    const marker=`QA-ROLLBACK-${randomUUID()}`;
+    const failed=await withReplacementRollback(marker,async()=>request(app!).post(`/api/v1/nfc-devices/${oldId}/replace`).set(headersA)
+      .send({new_device_id:candidate.body.id,reason:'Rollback',notes:marker,copy_assignment:false}));
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+
+    const oldState=(await pool.query<{status:string;replaced_at:Date|null}>(
+      'SELECT status,replaced_at FROM nfc_devices WHERE id=$1',[oldId])).rows[0];
+    expect(oldState.status).toBe('lost');
+    expect(oldState.replaced_at).toBeNull();
+    const candidateState=(await pool.query<{status:string;employee_id:string|null;site_id:string|null;control_point_id:string|null}>(
+      'SELECT status,employee_id,site_id,control_point_id FROM nfc_devices WHERE id=$1',[candidate.body.id])).rows[0];
+    expect(candidateState).toEqual(expect.objectContaining({status:'active',employee_id:null,site_id:null,control_point_id:null}));
+    expect((await pool.query('SELECT id FROM nfc_device_replacements WHERE tenant_id=$1 AND old_device_id=$2',[tenantA,oldId])).rowCount).toBe(0);
+    expect((await pool.query('SELECT id FROM nfc_device_replacements WHERE tenant_id=$1 AND new_device_id=$2',[tenantA,candidate.body.id])).rowCount).toBe(0);
+    expect((await pool.query("SELECT id FROM audit_events WHERE tenant_id=$1 AND event_type='nfc_device.replaced' AND entity_id=$2",[tenantA,oldId])).rowCount).toBe(0);
+    expect((await pool.query('SELECT id FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2',[tenantA,oldId])).rowCount).toBe(0);
   },60_000);
 });

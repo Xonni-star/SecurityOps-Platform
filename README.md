@@ -5,7 +5,7 @@ Tenant-isolated security operations platform covering phases 1-9: alarm operatio
 ## Run locally
 
 1. `cp .env.example .env`
-2. `docker compose up -d db`
+2. `docker compose up -d db minio clamav`
 3. `npm install`
 4. `npm run migrate`
 5. `npm run dev -w backend` and `npm run dev -w frontend`
@@ -88,10 +88,15 @@ widens legacy CHECK constraints for the new values; existing key rows keep their
 IDs and histories. `KEY_QR_SECRET` is mandatory in production: generate at least 32 high-entropy
 characters with `openssl rand -hex 32` and store it only in the deployment
 environment; the backend refuses to start without it and never falls back to a
-compiled-in or unrelated secret. QR references are HMAC-SHA256 signed, bound to
-tenant, key and expiry, verified in constant time against the active stored hash,
-and reissuing or rotating the secret invalidates earlier references. Outside
-production an ephemeral per-process secret is used with a clear warning.
+compiled-in or unrelated secret, and an unrelated secret such as
+`MFA_ENCRYPTION_KEY`, `BACKUP_SECRET_KEY` or `WATCHBOOK_HASH_SECRET` is rejected.
+The same strict validation applies to staging and every non-development/test
+runtime. QR references are HMAC-SHA256 signed, bound to tenant, key and expiry,
+verified in constant time against the active stored hash. Reissuing a QR revokes
+earlier references immediately. For zero-downtime secret rotation set
+`KEY_QR_SECRET_PREVIOUS` to the old value while rolling the backend, then remove
+it after the 15-minute token lifetime; see [`docs/key-qr-rotation.md`](docs/key-qr-rotation.md).
+Only local development/test use an ephemeral per-process secret, with a warning.
 `KEY_REMINDER_DAYS` accepts a subset of `7,3,1,0` and
 `KEY_REMINDER_INTERVAL_MS` controls the worker; overdue (`-1`) reminders are
 always queued once and deduplicated by tenant, key, due date and day.
@@ -116,9 +121,17 @@ never exposes provider URLs or object paths. Binary content is intentionally
 not part of the generic offline sync protocol; only metadata/lifecycle actions
 may be synchronized by a future explicit contract.
 
-Configure `MINIO_*` and `CLAMAV_*` for providers. PostgreSQL/DB backups do not
-back up blobs: configure and monitor the explicit `DMS_BLOB_BACKUP_PROVIDER`,
-`DMS_BLOB_BACKUP_STATUS`, and `/api/v1/dms/backup/status` contract separately.
+Both Compose stacks run a real ClamAV service with pinned signatures and a
+MinIO bucket-init job; the backend depends on their health. `/ready/dms` checks
+both providers and is used by the container healthcheck. A file is released only
+after a clean scan: an unreachable scanner, timeout or detected signature leaves
+the version `rejected`, deletes the blob and writes an audit event; the client
+receives an explicit `502`/`422`, never a silent success. The E2E suite uses the
+same real scanner, and the harmless EICAR test string is used only in isolated
+backend tests. Content is checked against its declared type's magic bytes.
+PostgreSQL/DB backups do not back up blobs: configure and monitor the explicit
+`DMS_BLOB_BACKUP_PROVIDER`, `DMS_BLOB_BACKUP_STATUS`, and
+`/api/v1/dms/backup/status` contract separately.
 
 ## Commands
 `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:coverage`, `npm run build`, `npm run format`. Backend tests use Jest/Supertest; frontend tests use Vitest and Testing Library. `npm run e2e` runs the real-browser Playwright suite; `npm run test:production-compose` validates the production Compose stack. PostgreSQL integration suites run when `POSTGRES_TEST_DATABASE_URL` points to a migrated disposable test database; CI applies the migrations and sets this variable. Current verification results are documented in [`docs/phase9-quality-report.md`](docs/phase9-quality-report.md).

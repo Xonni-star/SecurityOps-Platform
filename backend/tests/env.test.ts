@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it,jest} from '@jest/globals';
-import {parseAllowedOrigins,parseKeyQrSecret} from '../src/config/env.js';
+import {parseAllowedOrigins,parseKeyQrSecret,parseKeyQrSecrets} from '../src/config/env.js';
 
 describe('production CORS configuration',()=>{
   it('requires explicit external origins in production',()=>{
@@ -44,7 +44,7 @@ describe('key reminder configuration',()=>{
 });
 
 describe('key QR signing secret configuration',()=>{
-  const names=['NODE_ENV','CORS_ORIGIN','KEY_QR_SECRET'];
+  const names=['NODE_ENV','CORS_ORIGIN','KEY_QR_SECRET','KEY_QR_SECRET_PREVIOUS','MFA_ENCRYPTION_KEY','BACKUP_SECRET_KEY','WATCHBOOK_HASH_SECRET'];
   const original=new Map(names.map(name=>[name,process.env[name]]));
   const strong='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   afterEach(()=>{
@@ -63,6 +63,26 @@ describe('key QR signing secret configuration',()=>{
     expect(()=>parseKeyQrSecret('development','securityops-dev-key-qr-secret')).toThrow('strong random secret');
     expect(()=>parseKeyQrSecret('production','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toThrow('strong random secret');
     expect(parseKeyQrSecret('production',strong)).toEqual({secret:strong,source:'configured'});
+  });
+
+  it('requires a configured secret in every persistent environment',()=>{
+    expect(()=>parseKeyQrSecret('staging',undefined)).toThrow('KEY_QR_SECRET is required in staging');
+    expect(parseKeyQrSecret('development',undefined).source).toBe('ephemeral');
+    expect(parseKeyQrSecret('test',undefined).source).toBe('ephemeral');
+  });
+
+  it('rejects a QR secret reused from another secret',()=>{
+    expect(()=>parseKeyQrSecret('production',strong,[strong])).toThrow('distinct from all other secrets');
+    expect(parseKeyQrSecret('production',strong,['another-strong-secret-value-1234567890'])).toEqual({secret:strong,source:'configured'});
+  });
+
+  it('validates previous secrets and keeps them verification-only',()=>{
+    const previous='abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    expect(parseKeyQrSecrets('production',strong,previous)).toEqual({secrets:[strong,previous],previous:[previous],source:'configured'});
+    expect(()=>parseKeyQrSecrets('production',strong,strong)).toThrow('KEY_QR_SECRET_PREVIOUS');
+    expect(()=>parseKeyQrSecrets('production',strong,'short')).toThrow('KEY_QR_SECRET_PREVIOUS');
+    expect(()=>parseKeyQrSecrets('production',strong,strong,['another-strong-secret-value-1234567890'])).toThrow();
+    expect(parseKeyQrSecrets('development',undefined,undefined).secrets).toHaveLength(1);
   });
 
   it('prevents production startup when the secret is missing',async()=>{

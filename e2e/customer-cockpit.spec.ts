@@ -35,7 +35,7 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   test.setTimeout(90_000);
   await login(page,email!);
   const headers=await csrf(page);
-  const identity=await page.request.get(`${apiBase}/api/v1/auth/me`);
+  const identity=await page.request.get(`/api/v1/auth/me`);
   const {user}=await identity.json();
   expect(user.permissions).toContain('customers:write');
   expect(user.permissions).toContain('customers:export');
@@ -43,22 +43,22 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
 
   const suffix=Date.now();
   const customerName=`E2E CRM Kunde ${suffix}`;
-  const created=await page.request.post(`${apiBase}/api/v1/customers`,{headers,data:{
+  const created=await page.request.post(`/api/v1/customers`,{headers,data:{
     name:customerName,customer_number:`CRM-${suffix}`,customer_status:'active',priority:'critical',risk_classification:'critical',
     email:`crm-${suffix}@example.invalid`,city:'Hamburg',phone:'040 987654',address_line1:'Teststraße 1',
   }});
   expect(created.status()).toBe(201);
   const customer=await created.json();
-  const contract=await page.request.post(`${apiBase}/api/v1/customers/${customer.id}/contracts`,{headers,data:{
+  const contract=await page.request.post(`/api/v1/customers/${customer.id}/contracts`,{headers,data:{
     contract_number:`CRM-V-${suffix}`,contract_type:'Objektschutz',starts_on:dateIn(-30),ends_on:dateIn(10),status:'active',
     renewal_type:'automatic',notice_period_days:14,next_termination_date:dateIn(20),
   }});
   expect(contract.status()).toBe(201);
-  const contact=await page.request.post(`${apiBase}/api/v1/customers/${customer.id}/contacts`,{headers,data:{
+  const contact=await page.request.post(`/api/v1/customers/${customer.id}/contacts`,{headers,data:{
     first_name:'Mira',last_name:'Entscheider',email:`mira-${suffix}@example.invalid`,is_primary:true,is_decision_maker:true,is_security_contact:true,
   }});
   expect(contact.status()).toBe(201);
-  const task=await page.request.post(`${apiBase}/api/v1/customers/${customer.id}/tasks`,{headers,data:{
+  const task=await page.request.post(`/api/v1/customers/${customer.id}/tasks`,{headers,data:{
     title:`E2E Wiedervorlage ${suffix}`,due_at:new Date(Date.now()-3_600_000).toISOString(),priority:'critical',
   }});
   expect(task.status()).toBe(201);
@@ -70,7 +70,7 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   await expect(board).toBeVisible();
   for(const bucket of ['Sofort handeln','Zeitnah klären','Beobachten'])await expect(board.getByRole('heading',{name:new RegExp(bucket)})).toBeVisible();
   await expect(board.getByRole('link').first()).toBeVisible();
-  const actionResponse=await page.request.get(`${apiBase}/api/v1/customers/action-list`);
+  const actionResponse=await page.request.get(`/api/v1/customers/action-list`);
   expect(actionResponse.status()).toBe(200);
   const actionList=await actionResponse.json();
   const actionIds=[...actionList.A,...actionList.B,...actionList.C].map((entry:{id:string})=>entry.id);
@@ -119,12 +119,12 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   await page.getByRole('row').filter({hasText:customerName}).getByRole('checkbox').check();
   await page.getByRole('button',{name:/Auswahl archivieren/}).click();
   expect((await bulk).status()).toBe(200);
-  const archived=await page.request.get(`${apiBase}/api/v1/customers/${customer.id}/profile`);
+  const archived=await page.request.get(`/api/v1/customers/${customer.id}/profile`);
   expect((await archived.json()).customer.customer_status).toBe('archived');
 
   const viewer=await browserNewPage(page);
   await login(viewer,'e2e-viewer@example.invalid');
-  const viewerIdentity=await viewer.request.get(`${apiBase}/api/v1/auth/me`);
+  const viewerIdentity=await viewer.request.get(`/api/v1/auth/me`);
   const viewerUser=(await viewerIdentity.json()).user;
   expect(viewerUser.role).toBe('viewer');
   expect(viewerUser.permissions).toContain('customers:read');
@@ -133,9 +133,9 @@ test('complete CRM workflow: cockpit, filters, file, tasks, export, bulk action 
   await expect(viewer.getByRole('heading',{name:'Kundenverwaltung'})).toBeVisible();
   await expect(viewer.getByRole('button',{name:/Kunde anlegen/})).toHaveCount(0);
   await expect(viewer.getByRole('button',{name:/CSV exportieren/})).toHaveCount(0);
-  const viewerProfile=await viewer.request.get(`${apiBase}/api/v1/customers/${customer.id}/profile`);
+  const viewerProfile=await viewer.request.get(`/api/v1/customers/${customer.id}/profile`);
   expect(viewerProfile.status()).toBe(200);
-  const viewerWrite=await viewer.request.post(`${apiBase}/api/v1/customers`,{headers:await csrf(viewer),data:{name:'E2E nicht erlaubt'}});
+  const viewerWrite=await viewer.request.post(`/api/v1/customers`,{headers:await csrf(viewer),data:{name:'E2E nicht erlaubt'}});
   expect(viewerWrite.status()).toBe(403);
 });
 
