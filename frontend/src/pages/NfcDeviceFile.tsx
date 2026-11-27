@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useState} from 'react';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {useNavigate,useParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {formatDate,formatDateTime} from '../lib/format';
@@ -41,6 +41,7 @@ const today=new Date().toISOString().slice(0,10);
 export function NfcDeviceFile(){
   const {deviceId}=useParams();
   const navigate=useNavigate();
+  const canRead=hasPermission('nfc_devices:read');
   const canWrite=hasPermission('nfc_devices:write');
   const canSecurity=hasPermission('nfc_devices:security');
   const [data,setData]=useState<NfcFileData|null>(null);
@@ -56,16 +57,20 @@ export function NfcDeviceFile(){
   const [replaceConfirmation,setReplaceConfirmation]=useState<string|null>(null);
   const [recover,setRecover]=useState({found_at:today,identifier_confirmation:'',reason:''});
   const [scanFilters,setScanFilters]=useState<ScanFilters>(emptyScanFilters);
+  const [scanDays,setScanDays]=useState(30);
   const [scanPage,setScanPage]=useState(1);
   const [scanData,setScanData]=useState<ScanPage>(emptyScanPage);
   const [scanLoading,setScanLoading]=useState(false);
   const [scanError,setScanError]=useState('');
+  const scanAbortRef=useRef<AbortController|null>(null);
   const [error,setError]=useState('');
   const [success,setSuccess]=useState('');
   const [dialogError,setDialogError]=useState('');
   const [downloadError,setDownloadError]=useState('');
   const [busy,setBusy]=useState(false);
-  const [dirty,setDirty]=useState(false);
+  const [masterDirty,setMasterDirty]=useState(false);
+  const [assignmentDirty,setAssignmentDirty]=useState(false);
+  const dirty=masterDirty||assignmentDirty;
 
   const load=async()=>{
     if(!deviceId)return;
@@ -76,7 +81,7 @@ export function NfcDeviceFile(){
         setForm(nfcFormFromDevice(value.device));
         setAssignment(nfcFormFromDevice(value.device));
       }
-      setDirty(false);
+      setMasterDirty(false);setAssignmentDirty(false);
       setError('');
     }catch(cause){setError(nfcMessage(cause));}
   };
@@ -97,16 +102,24 @@ export function NfcDeviceFile(){
 
   const loadScans=useCallback(async()=>{
     if(!deviceId)return;
+    scanAbortRef.current?.abort();
+    const controller=new AbortController();
+    scanAbortRef.current=controller;
     setScanLoading(true);
     try{
-      const params=new URLSearchParams({page:String(scanPage),pageSize:'25'});
+      const params=new URLSearchParams({page:String(scanPage),pageSize:'25',days:String(scanDays)});
       for(const [key,value] of Object.entries(scanFilters))if(value)params.set(key,value);
-      const value=await api<ScanPage>(`/nfc-devices/${deviceId}/scan-history?${params.toString()}`);
+      const value=await api<ScanPage>(`/nfc-devices/${deviceId}/scan-history?${params.toString()}`,{signal:controller.signal});
+      if(controller.signal.aborted)return;
       setScanData(value??emptyScanPage);
       setScanError('');
-    }catch(cause){setScanError(nfcMessage(cause));}
-    finally{setScanLoading(false);}
-  },[deviceId,scanPage,scanFilters]);
+    }catch(cause){
+      if(!controller.signal.aborted)setScanError(nfcMessage(cause));
+    }finally{
+      if(!controller.signal.aborted)setScanLoading(false);
+    }
+  },[deviceId,scanPage,scanFilters,scanDays]);
+  useEffect(()=>()=>scanAbortRef.current?.abort(),[]);
 
   useEffect(()=>{
     if(section==='scans')void loadScans();
@@ -117,7 +130,7 @@ export function NfcDeviceFile(){
     // Der Änderungsstatus muss bereits vor der Erfolgsmeldung zurückgesetzt
     // werden: sonst löst ein direkt im Anschluss ausgelöster Reload noch eine
     // beforeunload-Warnung aus, obwohl gespeichert wurde.
-    try{await action();setDirty(false);setSuccess(successText);setDialog(null);await load();}
+    try{await action();setMasterDirty(false);setAssignmentDirty(false);setSuccess(successText);setDialog(null);await load();}
     catch(cause){setDialogError(nfcMessage(cause));}
     finally{setBusy(false);}
   };
@@ -127,7 +140,10 @@ export function NfcDeviceFile(){
       const response=await fetch(`/api/v1/dms/documents/${document.id}/versions/${versionId}/download`,{
         credentials:'include',headers:{'x-csrf-token':csrf()},
       });
-      if(!response.ok)throw new Error('Der Download ist fehlgeschlagen.');
+      if(!response.ok){
+        const payload=await response.json().catch(()=>({})) as {error?:string};
+        throw new Error(payload.error||'Der Download ist fehlgeschlagen. Bitte versuchen Sie es erneut.');
+      }
       const blob=await response.blob();
       const url=URL.createObjectURL(blob);
       const link=window.document.createElement('a');
@@ -144,6 +160,8 @@ export function NfcDeviceFile(){
     navigate('/nfc-devices');
   };
 
+  if(!canRead)return <section className="object-management"><h2>NFC-Geräteakte</h2><p>{commonText.noPermission}</p></section>;
+
   if(!data)return <section className="object-management">
     <button type="button" className="object-back" onClick={backToOverview}>← {commonText.backToOverview}</button>
     <p role="status">{error||commonText.loading}</p>
@@ -155,7 +173,7 @@ export function NfcDeviceFile(){
     setAssignment(nfcFormFromDevice(device));
     setAssignmentReason('');
     setDialogError('');
-    setDirty(false);
+    setMasterDirty(false);setAssignmentDirty(false);
   };
   const changeSection=(next:Section)=>{
     if(dirty){
@@ -163,7 +181,7 @@ export function NfcDeviceFile(){
       discardLocalEdits();
     }
     setSection(next);
-    setDownloadError('');
+    setSuccess('');setDownloadError('');
   };
   const open=(kind:Exclude<typeof dialog,null>)=>{
     if(!discardChanges('Nicht gespeicherte Änderungen verwerfen und den Vorgang starten?'))return;
@@ -263,6 +281,8 @@ export function NfcDeviceFile(){
           {device.archived_reason?` · ${device.archived_reason}`:''}</p>}
         {device.recovered_at&&<p><strong>Wiedergefunden:</strong> {formatDateTime(device.recovered_at)}
           {device.recovered_reason?` · ${device.recovered_reason}`:''}</p>}
+        {device.reported_by&&<p><strong>Letzte Statusänderung durch:</strong> {device.reported_by_email??device.reported_by}
+          {device.event_reason?` · ${device.event_reason}`:''}</p>}
       </div>
       <div className="object-detail-content"><h3>Zeitachse</h3><NfcTimeline device={device} options={options}/></div>
     </>}
@@ -271,7 +291,7 @@ export function NfcDeviceFile(){
       <h3>Technische Stammdaten</h3>
       <p>Hier werden ausschließlich die technischen Eigenschaften des Geräts geändert. Zuordnungen werden im Bereich „Zuordnung“ gespeichert.</p>
       <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveMaster();}}>
-        <NfcFormFields value={form} onChange={value=>{setForm(value);setDirty(true);}} options={options} showAssignment={false}/>
+        <NfcFormFields value={form} onChange={value=>{setForm(value);setMasterDirty(true);}} options={options} showAssignment={false}/>
         {dirty&&<p className="object-warning" role="status">Nicht gespeicherte Änderungen: Beim Verlassen wird um Bestätigung gebeten.</p>}
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
         <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{busy?'Wird gespeichert …':commonText.save}</button></div>
@@ -282,9 +302,9 @@ export function NfcDeviceFile(){
       <h3>Aktuelle Zuordnung</h3>
       <p>{nfcAssignmentLabel(device)}</p>
       {nfcIsAssignable(device)?<form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveAssignment();}}>
-        <NfcAssignmentFields value={assignment} onChange={(value:NfcForm)=>{setAssignment({...assignment,...value});setDirty(true);}} options={options}/>
+        <NfcAssignmentFields value={assignment} onChange={(value:NfcForm)=>{setAssignment({...assignment,...value});setAssignmentDirty(true);}} options={options}/>
         <label>Änderungsgrund <input maxLength={2000} value={assignmentReason}
-          onChange={event=>{setAssignmentReason(event.target.value);setDirty(true);}} placeholder="Grund der Zuordnung"/></label>
+          onChange={event=>{setAssignmentReason(event.target.value);setAssignmentDirty(true);}} placeholder="Grund der Zuordnung"/></label>
         {dirty&&<p className="object-warning" role="status">Nicht gespeicherte Änderungen: Beim Verlassen wird um Bestätigung gebeten.</p>}
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
         <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{busy?'Wird gespeichert …':'Zuordnung speichern'}</button></div>
@@ -301,11 +321,21 @@ export function NfcDeviceFile(){
 
     {section==='scans'&&<div className="object-detail-content">
       <h3>Scan-Historie</h3>
-      <div className="object-filterbar">
+      <div className="object-filterbar nfc-scan-filterbar">
+        <label>Zeitraum <select aria-label="Scan-Zeitraum" value={scanDays}
+          onChange={event=>{setScanDays(Number(event.target.value));setScanPage(1);}}>
+          {[7,30,90,180,365].map(value=><option key={value} value={value}>{value} Tage</option>)}
+        </select></label>
         <label>Von <input type="date" aria-label="Scanzeit von" value={scanFilters.from}
           onChange={event=>changeScanFilter('from',event.target.value)}/></label>
         <label>Bis <input type="date" aria-label="Scanzeit bis" value={scanFilters.to}
           onChange={event=>changeScanFilter('to',event.target.value)}/></label>
+        <label>Ergebnis <select aria-label="Ergebnis filtern" value={scanFilters.outcome}
+          onChange={event=>changeScanFilter('outcome',event.target.value)}>
+          <option value="">Alle Ergebnisse</option>
+          <option value="accepted">Erfolgreich</option>
+          <option value="rejected">Abgelehnt</option>
+        </select></label>
         <label>Kontrollpunkt <select aria-label="Kontrollpunkt filtern" value={scanFilters.control_point_id}
           onChange={event=>changeScanFilter('control_point_id',event.target.value)}>
           <option value="">Alle Kontrollpunkte</option>
@@ -321,13 +351,7 @@ export function NfcDeviceFile(){
           <option value="">Alle Mitarbeiter</option>
           {options.employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}
         </select></label>
-        <label>Ergebnis <select aria-label="Ergebnis filtern" value={scanFilters.outcome}
-          onChange={event=>changeScanFilter('outcome',event.target.value)}>
-          <option value="">Alle Ergebnisse</option>
-          <option value="accepted">Erfolgreich</option>
-          <option value="rejected">Abgelehnt</option>
-        </select></label>
-        <button type="button" onClick={()=>{setScanFilters(emptyScanFilters);setScanPage(1);}}>Filter zurücksetzen</button>
+        <button type="button" onClick={()=>{setScanFilters(emptyScanFilters);setScanDays(30);setScanPage(1);}}>Filter zurücksetzen</button>
       </div>
       {scanError&&<p className="object-warning" role="alert">{scanError}</p>}
       <div className="object-table">
@@ -361,11 +385,12 @@ export function NfcDeviceFile(){
 
     {section==='verlauf'&&<div className="object-detail-content">
       <h3>Status- und Ereignishistorie</h3>
-      {data.history.length?<ul>{data.history.map(event=><li key={event.id}>
+      {data.history.length?<ul className="nfc-history-list">{data.history.map(event=><li key={event.id}>
         <time>{formatDateTime(event.created_at)}</time>: {auditEventLabel(event.event_type)}
         {` · Ausgeführt: ${event.actor_email??'Unbekannt'}`}
-        {Object.entries(event.details??{}).filter(([key])=>!['changed','changed_fields'].includes(key)).map(([key,value])=>
-          <div key={key}>{historyDetailText(key,historyValueText(key,value,options))}</div>)}
+        {typeof event.details?.reason==='string'&&event.details.reason?` · Grund: ${event.details.reason}`:''}
+        {Object.entries(event.details??{}).filter(([key])=>!['changed','changed_fields','reason'].includes(key)).map(([key,value])=>
+          <div key={key} className="nfc-history-detail">{historyDetailText(key,historyValueText(key,value,options))}</div>)}
       </li>)}</ul>:<p>{commonText.noData}</p>}
       <h4>Ersatzhistorie</h4>
       {data.replacements.length?<ul>{data.replacements.map(item=><li key={item.id}>
@@ -395,7 +420,7 @@ export function NfcDeviceFile(){
     {dialog==='edit'&&<NfcDialog title="Stammdaten bearbeiten" onClose={()=>{if(discardChanges('Nicht gespeicherte Stammdaten verwerfen?')){discardLocalEdits();setDialog(null);}}} wide>
       <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveMaster();}}>
         <p>Hier werden ausschließlich die technischen Eigenschaften des Geräts geändert. Zuordnungen werden im Bereich „Zuordnung“ gespeichert.</p>
-        <NfcFormFields value={form} onChange={value=>{setForm(value);setDirty(true);}} options={options} showAssignment={false}/>
+        <NfcFormFields value={form} onChange={value=>{setForm(value);setMasterDirty(true);}} options={options} showAssignment={false}/>
         {dirty&&<p className="object-warning" role="status">Nicht gespeicherte Änderungen: Beim Schließen wird um Bestätigung gebeten.</p>}
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
         <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{busy?'Wird gespeichert …':commonText.save}</button>
@@ -451,6 +476,9 @@ export function NfcDeviceFile(){
       identifier={replacement.identifier} onIdentifier={value=>changeReplacement({identifier:value})}
       deviceType={replacement.device_type} onDeviceType={value=>changeReplacement({device_type:value})}
       manufacturer={replacement.manufacturer} onManufacturer={value=>changeReplacement({manufacturer:value})}
+      model={replacement.model} onModel={value=>changeReplacement({model:value})}
+      serialNumber={replacement.serial_number} onSerialNumber={value=>changeReplacement({serial_number:value})}
+      description={replacement.description} onDescription={value=>changeReplacement({description:value})}
       mode={replacement.mode} onMode={value=>changeReplacement({mode:value})}
       existingDeviceId={replacement.existing_device_id}
       onExistingDeviceId={value=>changeReplacement({existing_device_id:value})}

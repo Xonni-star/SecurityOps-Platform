@@ -44,9 +44,28 @@ function assignmentOf(row:Row):{employee_id:string|null;site_id:string|null;cont
 function dateBoundary(value:unknown,endOfDay=false):string|null{
   if(typeof value!=='string'||!value.trim())return null;
   const input=value.trim();
-  if(/^\d{4}-\d{2}-\d{2}$/.test(input))return `${input}T${endOfDay?'23:59:59.999':'00:00:00.000'}Z`;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(input)){
+    const [year,month,day]=input.split('-').map(Number);
+    const date=new Date(Date.UTC(year,month-1,day));
+    if(date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day){
+      fail(400,'Ungültiger Zeitraum. Bitte ein gültiges Datum angeben.');
+    }
+    return `${input}T${endOfDay?'23:59:59.999':'00:00:00.000'}Z`;
+  }
   const parsed=new Date(input);
-  return Number.isNaN(parsed.getTime())?null:parsed.toISOString();
+  if(Number.isNaN(parsed.getTime()))fail(400,'Ungültiger Zeitraum. Bitte ein gültiges Datum angeben.');
+  return parsed.toISOString();
+}
+
+/** Einheitliches, serverseitig begrenztes Zeitfenster für alle NFC-Kennzahlen. */
+function windowDays(value:unknown):number{
+  const parsed=Number.parseInt(String(value??'30'),10);
+  return Math.min(Math.max(Number.isFinite(parsed)?parsed:30,1),365);
+}
+
+/** ILIKE-Platzhalter aus der Suche dürfen keine Pattern-Semantik bekommen. */
+function likeNeedle(value:string):string{
+  return `%${value.replace(/[\\%_]/g,character=>`\\${character}`)}%`;
 }
 
 function hasAssignment(value:Record<string,string|null>):boolean{
@@ -99,9 +118,10 @@ async function targetInfo(client:PoolClient|null,tenantId:string,key:TargetKey,i
   return row;
 }
 
-const deviceSelect=`SELECT n.*,e.name employee_name,COALESCE(s.name,cp_site.name) site_name,cp.name control_point_name,cp.site_id control_point_site_id,
+const deviceSelect=`SELECT n.*,e.name employee_name,u.email reported_by_email,COALESCE(s.name,cp_site.name) site_name,cp.name control_point_name,cp.site_id control_point_site_id,
   (SELECT MAX(ps.server_received_at) FROM patrol_scans ps WHERE ps.tenant_id=n.tenant_id AND ps.nfc_device_id=n.id) last_used_at
   FROM nfc_devices n
+  LEFT JOIN users u ON u.tenant_id=n.tenant_id AND u.id=n.reported_by
   LEFT JOIN employees e ON e.tenant_id=n.tenant_id AND e.id=n.employee_id
   LEFT JOIN sites s ON s.tenant_id=n.tenant_id AND s.id=n.site_id
   LEFT JOIN control_points cp ON cp.tenant_id=n.tenant_id AND cp.id=n.control_point_id
@@ -109,26 +129,32 @@ const deviceSelect=`SELECT n.*,e.name employee_name,COALESCE(s.name,cp_site.name
 
 nfcManagementRouter.get('/nfc-devices/overview',read,async(req,res,next)=>{
   try{
-    const days=Math.min(Math.max(Number.parseInt(String(req.query.days??'30'),10)||30,1),365);
     const tenantId=req.user!.tenantId;
+    const days=windowDays(req.query.days);
+    const from=dateBoundary(req.query.from)??new Date(Date.now()-days*86_400_000).toISOString();
+    const to=dateBoundary(req.query.to,true)??new Date().toISOString();
     const [totals,scans,recent]=await Promise.all([
       query<Row>(`SELECT count(*)::int total,
         count(*) FILTER (WHERE status='active' AND device_type='tag' AND archived_at IS NULL)::int active_tags,
         count(*) FILTER (WHERE status='active' AND device_type='reader' AND archived_at IS NULL)::int active_readers,
-        count(*) FILTER (WHERE status='blocked')::int blocked,
-        count(*) FILTER (WHERE status='lost')::int lost,
-        count(*) FILTER (WHERE status='replaced')::int replaced,
+        count(*) FILTER (WHERE status='blocked' AND archived_at IS NULL)::int blocked,
+        count(*) FILTER (WHERE status='lost' AND archived_at IS NULL)::int lost,
+        count(*) FILTER (WHERE status='replaced' OR replaced_at IS NOT NULL)::int replaced,
         count(*) FILTER (WHERE archived_at IS NOT NULL)::int archived,
-        count(*) FILTER (WHERE employee_id IS NULL AND site_id IS NULL AND control_point_id IS NULL)::int unassigned
+        count(*) FILTER (WHERE employee_id IS NULL AND site_id IS NULL AND control_point_id IS NULL AND archived_at IS NULL)::int unassigned
         FROM nfc_devices WHERE tenant_id=$1`,[tenantId]),
       query<Row>(`SELECT count(*)::int scans, count(DISTINCT nfc_device_id)::int devices FROM patrol_scans
-        WHERE tenant_id=$1 AND nfc_device_id IS NOT NULL AND server_received_at >= now()-($2::int * interval '1 day')`,[tenantId,days]),
+        WHERE tenant_id=$1 AND nfc_device_id IS NOT NULL AND server_received_at BETWEEN $2::timestamptz AND $3::timestamptz`,[tenantId,from,to]),
       query<Row>(`SELECT n.id,n.identifier,n.device_type,n.status,n.updated_at,MAX(ps.server_received_at) last_used_at
         FROM nfc_devices n JOIN patrol_scans ps ON ps.tenant_id=n.tenant_id AND ps.nfc_device_id=n.id
-        WHERE n.tenant_id=$1 GROUP BY n.id ORDER BY last_used_at DESC LIMIT 5`,[tenantId]),
+        WHERE n.tenant_id=$1 AND ps.server_received_at BETWEEN $2::timestamptz AND $3::timestamptz
+        GROUP BY n.id ORDER BY last_used_at DESC LIMIT 5`,[tenantId,from,to]),
     ]);
+    const counts=totals.rows[0]??{};
+    const scanCounts=scans.rows[0]??{};
     res.json({
-      ...totals.rows[0],...scans.rows[0],recent_devices:Number(scans.rows[0]?.devices??0),days,recent:recent.rows,
+      ...counts,...scanCounts,scan_count:Number(scanCounts.scans??0),
+      recent_devices:Number(scanCounts.devices??0),days,from,to,recent:recent.rows,
     });
   }catch(error){next(error);}
 });
@@ -163,7 +189,7 @@ nfcManagementRouter.get('/nfc-devices/inventory',read,async(req,res,next)=>{
     const conditions:string[]=['n.tenant_id=$1'];
     const add=(condition:string,value:unknown)=>{values.push(value);conditions.push(condition.replace('__P__',`$${values.length}`));};
     const q=typeof req.query.q==='string'?req.query.q.trim():'';
-    if(q)add('n.identifier ILIKE __P__',`%${q}%`);
+    if(q)add('n.identifier ILIKE __P__',likeNeedle(q));
     const type=deviceType.safeParse(req.query.device_type);
     if(type.success)add('n.device_type=__P__',type.data);
     const status=deviceStatus.safeParse(req.query.status);
@@ -179,12 +205,19 @@ nfcManagementRouter.get('/nfc-devices/inventory',read,async(req,res,next)=>{
     if(assignment==='unassigned')conditions.push('num_nonnulls(n.employee_id,n.site_id,n.control_point_id)=0');
     if(req.query.archived==='true')conditions.push('n.archived_at IS NOT NULL');
     if(req.query.archived==='false')conditions.push('n.archived_at IS NULL');
-    if(req.query.recent==='true')conditions.push(`EXISTS (SELECT 1 FROM patrol_scans ps WHERE ps.tenant_id=$1
-      AND ps.nfc_device_id=n.id AND ps.server_received_at >= now() - interval '30 days')`);
+    if(req.query.replaced==='true')conditions.push("(n.status='replaced' OR n.replaced_at IS NOT NULL)");
+    if(req.query.recent==='true'){
+      const days=windowDays(req.query.days);
+      const from=dateBoundary(req.query.from)??new Date(Date.now()-days*86_400_000).toISOString();
+      const to=dateBoundary(req.query.to,true)??new Date().toISOString();
+      values.push(from,to);
+      conditions.push(`EXISTS (SELECT 1 FROM patrol_scans ps WHERE ps.tenant_id=$1 AND ps.nfc_device_id=n.id
+        AND ps.server_received_at BETWEEN $${values.length-1}::timestamptz AND $${values.length}::timestamptz)`);
+    }
     const where=`WHERE ${conditions.join(' AND ')}`;
     const sortMap:Record<string,string>={
       identifier:'n.identifier',device_type:'n.device_type',manufacturer:'n.manufacturer',status:'n.status',
-      site_name:'s.name',control_point_name:'cp.name',employee_name:'e.name',registered_at:'n.registered_at',
+      site_name:'COALESCE(s.name,cp_site.name)',control_point_name:'cp.name',employee_name:'e.name',registered_at:'n.registered_at',
       updated_at:'n.updated_at',
       last_used_at:'(SELECT MAX(ps.server_received_at) FROM patrol_scans ps WHERE ps.tenant_id=n.tenant_id AND ps.nfc_device_id=n.id)',
     };
@@ -194,7 +227,8 @@ nfcManagementRouter.get('/nfc-devices/inventory',read,async(req,res,next)=>{
     const pageSize=Math.min(Math.max(Number.parseInt(String(req.query.pageSize??'25'),10)||25,5),100);
     const count=(await query<Row>(`SELECT count(*)::int total FROM nfc_devices n
       LEFT JOIN sites s ON s.tenant_id=n.tenant_id AND s.id=n.site_id
-      LEFT JOIN control_points cp ON cp.tenant_id=n.tenant_id AND cp.id=n.control_point_id ${where}`,values)).rows[0];
+      LEFT JOIN control_points cp ON cp.tenant_id=n.tenant_id AND cp.id=n.control_point_id
+      LEFT JOIN sites cp_site ON cp_site.tenant_id=n.tenant_id AND cp_site.id=cp.site_id ${where}`,values)).rows[0];
     const rows=(await query<Row>(`${deviceSelect} ${where}
       ORDER BY ${sort} ${direction}, n.identifier ASC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
       [...values,pageSize,(page-1)*pageSize])).rows;
@@ -271,10 +305,11 @@ nfcManagementRouter.get('/nfc-devices/:id/scan-history',read,async(req,res,next)
     const values:unknown[]=[tenantId,id];
     const conditions:string[]=[];
     const add=(condition:string,value:unknown)=>{values.push(value);conditions.push(condition.replace('__P__',`$${values.length}`));};
-    const from=dateBoundary(req.query.from,false);
-    const to=dateBoundary(req.query.to,true);
-    if(from)add('effective_at >= __P__::timestamptz',from);
-    if(to)add('effective_at <= __P__::timestamptz',to);
+    const days=windowDays(req.query.days);
+    const from=dateBoundary(req.query.from)??new Date(Date.now()-days*86_400_000).toISOString();
+    const to=dateBoundary(req.query.to,true)??new Date().toISOString();
+    values.push(from,to);
+    conditions.push(`effective_at BETWEEN $${values.length-1}::timestamptz AND $${values.length}::timestamptz`);
     const controlPointId=uuid.safeParse(req.query.control_point_id);
     if(controlPointId.success)add('control_point_id=__P__',controlPointId.data);
     const siteId=uuid.safeParse(req.query.site_id);
@@ -292,7 +327,7 @@ nfcManagementRouter.get('/nfc-devices/:id/scan-history',read,async(req,res,next)
       [...values,pageSize,(page-1)*pageSize])).rows;
     const total=Number(count?.total??0);
     res.set('X-Total-Count',String(total));
-    res.json({rows,total,page,pageSize,totalPages:Math.max(1,Math.ceil(total/pageSize))});
+    res.json({rows,total,page,pageSize,days,from,to,totalPages:Math.max(1,Math.ceil(total/pageSize))});
   }catch(error){next(error);}
 });
 
@@ -313,10 +348,10 @@ nfcManagementRouter.get('/nfc-devices/:id/file',read,async(req,res,next)=>{
     const [assignments,replacements,documents,audit]=await Promise.all([
       query<Row>(`SELECT h.*,u.email actor_email FROM nfc_device_assignment_history h
         LEFT JOIN users u ON u.tenant_id=h.tenant_id AND u.id=h.actor_user_id
-        WHERE h.tenant_id=$1 AND h.device_id=$2 ORDER BY h.assigned_at DESC LIMIT 100`,[tenantId,id]),
+        WHERE h.tenant_id=$1 AND h.device_id=$2 ORDER BY h.assigned_at DESC, h.id DESC`,[tenantId,id]),
       query<Row>(`SELECT r.*,u.email actor_email FROM nfc_device_replacements r
         LEFT JOIN users u ON u.tenant_id=r.tenant_id AND u.id=r.actor_user_id
-        WHERE r.tenant_id=$1 AND (r.old_device_id=$2 OR r.new_device_id=$2) ORDER BY r.replaced_at DESC LIMIT 100`,[tenantId,id]),
+        WHERE r.tenant_id=$1 AND (r.old_device_id=$2 OR r.new_device_id=$2) ORDER BY r.replaced_at DESC, r.id DESC`,[tenantId,id]),
       query<Row>(`SELECT d.id,d.title,d.document_type,d.document_number,d.approval_status,d.created_at,d.created_by,
         COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'lifecycle_state',v.lifecycle_state) ORDER BY v.version_no DESC)
           FILTER (WHERE v.id IS NOT NULL),'[]') versions
@@ -325,11 +360,11 @@ nfcManagementRouter.get('/nfc-devices/:id/file',read,async(req,res,next)=>{
         WHERE d.tenant_id=$1 AND d.nfc_device_id=$2
           AND d.document_status='active' AND d.deleted_at IS NULL AND d.approval_status='approved'
           ${dmsScope==='site'?' AND d.site_id = ANY($3::uuid[])':dmsScope==='own'?' AND d.created_by=$3':''}
-        GROUP BY d.id ORDER BY d.created_at DESC`,
+        GROUP BY d.id ORDER BY d.created_at DESC, d.id DESC`,
         dmsScope==='site'?[tenantId,id,user.siteIds??[]]:dmsScope==='own'?[tenantId,id,user.id]:[tenantId,id]),
       query<Row>(`SELECT a.id,a.event_type,a.entity_type,a.details,a.created_at,a.actor_user_id,u.email actor_email
         FROM audit_events a LEFT JOIN users u ON u.tenant_id=a.tenant_id AND u.id=a.actor_user_id
-        WHERE a.tenant_id=$1 AND a.entity_type='nfc_device' AND a.entity_id=$2 ORDER BY a.created_at DESC`,[tenantId,id]),
+        WHERE a.tenant_id=$1 AND a.entity_type='nfc_device' AND a.entity_id=$2 ORDER BY a.created_at DESC, a.id DESC`,[tenantId,id]),
     ]);
     const availableDocuments=dmsScope?documents.rows.map(row=>({
       ...row,

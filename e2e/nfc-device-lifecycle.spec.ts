@@ -92,10 +92,13 @@ for(const viewport of viewports){
     let overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+1);
     expect(overflow,{message:`Horizontaler Overflow in der Übersicht bei ${viewport.width}px`}).toBe(false);
 
+    await page.getByRole('button',{name:'Weitere Kennzahlen anzeigen'}).click();
     await page.getByRole('button',{name:/Archiviert/}).click();
-    await expect(page.getByLabel('Archivierung')).toHaveValue('true');
+    await page.getByRole('button',{name:'Erweiterte Filter'}).click();
+    await expect(page.getByLabel('Archivierung',{exact:true})).toHaveValue('true');
     await page.getByRole('button',{name:'Filter zurücksetzen'}).click();
-    await expect(page.getByLabel('Archivierung')).toHaveValue('');
+    await expect(page.getByText('Keine aktiven Filter')).toBeVisible();
+    await expect(page.getByRole('button',{name:'Archivierung entfernen'})).toHaveCount(0);
 
     await page.goto(`/nfc-devices/${viewportDevice.id}`);
     await expect(page.getByRole('heading',{name:viewportDevice.identifier})).toBeVisible();
@@ -104,9 +107,14 @@ for(const viewport of viewports){
     await expect(page.getByRole('heading',{name:viewportDevice.identifier})).toBeVisible();
 
     await page.getByRole('tab',{name:'Scan-Historie'}).click();
-    await expect(page.getByRole('columnheader',{name:'NFC-Kennung'})).toBeVisible();
-    await expect(page.getByRole('columnheader',{name:'Authentifizierung'})).toBeVisible();
-    await expect(page.getByRole('columnheader',{name:'Ergebnis / Grund'})).toBeVisible();
+    if(viewport.width>700){
+      await expect(page.getByRole('columnheader',{name:'NFC-Kennung'})).toBeVisible();
+      await expect(page.getByRole('columnheader',{name:'Authentifizierung'})).toBeVisible();
+      await expect(page.getByRole('columnheader',{name:'Ergebnis / Grund'})).toBeVisible();
+    }else{
+      await expect(page.getByRole('table')).toBeVisible();
+      await expect(page.getByText('Keine Scan-Ereignisse für diese Auswahl erfasst.')).toBeVisible();
+    }
     await expect(page.getByLabel('Ergebnis filtern')).toBeVisible();
     await expect(page.getByRole('button',{name:'Weiter →'})).toBeVisible();
     overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+1);

@@ -6,6 +6,8 @@ import {resolve} from 'node:path';
 import {afterAll,beforeAll,describe,expect,it} from '@jest/globals';
 import {runMigrations} from '../src/db/migration-runner.js';
 
+type Row={permission_id:string;scope:string};
+
 const databaseUrl=process.env.POSTGRES_TEST_DATABASE_URL;
 if(!databaseUrl)console.warn('PostgreSQL NFC lifecycle integration skipped: POSTGRES_TEST_DATABASE_URL is not set.');
 const describePostgres=databaseUrl?describe:describe.skip;

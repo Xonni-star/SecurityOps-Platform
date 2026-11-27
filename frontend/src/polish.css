@@ -108,7 +108,7 @@
 .object-check input{width:auto!important}
 .object-actions{justify-content:flex-end;max-width:430px}
 .object-management button,.object-management a{color:#d8e9fb}
-.object-management button{background:#17395a;border:1px solid #2a4c6e;border-radius:6px;padding:7px 10px}
+.object-management button{background:#17395a;border:1px solid #2a4c6e;border-radius:6px;padding:7px 10px;min-height:36px}
 .object-management button:hover{background:#20517e}
 .object-management button:disabled{opacity:.5;cursor:not-allowed}
 .object-back{margin-bottom:14px}
@@ -167,6 +167,25 @@
 .object-metrics article{min-width:0;display:flex;align-items:center;gap:12px;padding:13px;background:#102744;border:1px solid #1e3c5b;border-radius:8px}
 .object-metrics strong{color:#79d7aa;font-size:22px}
 .object-metrics span{color:#afc2d7;font-size:12px}
+.object-summary-card.active{border-color:#4e9ad4;background:#143a5d;box-shadow:inset 0 0 0 1px #4e9ad4}
+.nfc-kpi-section{margin-bottom:14px}
+.nfc-disclosure{margin:8px 0 4px;font-size:12px}
+.nfc-recent ul{list-style:none;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:8px 18px}
+.nfc-recent li{margin:0;font-size:12px}
+.nfc-filter-section{padding:12px;background:#0e2440;border:1px solid #1b3a5b;border-radius:9px;margin-bottom:12px}
+.nfc-quick-filters{margin-bottom:8px}
+.nfc-advanced-filters{padding-top:8px;border-top:1px solid #1d3854}
+.nfc-filter-footer{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;padding-top:8px}
+.nfc-active-filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;color:#8ea8c4}
+.object-chip{padding:4px 8px!important;font-size:11px!important;border-radius:999px!important}
+.nfc-result-meta{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;color:#9fb3ca}
+.nfc-result-meta label{display:inline-flex;gap:6px;align-items:center}
+.nfc-result-meta select{width:auto;min-width:72px;padding:5px 7px;background:#091a2e;color:#e3edf8;border:1px solid #294968;border-radius:5px}
+.nfc-history-detail{margin-left:16px;color:#9fb3ca;font-size:12px}
+.nfc-scan-filterbar label{min-width:0}
+.object-activity>div{display:grid;grid-template-columns:165px minmax(100px,.4fr) 1fr;gap:12px;padding:9px 0;border-bottom:1px solid #1d3854;font-size:12px}
+.object-activity>div:last-child{border-bottom:0}
+.object-activity>div strong{color:#c8d9ec}
 .object-overview{min-width:0}
 .object-filterbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:8px;align-items:center;margin-bottom:10px}
 .object-column-picker{position:relative}
@@ -232,6 +251,7 @@
   .object-column-picker fieldset{width:min(260px,calc(100vw - 48px))}
   .object-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .object-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .nfc-result-meta{flex-wrap:wrap;justify-content:flex-start}
   .object-detail-form .form-grid{grid-template-columns:1fr}
   .object-inline-form{grid-template-columns:repeat(2,minmax(0,1fr))}
   .object-priority-actions ol{grid-template-columns:1fr}
@@ -244,9 +264,20 @@
   .object-filterbar>input{grid-column:auto}
   .object-column-picker fieldset{position:fixed;left:12px;right:12px;top:auto;width:auto;max-height:70vh}
   .object-table{max-width:100%;-webkit-overflow-scrolling:touch}
-  .object-table table{min-width:900px}
-  .object-activity li{grid-template-columns:1fr;gap:3px}
+  .object-table table{min-width:0;display:block}
+  .object-table thead{display:none}
+  .object-table tbody{display:block}
+  .object-table tbody tr{display:grid;grid-template-columns:1fr;gap:4px;padding:10px;border-bottom:1px solid #1d3854}
+  .object-table td,.object-table th{white-space:normal;padding:5px 0;border:0;font-size:12px}
+  .object-table td{display:flex;gap:10px;justify-content:space-between;align-items:flex-start}
+  .object-table td:before{content:attr(data-label);flex:0 0 118px;color:#8ea8c4;font-weight:600}
+  .object-table td:last-child{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:6px}
+  .object-table td:last-child:before{flex-basis:100%}
+  .object-activity li,.object-activity>div{grid-template-columns:1fr;gap:3px}
   .object-pagination{justify-content:space-between;flex-wrap:wrap}
+  .nfc-filter-footer{align-items:flex-start;flex-direction:column}
+  .object-management button{min-height:44px;padding:9px 12px}
+  .object-management input,.object-management select{min-height:44px}
 }
 
 .page-content.employee-page .employee-overview{
