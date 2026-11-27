@@ -13,13 +13,14 @@ export type NfcDevice={
   notes:string;registered_at:string;updated_at:string;
   lost_at?:string|null;blocked_at?:string|null;replaced_at?:string|null;
   archived_at?:string|null;archived_reason?:string|null;recovered_at?:string|null;recovered_reason?:string|null;
-  event_reason?:string|null;reported_by?:string|null;
+  event_reason?:string|null;reported_by?:string|null;reported_by_email?:string|null;
   last_used_at?:string|null;
 };
 
 export type NfcOverview={
   total:number;active_tags:number;active_readers:number;blocked:number;lost:number;replaced:number;
-  archived:number;recent_devices:number;unassigned:number;scans:number;devices:number;days:number;recent:NfcDevice[];
+  archived:number;recent_devices:number;unassigned:number;scans:number;scan_count:number;devices:number;
+  days:number;from?:string;to?:string;recent:NfcDevice[];
 };
 
 export type NfcOptions={
@@ -229,7 +230,7 @@ function hasReplacementAssignment(device:NfcReplaceCandidate|undefined):boolean{
  * dieses Zustands und werden gemeinsam mit der Zusammenfassung gesnapshottet.
  */
 export type NfcReplaceForm={
-  identifier:string;device_type:string;manufacturer:string;
+  identifier:string;device_type:string;manufacturer:string;model:string;serial_number:string;description:string;
   mode:'new'|'existing';existing_device_id:string;
   reason:string;notes:string;copy_assignment:boolean;
   acknowledge_existing:boolean;acknowledge_restricted:boolean;
@@ -242,6 +243,7 @@ export type NfcReplaceSummary={
 
 export const emptyNfcReplaceForm=(device?:NfcDevice):NfcReplaceForm=>({
   identifier:'',device_type:device?.device_type??'tag',manufacturer:device?.manufacturer??'',
+  model:'',serial_number:'',description:'',
   mode:'new',existing_device_id:'',reason:'',notes:'',copy_assignment:false,
   acknowledge_existing:false,acknowledge_restricted:false,
 });
@@ -274,7 +276,8 @@ export function nfcReplaceSummary(form:NfcReplaceForm,oldDevice:NfcDevice,
   const oldDeviceLabel=[oldDevice.identifier,nfcStatusText(oldDevice),nfcAssignmentLabel(oldDevice)].join(' · ');
   const replacement=form.mode==='new'
     ?[form.identifier.trim()||'Noch keine Kennung',commonText.notAssigned,'Neu nach Austausch aktiv',
-      nfcTypeLabel(form.device_type),form.manufacturer.trim()||'Noch kein Hersteller'].join(' · ')
+      nfcTypeLabel(form.device_type),form.manufacturer.trim()||'Noch kein Hersteller',
+      form.model.trim()?`Modell ${form.model.trim()}`:'',form.serial_number.trim()?`SN ${form.serial_number.trim()}`:''].filter(Boolean).join(' · ')
     :candidate
       ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status),
         nfcTypeLabel(candidate.device_type),candidate.manufacturer].join(' · ')
@@ -301,6 +304,7 @@ export function nfcReplaceSummary(form:NfcReplaceForm,oldDevice:NfcDevice,
 export function nfcReplaceSnapshot(form:NfcReplaceForm,summary:NfcReplaceSummary):string{
   return JSON.stringify({form:{
     identifier:form.identifier.trim(),device_type:form.device_type,manufacturer:form.manufacturer.trim(),
+    model:form.model.trim(),serial_number:form.serial_number.trim(),description:form.description.trim(),
     mode:form.mode,existing_device_id:form.existing_device_id,reason:form.reason.trim(),notes:form.notes.trim(),
     copy_assignment:form.copy_assignment,acknowledge_existing:form.acknowledge_existing,
     acknowledge_restricted:form.acknowledge_restricted,
@@ -316,6 +320,9 @@ export function validateNfcReplace(form:NfcReplaceForm,candidate:NfcReplaceCandi
   if(form.mode==='new'){
     if(!form.identifier.trim()||!form.manufacturer.trim())return 'Bitte Kennung und Hersteller des Ersatzgeräts angeben.';
     if(!['tag','reader'].includes(form.device_type))return 'Bitte einen gültigen Gerätetyp auswählen.';
+    if(form.model.length>200)return 'Das Modell ist zu lang (maximal 200 Zeichen).';
+    if(form.serial_number.length>200)return 'Die Seriennummer ist zu lang (maximal 200 Zeichen).';
+    if(form.description.length>2000)return 'Die Beschreibung ist zu lang (maximal 2000 Zeichen).';
   }else{
     if(!form.existing_device_id)return 'Bitte ein vorhandenes Ersatzgerät auswählen.';
     if(!candidate)return 'Das ausgewählte Ersatzgerät ist nicht mehr verfügbar. Bitte erneut prüfen.';
@@ -346,6 +353,9 @@ export function nfcReplacePayload(form:NfcReplaceForm,candidate:NfcReplaceCandid
     payload.identifier=form.identifier.trim();
     payload.device_type=form.device_type;
     payload.manufacturer=form.manufacturer.trim();
+    if(form.model.trim())payload.model=form.model.trim();
+    if(form.serial_number.trim())payload.serial_number=form.serial_number.trim();
+    if(form.description.trim())payload.description=form.description.trim();
   }
   return payload;
 }
@@ -501,12 +511,15 @@ export function NfcRecoverDialog({identifier,assignment,identifierConfirmation,o
 }
 
 export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceType,manufacturer,onManufacturer,
+  model,onModel,serialNumber,onSerialNumber,description,onDescription,
   mode,onMode,existingDeviceId,onExistingDeviceId,devices,summary,
   reason,onReason,notes,onNotes,copyAssignment,onCopyAssignment,
   acknowledgeExisting,onAcknowledgeExisting,acknowledgeRestricted,onAcknowledgeRestricted,
   confirmed,onConfirmed,error,busy,onConfirm,onClose}:{
   identifier:string;onIdentifier:(value:string)=>void;deviceType:string;onDeviceType:(value:string)=>void;
   manufacturer:string;onManufacturer:(value:string)=>void;
+  model:string;onModel:(value:string)=>void;serialNumber:string;onSerialNumber:(value:string)=>void;
+  description:string;onDescription:(value:string)=>void;
   mode:'new'|'existing';onMode:(value:'new'|'existing')=>void;
   existingDeviceId:string;onExistingDeviceId:(value:string)=>void;
   devices:NonNullable<NfcOptions['devices']>;
@@ -543,10 +556,18 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
         <label>Hersteller *
           <input required maxLength={200} value={manufacturer} onChange={event=>onManufacturer(event.target.value)}/>
         </label>
+        <label>Modell
+          <input maxLength={200} value={model} placeholder="z. B. MIFARE Classic 1K" onChange={event=>onModel(event.target.value)}/>
+        </label>
+        <label>Seriennummer
+          <input maxLength={200} value={serialNumber} placeholder="Seriennummer" onChange={event=>onSerialNumber(event.target.value)}/>
+        </label>
+        <label>Beschreibung
+          <input maxLength={2000} value={description} placeholder="Kurzbeschreibung" onChange={event=>onDescription(event.target.value)}/>
+        </label>
       </>:<NfcSearchSelect label="Ersatzgerät" value={existingDeviceId} required
         options={devices.map(device=>({id:device.id,label:`${device.identifier} · ${device.manufacturer} · ${nfcTypeLabel(device.device_type)}`}))}
         onChange={onExistingDeviceId}/>}
-      <label>Austauschdatum <input type="date" value={new Date().toISOString().slice(0,10)} readOnly/></label>
       <label>Austauschgrund *
         <input required minLength={3} maxLength={2000} value={reason} onChange={event=>onReason(event.target.value)}/>
       </label>
@@ -585,11 +606,13 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
   </NfcDialog>;
 }
 
-export function NfcKpiCard({label,value,hint,onClick}:{label:string;value:number;hint?:string;onClick?:()=>void}){
+export function NfcKpiCard({label,value,hint,onClick,active=false}:{
+  label:string;value:number;hint?:string;onClick?:()=>void;active?:boolean;
+}){
   const content=<><strong>{formatNumber(value)}</strong><span>{label}</span>{hint&&<small>{hint}</small>}</>;
   return onClick?(
-    <article className="object-summary-card" role="button" tabIndex={0} onClick={onClick}
-      onKeyDown={event=>{if(event.key==='Enter')onClick();}}>{content}</article>
+    <article className={`object-summary-card${active?' active':''}`} role="button" tabIndex={0} aria-pressed={active}
+      onClick={onClick} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();onClick();}}}>{content}</article>
   ):<article>{content}</article>;
 }
 
@@ -603,6 +626,7 @@ export function NfcTimeline({device,options}:{device:NfcDevice;options:NfcOption
     ...(device.recovered_at?[{label:'Wiedergefunden',value:formatDateTime(device.recovered_at)}]:[]),
     ...(device.archived_at?[{label:'Archiviert',value:formatDateTime(device.archived_at)}]:[]),
     {label:'Aktuelle Zuordnung',value:nfcAssignmentLabel(device)},
+    ...(device.reported_by?[{label:'Letzte Änderung durch',value:device.reported_by_email??device.reported_by}]:[]),
     ...(device.event_reason?[{label:'Letzter Grund',value:device.event_reason}]:[]),
   ];
   void options;

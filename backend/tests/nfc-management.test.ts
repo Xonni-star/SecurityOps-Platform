@@ -61,9 +61,35 @@ describe('NFC device management routes',()=>{
     });
     const response=await request(app).get('/api/v1/nfc-devices/overview?days=14').set('Cookie',csrf.Cookie);
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.objectContaining({total:10,active_tags:6,active_readers:2,scans:42,days:14}));
+    expect(response.body).toEqual(expect.objectContaining({total:10,active_tags:6,active_readers:2,scans:42,scan_count:42,days:14}));
     expect(response.body.recent).toHaveLength(1);
-    expect(calls('count(DISTINCT nfc_device_id)')[0]?.[1]).toEqual([tenant,14]);
+    expect(typeof response.body.from).toBe('string');
+    expect(typeof response.body.to).toBe('string');
+    expect(calls('count(DISTINCT nfc_device_id)')[0]?.[1]).toEqual([tenant,response.body.from,response.body.to]);
+  });
+
+  it('clamps the evaluation window to 1–365 days',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([activeUser]):result([]));
+    expect((await request(app).get('/api/v1/nfc-devices/overview?days=999').set('Cookie',csrf.Cookie)).body.days).toBe(365);
+    expect((await request(app).get('/api/v1/nfc-devices/overview?days=0').set('Cookie',csrf.Cookie)).body.days).toBe(1);
+    expect((await request(app).get('/api/v1/nfc-devices/overview?days=abc').set('Cookie',csrf.Cookie)).body.days).toBe(30);
+  });
+
+  it('rejects invalid time ranges with a readable German message',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT id FROM nfc_devices'))return result([{id:device}]);
+      return result([]);
+    });
+    for(const path of [
+      '/api/v1/nfc-devices/overview?from=2026-02-31',
+      '/api/v1/nfc-devices/inventory?recent=true&to=kein-datum',
+      `/api/v1/nfc-devices/${device}/scan-history?from=2026-13-01`,
+    ]){
+      const response=await request(app).get(path).set('Cookie',csrf.Cookie);
+      expect(response.status).toBe(400);
+      expect(String(response.body.error)).toContain('Ungültiger Zeitraum');
+    }
   });
 
   it('combines filters, sorting and pagination in one inventory query',async()=>{
@@ -84,6 +110,20 @@ describe('NFC device management routes',()=>{
     expect(String(listCall?.[0])).toContain('num_nonnulls(n.employee_id,n.site_id,n.control_point_id)>0');
     expect(String(listCall?.[0])).toContain('SELECT MAX(ps.server_received_at)');
     expect(listCall?.[1]).toEqual(expect.arrayContaining([tenant,'%TAG%','tag','blocked',site,point,employee,10,10]));
+  });
+
+  it('escapes search wildcards and treats every replacement marker as replaced',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('count(*)::int total FROM nfc_devices'))return result([{total:1}]);
+      return result([deviceRow]);
+    });
+    const response=await request(app).get(`/api/v1/nfc-devices/inventory?q=${encodeURIComponent('TAG_%')}&replaced=true`)
+      .set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    const listCall=calls('ORDER BY')[0];
+    expect(listCall?.[1]).toEqual(expect.arrayContaining(['%TAG\\_\\%%']));
+    expect(String(listCall?.[0])).toContain("n.status='replaced' OR n.replaced_at IS NOT NULL");
   });
 
   it('returns all assignment options from the tenant',async()=>{
@@ -117,6 +157,10 @@ describe('NFC device management routes',()=>{
     expect(response.body.scans).toBeUndefined();
     expect(String(calls('FROM dms_documents d')[0]?.[0])).toContain("d.document_status='active'");
     expect(String(calls('FROM dms_documents d')[0]?.[0])).toContain("v.lifecycle_state='available'");
+    expect(String(calls('nfc_device_assignment_history h')[0]?.[0])).toContain('h.assigned_at DESC, h.id DESC');
+    expect(String(calls('nfc_device_replacements r')[0]?.[0])).toContain('r.replaced_at DESC, r.id DESC');
+    expect(String(calls('FROM audit_events a')[0]?.[0])).toContain('a.created_at DESC, a.id DESC');
+    expect(String(calls('nfc_device_assignment_history h')[0]?.[0])).not.toContain('LIMIT');
   });
 
   it('withholds documents and audit actors without the corresponding permissions',async()=>{
@@ -154,7 +198,7 @@ describe('NFC device management routes',()=>{
     expect(response.headers['x-total-count']).toBe('31');
     const sql=String(calls('FROM events')[0]?.[0]);
     expect(sql).toContain("patrol.scan.rejected");
-    expect(sql).toContain('effective_at >=');
+    expect(sql).toContain('effective_at BETWEEN $');
     expect(sql).toContain('control_point_id=$');
     expect(calls('FROM events')[0]?.[1]).toEqual([tenant,device,'2026-11-01T00:00:00.000Z','2026-11-30T23:59:59.999Z',point,'rejected']);
     const rowCall=calls('FROM events').find(([sql])=>String(sql).includes('ORDER BY'));
@@ -368,8 +412,12 @@ describe('NFC device management routes',()=>{
     expect(inventory.status).toBe(200);
     const sql=String(calls('n.archived_at IS NOT NULL')[0]?.[0]);
     expect(sql).toContain('n.archived_at IS NOT NULL');
-    expect(sql).toContain("interval '30 days'");
-    expect(calls('n.archived_at IS NOT NULL')[0]?.[1]).toEqual(expect.arrayContaining([tenant]));
+    expect(sql).toContain('server_received_at BETWEEN $');
+    const params=calls('n.archived_at IS NOT NULL')[0]?.[1] as unknown[];
+    expect(params).toHaveLength(3);
+    expect(params[0]).toBe(tenant);
+    expect(Date.parse(String(params[1]))).toBeGreaterThan(0);
+    expect(Date.parse(String(params[2]))).toBeGreaterThanOrEqual(Date.parse(String(params[1])));
   });
 
   it('offers real devices as replacement options',async()=>{

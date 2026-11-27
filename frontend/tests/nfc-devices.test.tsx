@@ -144,19 +144,20 @@ beforeEach(()=>{
 describe('NFC-Geräteverwaltung',()=>{
   it('zeigt echte Kennzahlen und kombiniert Suche, Filter, Sortierung und Pagination',async()=>{
     renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'Weitere Kennzahlen anzeigen'}));
     expect(await screen.findByText('42')).toBeTruthy();
     expect(screen.getByText('Aktive NFC-Tags')).toBeTruthy();
 
     fireEvent.change(screen.getByPlaceholderText('NFC-Kennung suchen'),{target:{value:'TAG'}});
     fireEvent.change(screen.getByLabelText('Status'),{target:{value:'active'}});
     fireEvent.click(screen.getByRole('button',{name:/NFC-Kennung sortieren/}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('q=TAG&status=active')));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('q=TAG&status=active'),expect.anything()));
     const lastInventory=[...apiMock.mock.calls].reverse().find(([path])=>String(path).startsWith('/nfc-devices/inventory'))?.[0];
     expect(String(lastInventory)).toContain('sort=identifier');
     expect(String(lastInventory)).toContain('dir=asc');
 
     fireEvent.click(screen.getByRole('button',{name:'Weiter →'}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('page=2')));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('page=2'),expect.anything()));
   });
 
   it('öffnet die Geräteakte über die Tabellenzeile',async()=>{
@@ -211,10 +212,11 @@ describe('NFC-Geräteverwaltung',()=>{
 
   it('filtert die Liste über die Kennzahlen für archivierte und kürzlich verwendete Geräte',async()=>{
     renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'Weitere Kennzahlen anzeigen'}));
     fireEvent.click(await screen.findByRole('button',{name:/Archiviert/}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('archived=true')));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('archived=true'),expect.anything()));
     fireEvent.click(screen.getByRole('button',{name:/Kürzlich verwendet/}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('recent=true')));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('recent=true'),expect.anything()));
   });
 
   it('registriert Gerät mit Modell, Seriennummer und Beschreibung',async()=>{
@@ -604,9 +606,9 @@ describe('NFC-Geräteakte',()=>{
     expect(screen.getByText('Registrierte NFC-Kennung')).toBeTruthy();
     expect(await screen.findByText('Seite 1 von 2 · 27 Scan-Ereignisse')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Ergebnis filtern'),{target:{value:'rejected'}});
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('outcome=rejected')));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('outcome=rejected'),expect.anything()));
     fireEvent.click(screen.getByRole('button',{name:'Weiter →'}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('page=2')));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(expect.stringContaining('page=2'),expect.anything()));
   });
 
   it('blendet die Ersatzaktion bei ersetzten und archivierten Geräten aus',async()=>{
@@ -668,5 +670,114 @@ describe('NFC-Geräteakte',()=>{
       expect(body).not.toHaveProperty('site_id');
       expect(body).not.toHaveProperty('control_point_id');
     });
+  });
+});
+
+describe('NFC-Übersicht: Zeitraum, Filter und Zustand',()=>{
+  const lastCall=(prefix:string)=>String([...apiMock.mock.calls].reverse()
+    .find(([path])=>String(path).startsWith(prefix))?.[0]??'');
+  const paramsOf=(path:string)=>new URLSearchParams(path.split('?')[1]??'');
+
+  it('verwendet für Overview, Inventar und Kürzlich-Filter exakt dasselbe Zeitfenster',async()=>{
+    renderOverview();
+    await screen.findAllByText('TAG-001');
+    fireEvent.change(screen.getByLabelText('Auswertungszeitraum'),{target:{value:'90'}});
+    await waitFor(()=>expect(lastCall('/nfc-devices/overview')).toContain('days=90'));
+    const overviewParams=paramsOf(lastCall('/nfc-devices/overview'));
+    const inventoryParams=paramsOf(lastCall('/nfc-devices/inventory'));
+    expect(overviewParams.get('days')).toBe('90');
+    expect(inventoryParams.get('days')).toBe('90');
+    expect(overviewParams.get('from')).toBe(inventoryParams.get('from'));
+    expect(overviewParams.get('to')).toBe(inventoryParams.get('to'));
+
+    fireEvent.click(await screen.findByRole('button',{name:'Weitere Kennzahlen anzeigen'}));
+    fireEvent.click(screen.getByRole('button',{name:/Kürzlich verwendet/}));
+    await waitFor(()=>expect(lastCall('/nfc-devices/inventory')).toContain('recent=true'));
+    const recentParams=paramsOf(lastCall('/nfc-devices/inventory'));
+    expect(recentParams.get('days')).toBe('90');
+    expect(recentParams.get('from')).toBe(overviewParams.get('from'));
+    expect(recentParams.get('to')).toBe(overviewParams.get('to'));
+  });
+
+  it('zeigt aktive Filter als Chips, entfernt sie einzeln und setzt alles zurück',async()=>{
+    renderOverview();
+    await screen.findAllByText('TAG-001');
+    fireEvent.change(screen.getByLabelText('Status'),{target:{value:'active'}});
+    expect(await screen.findByRole('button',{name:'Status entfernen'})).toBeTruthy();
+    await waitFor(()=>expect(lastCall('/nfc-devices/inventory')).toContain('status=active'));
+    fireEvent.click(screen.getByRole('button',{name:'Status entfernen'}));
+    await waitFor(()=>expect(lastCall('/nfc-devices/inventory')).not.toContain('status=active'));
+    expect(screen.queryByRole('button',{name:'Status entfernen'})).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Zuordnung'),{target:{value:'unassigned'}});
+    expect(await screen.findByRole('button',{name:'Filter zurücksetzen'})).toBeTruthy();
+    expect(screen.getByText('26',{selector:'strong'}).parentElement?.textContent).toContain('Treffer');
+    fireEvent.click(screen.getByRole('button',{name:'Filter zurücksetzen'}));
+    expect(screen.queryByRole('button',{name:'Filter zurücksetzen'})).toBeNull();
+    await waitFor(()=>expect(lastCall('/nfc-devices/inventory')).not.toContain('assignment=unassigned'));
+    expect((screen.getByLabelText('Auswertungszeitraum') as HTMLSelectElement).value).toBe('30');
+  });
+
+  it('lässt KPI-Filter beim Abwählen kontrolliert leer',async()=>{
+    const errors=vi.spyOn(console,'error').mockImplementation(()=>undefined);
+    try{
+      renderOverview();
+      await screen.findAllByText('TAG-001');
+      fireEvent.click(screen.getByRole('button',{name:/Gesperrt/}));
+      expect(await screen.findByRole('button',{name:'Status entfernen'})).toBeTruthy();
+      fireEvent.click(screen.getByRole('button',{name:/Gesperrt/}));
+      expect((screen.getByLabelText('Status') as HTMLSelectElement).value).toBe('');
+      expect(errors.mock.calls.some(([message])=>String(message).includes('controlled input'))).toBe(false);
+    }finally{errors.mockRestore();}
+  });
+
+  it('übernimmt Seitengröße und URL-Zustand in die Serverabfrage',async()=>{
+    render(<MemoryRouter initialEntries={['/nfc-devices?days=90&status=blocked&pageSize=5&sort=identifier&dir=asc&page=2']}>
+      <Routes><Route path="/nfc-devices" element={<NfcDevices/>}/></Routes>
+    </MemoryRouter>);
+    expect((await screen.findByLabelText('Auswertungszeitraum') as HTMLSelectElement).value).toBe('90');
+    expect((screen.getByLabelText('Status') as HTMLSelectElement).value).toBe('blocked');
+    expect((screen.getByLabelText('Einträge pro Seite') as HTMLSelectElement).value).toBe('5');
+    await waitFor(()=>{
+      const params=paramsOf(lastCall('/nfc-devices/inventory'));
+      expect(params.get('days')).toBe('90');
+      expect(params.get('status')).toBe('blocked');
+      expect(params.get('pageSize')).toBe('5');
+      expect(params.get('sort')).toBe('identifier');
+      expect(params.get('dir')).toBe('asc');
+      expect(params.get('page')).toBe('2');
+    });
+    fireEvent.change(screen.getByLabelText('Einträge pro Seite'),{target:{value:'10'}});
+    await waitFor(()=>expect(paramsOf(lastCall('/nfc-devices/inventory')).get('pageSize')).toBe('10'));
+  });
+
+  it('bricht vorherige Inventar-Anfragen beim Ändern der Filter ab',async()=>{
+    renderOverview();
+    await screen.findAllByText('TAG-001');
+    const signal=apiMock.mock.calls.find(([path])=>String(path).startsWith('/nfc-devices/inventory'))?.[1]?.signal;
+    expect(signal).toBeTruthy();
+    expect(signal?.aborted).toBe(false);
+    fireEvent.change(screen.getByLabelText('Status'),{target:{value:'lost'}});
+    await waitFor(()=>expect(signal?.aborted).toBe(true));
+  });
+});
+
+describe('NFC-Berechtigungen',()=>{
+  it('verweigert die Übersicht ohne Leseberechtigung',async()=>{
+    permissionMock.mockReturnValue(false);
+    renderOverview();
+    expect(await screen.findByText('Keine Berechtigung.')).toBeTruthy();
+    expect(apiMock.mock.calls.some(([path])=>String(path).startsWith('/nfc-devices/inventory'))).toBe(false);
+  });
+
+  it('blendet schreib- und sicherheitsrelevante Aktionen ohne Berechtigung aus',async()=>{
+    permissionMock.mockImplementation(code=>code==='nfc_devices:read');
+    renderOverview();
+    expect((await screen.findAllByText('TAG-001')).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button',{name:'NFC-Gerät registrieren'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Bearbeiten'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Sperren'})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Ersatz'})).toBeNull();
+    expect(screen.getByRole('button',{name:'Akte'})).toBeTruthy();
   });
 });
