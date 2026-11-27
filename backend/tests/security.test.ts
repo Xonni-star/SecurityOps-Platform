@@ -72,21 +72,21 @@ describe('permission and tenant enforcement',()=>{
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects invalid CRUD input with the uniform error shape',async()=>{
+  it('rejects invalid employee input with the domain error shape',async()=>{
     queryMock.mockResolvedValue(result([{...sessionUser,permissions:['employees:write']}])) ;
     const response=await request(app).post('/api/v1/employees').set('Cookie',['securityops_session=opaque','securityops_csrf=csrf-value']).set('x-csrf-token','csrf-value').send({name:'',email:'not-an-email',unexpected:'rejected'});
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({error:'Ungültige Anfrage'});
+    expect(response.body.error).toBe('Ungültiges Mitarbeiterprofil');
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
-  it('passes the authenticated tenant to CRUD queries',async()=>{
-    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([sessionUser]):result([{id:'employee-1',tenant_id:'tenant-a',name:'Ava'}]));
+  it('passes the authenticated tenant to employee queries',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([sessionUser]):result([{id:'employee-1',tenant_id:'tenant-a',name:'Ava',employee_number:'E-1'}]));
     const response=await request(app).get('/api/v1/employees').set('Cookie','securityops_session=opaque');
     expect(response.status).toBe(200);
-    const crudCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('SELECT * FROM employees'));
-    expect(crudCall?.[1]).toEqual(['tenant-a']);
-    expect(response.body[0].tenant_id).toBe('tenant-a');
+    const employeeCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('SELECT * FROM employees WHERE tenant_id=$1 ORDER BY name'));
+    expect(employeeCall?.[1]).toContain('tenant-a');
+    expect(response.body[0].employee_number).toBe('E-1');
   });
 });
 

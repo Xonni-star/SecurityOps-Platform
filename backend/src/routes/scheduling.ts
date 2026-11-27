@@ -5,6 +5,7 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {runIdempotentMutation} from '../services/offline-sync.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 import {detectShiftConflicts} from '../services/scheduling.js';
+import {evaluateShiftAssignment,hardReasons} from '../services/staffing-verdict.js';
 
 const uuid=z.string().uuid();
 const isoDateTime=z.string().datetime({offset:true});
@@ -121,17 +122,19 @@ schedulingRouter.post('/scheduling/shifts/:shiftId/assignments',requirePermissio
     const body=z.object({employee_id:uuid,client_mutation_id:mutation}).strict().parse(req.body);
     const sessionId=ensureSession(req);
     const result=await withTransaction(client=>runIdempotentMutation(client,{tenantId:req.user!.tenantId,userId:req.user!.id,mutationId:body.client_mutation_id,action:'scheduling.assignment',payload:req.body},async tx=>{
-      const shift=(await tx.query('SELECT sh.*,p.id period_id,p.rule_profile_id,p.site_id FROM schedule_shifts sh JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id WHERE sh.tenant_id=$1 AND sh.id=$2',[req.user!.tenantId,req.params.shiftId])).rows[0];
+      const shift=(await tx.query('SELECT sh.*,p.id period_id,p.rule_profile_id,p.site_id,p.status period_status FROM schedule_shifts sh JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id WHERE sh.tenant_id=$1 AND sh.id=$2',[req.user!.tenantId,req.params.shiftId])).rows[0];
       if(!shift)throw Object.assign(new Error('Dienstplanschicht nicht gefunden'),{status:404});
       permission(req,'scheduling:write',shift.site_id);
       const employee=(await tx.query('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.employee_id])).rows[0];
       if(!employee)throw Object.assign(new Error('Mitarbeiter nicht gefunden'),{status:404});
+      if(new Date(shift.starts_at).getTime()<Date.now())throw Object.assign(new Error('Vergangene Schichten können nicht besetzt werden'),{status:409,reason_code:'shift_in_past'});
+      if(shift.period_status==='closed')throw Object.assign(new Error('Der Dienstplanzeitraum ist abgeschlossen'),{status:409,reason_code:'period_closed'});
       const absence=(await tx.query(
         `SELECT id FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2
-         AND starts_at < $4 AND $3 < ends_at LIMIT 1`,
+         AND status='approved' AND starts_at < $4 AND $3 < ends_at LIMIT 1`,
         [req.user!.tenantId,body.employee_id,shift.starts_at,shift.ends_at],
       )).rows[0];
-      if(absence)throw Object.assign(new Error('Mitarbeiter ist während dieser Schicht abwesend'),{status:409});
+      if(absence)throw Object.assign(new Error('Mitarbeiter ist während dieser Schicht abwesend'),{status:409,reason_code:'absence_approved'});
       const overlapping=(await tx.query(
         `SELECT a.id FROM schedule_assignments a JOIN schedule_shifts s
          ON s.tenant_id=a.tenant_id AND s.id=a.shift_id
@@ -139,21 +142,32 @@ schedulingRouter.post('/scheduling/shifts/:shiftId/assignments',requirePermissio
            AND s.starts_at < $4 AND $3 < s.ends_at LIMIT 1`,
         [req.user!.tenantId,body.employee_id,shift.starts_at,shift.ends_at],
       )).rows[0];
-      if(overlapping)throw Object.assign(new Error('Mitarbeiter ist bereits einer überschneidenden Schicht zugeordnet'),{status:409});
+      if(overlapping)throw Object.assign(new Error('Mitarbeiter ist bereits einer überschneidenden Schicht zugeordnet'),{status:409,reason_code:'overlapping_shift'});
+      const profile=(await tx.query('SELECT r.parameters FROM schedule_rule_profiles r JOIN schedule_periods p ON p.tenant_id=r.tenant_id AND p.rule_profile_id=r.id WHERE p.tenant_id=$1 AND p.id=$2',[req.user!.tenantId,shift.period_id])).rows[0];
+      // Verbindliche Prüfung: exakt dieselben Regeln wie die Einsatzfähigkeit.
+      // Ein `ineligible`-Urteil darf nicht durch einen direkten API-Aufruf umgangen werden.
+      const verdict=await evaluateShiftAssignment(
+        (text,values)=>tx.query(text,values),
+        req.user!.tenantId,
+        {site_id:shift.site_id,starts_at:shift.starts_at,ends_at:shift.ends_at,
+          required_qualification_codes:shift.required_qualification_codes,profile_parameters:profile?.parameters},
+        body.employee_id,
+      );
+      if(verdict.status==='ineligible'){
+        const hard=hardReasons(verdict)[0]??verdict.reasons[0];
+        throw Object.assign(new Error(`Einsatz nicht zulässig: ${hard.message}`),{
+          status:409,reason_code:hard.code,
+          details:{reasons:verdict.reasons,missing_qualification_codes:verdict.missing_qualification_codes},
+        });
+      }
       const row=(await tx.query(`INSERT INTO schedule_assignments(tenant_id,shift_id,employee_id,created_by,created_session_id,client_mutation_id)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[req.user!.tenantId,shift.id,body.employee_id,req.user!.id,sessionId,body.client_mutation_id])).rows[0];
-      const qualificationRows=(await tx.query<{code:string;valid_from:string|null;valid_until:string|null;status:string}>(
-        'SELECT code,valid_from,valid_until,status FROM employee_qualifications WHERE tenant_id=$1 AND employee_id=$2',[req.user!.tenantId,body.employee_id],
-      )).rows;
-      const shiftStart=new Date(shift.starts_at).getTime();const shiftEnd=new Date(shift.ends_at).getTime();
-      const quals=qualificationRows.filter(item=>item.status==='valid'
-        &&(!item.valid_from||new Date(`${item.valid_from}T00:00:00Z`).getTime()<=shiftStart)
-        &&(!item.valid_until||new Date(`${item.valid_until}T23:59:59.999Z`).getTime()>=shiftEnd)).map(item=>item.code);
-      const absences=(await tx.query('SELECT starts_at,ends_at FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2',[req.user!.tenantId,body.employee_id])).rows;
+      const quals=verdict.matched_qualification_codes;
+      const absences=(await tx.query(`SELECT starts_at,ends_at FROM employee_absences
+        WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('requested','approved')`,[req.user!.tenantId,body.employee_id])).rows;
       const existing=(await tx.query(`SELECT sh.starts_at,sh.ends_at FROM schedule_assignments a JOIN schedule_shifts sh ON sh.tenant_id=a.tenant_id AND sh.id=a.shift_id
         WHERE a.tenant_id=$1 AND a.employee_id=$2 AND a.id<>$3 AND a.status='assigned'`,[req.user!.tenantId,body.employee_id,row.id])).rows;
-      const profile=(await tx.query('SELECT r.parameters FROM schedule_rule_profiles r JOIN schedule_periods p ON p.tenant_id=r.tenant_id AND p.rule_profile_id=r.id WHERE p.tenant_id=$1 AND p.id=$2',[req.user!.tenantId,shift.period_id])).rows[0];
-      const conflicts=detectShiftConflicts({startsAt:shift.starts_at,endsAt:shift.ends_at,requiredQualificationCodes:shift.required_qualification_codes??[]},existing,quals,absences,profile?.parameters??{});
+      const conflicts=detectShiftConflicts({startsAt:shift.starts_at,endsAt:shift.ends_at,requiredQualificationCodes:verdict.required_qualification_codes},existing,quals,absences,profile?.parameters??{});
       await addConflicts(tx,req.user!.tenantId,shift.period_id,shift.id,row.id,conflicts);
       await tx.query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',[req.user!.tenantId,req.user!.id,'scheduling.assignment.created','schedule_assignment',row.id,{conflict_count:conflicts.length}]);
       return {...row,conflicts};

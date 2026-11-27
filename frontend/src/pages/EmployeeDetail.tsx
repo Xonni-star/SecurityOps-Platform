@@ -215,11 +215,17 @@ export function EmployeeDetail(){
   const focusedDocument=documentId?profile.documents.find((item:any)=>item.id===documentId):undefined;
   const clearFocus=()=>{const next=new URLSearchParams(searchParams);next.delete('qualification');next.delete('document');setSearchParams(next,{replace:true});};
   const downloadEvidence=async(document:any,version:any)=>{
+    if(!hasPermission('qualifications:documents:download')||!hasPermission('dms:read'))return;
+    const linked=profile.qualifications.find((item:any)=>item.document_id===document.id);
+    if(!linked){setError('Für dieses Dokument ist keine Qualifikation verknüpft.');return;}
     try{
-      const response=await fetch(`/api/v1/dms/documents/${document.id}/versions/${version.id}/download`,{credentials:'include',headers:{'x-csrf-token':csrf()}});
+      const reason=new URLSearchParams(searchParams).get('grund')||evidenceReason.trim()||'Nachweisprüfung';
+      const grant=await api<{download_url:string;title:string}>(`/qualifications/assignments/${linked.id}/document?reason=${encodeURIComponent(reason)}`);
+      if(!grant)throw new Error('Der Nachweiszugriff konnte nicht bestätigt werden.');
+      const response=await fetch(`/api/v1${grant.download_url}`,{credentials:'include',headers:{'x-csrf-token':csrf()}});
       if(!response.ok)throw new Error((await response.json()).error||'Der Download konnte nicht abgeschlossen werden.');
       const blob=await response.blob();const url=URL.createObjectURL(blob);const link=window.document.createElement('a');
-      link.href=url;link.download=`${document.title||'nachweis'}-v${version.version_no}`;link.click();URL.revokeObjectURL(url);
+      link.href=url;link.download=`${grant.title||document.title||'nachweis'}-v${version.version_no}`;link.click();URL.revokeObjectURL(url);
     }catch(e){setError((e as Error).message);}
   };
   const qualificationStatus=(item:any)=>item.status_label||statusLabel(item.computed_status??item.status,'qualification');
@@ -268,7 +274,7 @@ export function EmployeeDetail(){
     if(!hasPermission('qualifications:documents:download'))return;
     if(!evidenceReason.trim()){setQualificationError('Bitte eine Begründung für den Nachweiszugriff angeben.');return;}
     setQualificationError('');
-    try{await api(`/qualifications/assignments/${item.id}/document`);}catch(e){setQualificationError((e as Error).message);return;}
+    try{await api(`/qualifications/assignments/${item.id}/document?reason=${encodeURIComponent(evidenceReason.trim())}`);}catch(e){setQualificationError((e as Error).message);return;}
     const next=new URLSearchParams(searchParams);
     next.set('qualification',item.id);next.set('grund',evidenceReason.trim());
     setSearchParams(next,{replace:true});
@@ -333,7 +339,7 @@ export function EmployeeDetail(){
         <h3>{focusedQualification.catalog_name||focusedQualification.code||'Qualifikation'}</h3>
         <p>{focusedQualification.code||'Ohne Katalogkennung'} · {focusedQualification.status_label||statusLabel(focusedQualification.computed_status??focusedQualification.status,'qualification')}{focusedQualification.valid_until?` · gültig bis ${formatDate(focusedQualification.valid_until)}`:' · unbefristet'}{validUntilSourceLabel(focusedQualification.valid_until_source)?` · Herkunft: ${validUntilSourceLabel(focusedQualification.valid_until_source)}`:''}</p>
       </>:qualificationId?<h3>Verknüpfte Qualifikation nicht mehr verfügbar</h3>:null}
-      {documentId&&<p>{focusedDocument?<>Nachweisdokument: <strong>{focusedDocument.title}</strong> · {statusLabel(focusedDocument.document_status,'document')}{focusedDocument.versions?.some((version:any)=>version.lifecycle_state==='available')&&hasPermission('dms:read')&&<button type="button" onClick={()=>void downloadEvidence(focusedDocument,focusedDocument.versions.find((version:any)=>version.lifecycle_state==='available'))}>Nachweis herunterladen</button>}</>:hasPermission('dms:read')?<a href={`/dms?document=${documentId}`}>Nachweis im Dokumentenmanagement prüfen</a>:'Verknüpfter Nachweis ist nicht verfügbar.'}</p>}
+      {documentId&&<p>{focusedDocument?<>Nachweisdokument: <strong>{focusedDocument.title}</strong> · {statusLabel(focusedDocument.document_status,'document')}{focusedDocument.versions?.some((version:any)=>version.lifecycle_state==='available')&&hasPermission('dms:read')&&hasPermission('qualifications:documents:download')&&<button type="button" onClick={()=>void downloadEvidence(focusedDocument,focusedDocument.versions.find((version:any)=>version.lifecycle_state==='available'))}>Nachweis herunterladen</button>}</>:hasPermission('dms:read')?<a href={`/dms?document=${documentId}`}>Nachweis im Dokumentenmanagement prüfen</a>:'Verknüpfter Nachweis ist nicht verfügbar.'}</p>}
     </div>
     <button type="button" onClick={clearFocus}>Fokus schließen</button>
   </section>;

@@ -24,6 +24,7 @@ export type AvailabilityRecord = {
 };
 export type EligibilityInput = {
   employee:{id:string;name:string;employment_status:string|null;
+    hire_date?:string|null;termination_date?:string|null;
     assignment:{starts_on:string;ends_on:string|null}|null};
   shift:{starts_at:string;ends_at:string;required_qualification_codes:string[]};
   qualifications:QualificationRecord[];
@@ -182,6 +183,7 @@ export function evaluateShiftEligibility(input:EligibilityInput):{
 }{
   const reasons:EligibilityReason[]=[];
   const {employee,shift}=input;
+  const statusBlocked=['terminated','archived','leave'].includes(employee.employment_status??'');
   if(['terminated','archived'].includes(employee.employment_status??''))reasons.push({
     code:'employment_status',message:`Mitarbeiter ist nicht mehr beschäftigt (${employee.employment_status})`,link:{type:'employee',id:employee.id,label:employee.name},
   });
@@ -191,9 +193,26 @@ export function evaluateShiftEligibility(input:EligibilityInput):{
   else if(employee.employment_status==='probation'||employee.employment_status===null)reasons.push({
     code:'employment_status_restricted',message:'Beschäftigungsstatus erfordert Prüfung',link:{type:'employee',id:employee.id,label:employee.name},
   });
+  // Beschäftigungszeitraum: Eintritt und Austritt werden gegen den Schichtzeitraum
+  // geprüft. Bereits statusbedingt gesperrte Mitarbeiter erhalten keine Doppelwarnung.
+  const shiftStartDay=localDay(shift.starts_at);
+  const shiftEndDay=localDay(shift.ends_at);
+  if(!statusBlocked&&employee.hire_date){
+    const hireDay=localDay(employee.hire_date);
+    if(hireDay===null||(shiftStartDay!==null&&hireDay>shiftStartDay))reasons.push({
+      code:'employment_not_started',message:'Mitarbeiter ist zum Schichtbeginn noch nicht eingestellt',
+      link:{type:'employee',id:employee.id,label:employee.name},
+    });
+  }
+  if(!statusBlocked&&employee.termination_date){
+    const terminationDay=localDay(employee.termination_date);
+    if(terminationDay===null||(shiftEndDay!==null&&terminationDay<shiftEndDay))reasons.push({
+      code:'employment_ended',message:'Mitarbeiter ist zum Schichtende nicht mehr beschäftigt',
+      link:{type:'employee',id:employee.id,label:employee.name},
+    });
+  }
   const assignmentEndsOn=employee.assignment?.ends_on??null;
   const assignmentEnd=assignmentEndsOn===null?null:localDay(assignmentEndsOn);
-  const shiftEndDay=localDay(shift.ends_at);
   if(!employee.assignment||!beforeOrEqual(employee.assignment.starts_on,shift.starts_at)
     ||(assignmentEndsOn!==null&&(assignmentEnd===null||shiftEndDay===null||assignmentEnd<shiftEndDay)))reasons.push({
     code:'site_assignment',message:'Keine Objektzuordnung für den gesamten Schichtzeitraum',link:{type:'employee',id:employee.id,label:employee.name},

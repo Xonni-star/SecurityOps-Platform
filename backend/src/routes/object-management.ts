@@ -7,6 +7,7 @@ import {classifyDocument,classifyRequirement,documentStatusCounts,documentWarnin
 import {classifyQualification,daysUntil,qualificationDayNumber,qualificationLocalDate} from '../services/qualification-status.js';
 import {withMaintenanceStatus} from '../services/maintenance-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
+import {evaluateShiftAssignment,type QueryFn,type ShiftForVerdict,type Verdict} from '../services/staffing-verdict.js';
 
 /** Einheitlicher Berliner Kalendertag für alle Gültigkeitsvergleiche. */
 const berlinDate=`(now() AT TIME ZONE 'Europe/Berlin')::date`;
@@ -151,6 +152,183 @@ function sortPriorityActions(actions:PriorityAction[],limit=40):PriorityAction[]
     ||left.title.localeCompare(right.title)).slice(0,limit);
 }
 
+/*
+ * Objektabdeckung ist keine Kopfzahl: eine Anforderung gilt nur als gedeckt,
+ * wenn die zentrale Einsatzprüfung für den konkreten Zeitraum ein "eligible"
+ * Urteil liefert. Alle Reason-Codes stammen aus staffing-eligibility bzw.
+ * staffing-verdict; hier wird keine zweite Warnungslogik gepflegt.
+ */
+type CoverageReason=Verdict['reasons'][number];
+type CoverageEmployee={
+  employee_id:string;employee_name:string|null;status:Verdict['status'];
+  reason_codes:string[];reasons:CoverageReason[];
+  required_qualification_codes:string[];
+  matched_qualification_codes:string[];missing_qualification_codes:string[];
+};
+type CoverageRequirement={code:string;requirement_count:number;covered:boolean;reason_codes:string[]};
+type CoverageShiftInput=Omit<ShiftForVerdict,'starts_at'|'ends_at'>&{
+  id:string;starts_at:string;ends_at:string;synthetic:boolean;
+};
+type CoverageShift={
+  shift_id:string;starts_at:string;ends_at:string;synthetic:boolean;
+  required_staff_count:number;eligible_employee_count:number;covered:boolean;
+  required_qualification_codes:string[];reason_codes:string[];
+  requirements:CoverageRequirement[];employees:CoverageEmployee[];
+};
+type SiteCoverage={
+  site_id:string;requirement_count:number;required_staff_count:number;
+  covered:boolean;understaffed:boolean;reason_codes:string[];
+  requirements:CoverageRequirement[];shifts:CoverageShift[];
+};
+const coverageQuery:QueryFn=(text,values)=>query(text,values);
+const uniqueStrings=(values:string[]):string[]=>[...new Set(values)];
+const coverageIso=(value:string|Date):string=>value instanceof Date?value.toISOString():String(value);
+
+async function coverageRequirementCodes(tenantId:string,siteId:string):Promise<string[]>{
+  const rows=(await query<{code:string}>(
+    `SELECT c.code FROM site_qualification_requirements r
+       JOIN qualification_catalog c ON c.tenant_id=r.tenant_id AND c.id=r.catalog_id
+     WHERE r.tenant_id=$1 AND r.site_id=$2 AND r.active=true AND r.required=true
+     ORDER BY c.code`,
+    [tenantId,siteId],
+  )).rows;
+  return uniqueStrings(rows.map(row=>String(row.code)).filter(code=>code.length>0));
+}
+
+async function coverageShifts(tenantId:string,siteId:string,limit:number):Promise<CoverageShiftInput[]>{
+  const rows=(await query<{
+    id:string;site_id:string;starts_at:string|Date;ends_at:string|Date;
+    required_qualification_codes:string[]|string|null;profile_parameters:Record<string,unknown>|string|null;
+  }>(
+    `SELECT sh.id,sh.site_id,sh.starts_at,sh.ends_at,sh.required_qualification_codes,r.parameters AS profile_parameters
+       FROM schedule_shifts sh
+       JOIN schedule_periods p ON p.tenant_id=sh.tenant_id AND p.id=sh.period_id AND p.site_id=sh.site_id
+       LEFT JOIN schedule_rule_profiles r ON r.tenant_id=p.tenant_id AND r.id=p.rule_profile_id
+     WHERE sh.tenant_id=$1 AND sh.site_id=$2 AND p.status='published' AND sh.ends_at>=now()
+     ORDER BY sh.starts_at,sh.id LIMIT $3`,
+    [tenantId,siteId,limit],
+  )).rows;
+  return rows.map(row=>({
+    id:String(row.id),site_id:String(row.site_id??siteId),
+    starts_at:coverageIso(row.starts_at),ends_at:coverageIso(row.ends_at),
+    required_qualification_codes:row.required_qualification_codes,
+    profile_parameters:row.profile_parameters,synthetic:false,
+  }));
+}
+
+/** Ohne veröffentlichte Schicht gilt der laufende Berliner Tag als Prüfzeitraum. */
+function coverageDayShift(siteId:string):CoverageShiftInput{
+  const day=qualificationLocalDate();
+  return {
+    id:`coverage-day:${siteId}`,site_id:siteId,
+    starts_at:`${day}T06:00:00Z`,ends_at:`${day}T14:00:00Z`,
+    required_qualification_codes:null,profile_parameters:null,synthetic:true,
+  };
+}
+
+type CoverageCandidate={employee_id:string;employee_name:string|null;assignment_id:string|null};
+async function coverageAssignedEmployees(tenantId:string,shiftId:string):Promise<CoverageCandidate[]>{
+  const rows=(await query<CoverageCandidate & {assignment_id:string|null}>(
+    `SELECT a.id AS assignment_id,a.employee_id,e.name AS employee_name
+       FROM schedule_assignments a
+       JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=a.employee_id
+     WHERE a.tenant_id=$1 AND a.shift_id=$2 AND a.status='assigned'
+     ORDER BY a.employee_id`,
+    [tenantId,shiftId],
+  )).rows;
+  return rows.map(row=>({
+    employee_id:String(row.employee_id),employee_name:row.employee_name??null,
+    assignment_id:row.assignment_id?String(row.assignment_id):null,
+  }));
+}
+
+async function coverageSiteCandidates(tenantId:string,siteId:string,startsAt:string,endsAt:string,limit:number):Promise<CoverageCandidate[]>{
+  const rows=(await query<CoverageCandidate>(
+    `SELECT DISTINCT ON (e.id) e.id AS employee_id,e.name AS employee_name
+       FROM employee_object_assignments oa
+       JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
+     WHERE oa.tenant_id=$1 AND oa.site_id=$2 AND oa.starts_on<=$3::date
+       AND (oa.ends_on IS NULL OR oa.ends_on>=$4::date)
+     ORDER BY e.id,oa.starts_on DESC LIMIT $5`,
+    [tenantId,siteId,qualificationLocalDate(new Date(startsAt)),qualificationLocalDate(new Date(endsAt)),limit],
+  )).rows;
+  return rows.map(row=>({
+    employee_id:String(row.employee_id),employee_name:row.employee_name??null,assignment_id:null,
+  }));
+}
+
+async function coverageVerdicts(tenantId:string,shift:CoverageShiftInput,candidates:CoverageCandidate[]):Promise<CoverageEmployee[]>{
+  const verdicts:CoverageEmployee[]=[];
+  for(const candidate of candidates){
+    try{
+      // Die eigene Zuordnung darf nicht als Überschneidung mit derselben Schicht gewertet werden.
+      const verdict=await evaluateShiftAssignment(coverageQuery,tenantId,shift,candidate.employee_id,
+        candidate.assignment_id?{exclude_assignment_id:candidate.assignment_id}:{});
+      verdicts.push({
+        employee_id:candidate.employee_id,employee_name:candidate.employee_name,
+        status:verdict.status,reason_codes:verdict.reasons.map(reason=>reason.code),reasons:verdict.reasons,
+        required_qualification_codes:verdict.required_qualification_codes,
+        matched_qualification_codes:verdict.matched_qualification_codes,
+        missing_qualification_codes:verdict.missing_qualification_codes,
+      });
+    }catch(error){
+      // Eine zwischenzeitlich gelöschte Zuordnung darf die Gesamtübersicht nicht abbrechen.
+      if((error as {status?:number}).status===404)continue;
+      throw error;
+    }
+  }
+  return verdicts;
+}
+
+async function evaluateSiteCoverage(
+  tenantId:string,siteId:string,requestedStaffCount:number,shiftLimit=3,candidateLimit=6,
+):Promise<SiteCoverage>{
+  const requirementCodes=await coverageRequirementCodes(tenantId,siteId);
+  const requested=Math.max(0,Math.trunc(Number(requestedStaffCount)||0));
+  const required=Math.max(1,requested);
+  const empty:SiteCoverage={
+    site_id:siteId,requirement_count:requirementCodes.length,required_staff_count:requested,
+    covered:true,understaffed:false,reason_codes:[],requirements:[],shifts:[],
+  };
+  if(!requirementCodes.length&&!requested)return empty;
+  const shifts=await coverageShifts(tenantId,siteId,shiftLimit);
+  if(!shifts.length)shifts.push(coverageDayShift(siteId));
+  const shiftResults:CoverageShift[]=[];
+  for(const shift of shifts){
+    const assigned=shift.synthetic?[]:await coverageAssignedEmployees(tenantId,shift.id);
+    const candidates=assigned.length?assigned:await coverageSiteCandidates(tenantId,shift.site_id,shift.starts_at,shift.ends_at,candidateLimit);
+    const verdicts=await coverageVerdicts(tenantId,shift,candidates);
+    const eligible=verdicts.filter(verdict=>verdict.status==='eligible');
+    const requirements=requirementCodes.map(code=>({
+      code,requirement_count:1,
+      covered:eligible.some(verdict=>verdict.matched_qualification_codes.includes(code)),
+      reason_codes:uniqueStrings(verdicts
+        .filter(verdict=>verdict.missing_qualification_codes.includes(code))
+        .flatMap(verdict=>verdict.reasons.filter(reason=>reason.code.startsWith('qualification_')).map(reason=>reason.code))),
+    }));
+    shiftResults.push({
+      shift_id:shift.id,starts_at:shift.starts_at,ends_at:shift.ends_at,synthetic:shift.synthetic,
+      required_staff_count:required,eligible_employee_count:eligible.length,
+      covered:eligible.length>=required&&requirements.every(requirement=>requirement.covered),
+      required_qualification_codes:verdicts[0]?.required_qualification_codes??requirementCodes,
+      reason_codes:uniqueStrings(verdicts.flatMap(verdict=>verdict.reason_codes)),
+      requirements,employees:verdicts,
+    });
+  }
+  const requirements=requirementCodes.map(code=>({
+    code,requirement_count:1,
+    covered:shiftResults.every(result=>result.requirements.find(requirement=>requirement.code===code)?.covered===true),
+    reason_codes:uniqueStrings(shiftResults.flatMap(result=>result.requirements.find(requirement=>requirement.code===code)?.reason_codes??[])),
+  }));
+  const covered=shiftResults.every(result=>result.covered);
+  return {
+    site_id:siteId,requirement_count:requirementCodes.length,required_staff_count:requested,
+    covered,understaffed:!covered,
+    reason_codes:uniqueStrings(shiftResults.flatMap(result=>result.reason_codes)),
+    requirements,shifts:shiftResults,
+  };
+}
+
 const uuid=z.string().uuid();
 const nonempty=z.string().trim().min(1);
 const relationshipSchema=z.object({
@@ -275,7 +453,7 @@ objectManagementRouter.get(
         expiring_7d_document_count:number|null;expiring_30d_document_count:number|null;review_due_document_count:number|null;
         missing_requirement_count:number|null;open_maintenance_count:number|null;overdue_maintenance_count:number|null;last_activity:string|null;
       };
-      const sites=(await query<OverviewSite>(
+      const dashboardSites=(await query<OverviewSite>(
         `WITH customer_summary AS (
            SELECT cs.site_id,array_agg(DISTINCT c.name ORDER BY c.name) AS customer_names
            FROM customer_sites cs JOIN customers c ON c.tenant_id=cs.tenant_id AND c.id=cs.customer_id
@@ -409,6 +587,29 @@ objectManagementRouter.get(
          ORDER BY s.name,s.id`,
         [user.tenantId,visibleSiteIds,customerSiteIds,contractSiteIds,employeeSiteIds,visibleSiteIds,documentSiteIds,watchbookSiteIds,taskSiteIds,scheduleSiteIds,deviceSiteIds],
       )).rows;
+      // "Abgedeckt" folgt dem verbindlichen Einsatzurteil, nicht der reinen Kopfzahl.
+      const coverageBySite=new Map<string,SiteCoverage>();
+      const coverageCandidates=dashboardSites
+        .filter(site=>employeeSiteIds.includes(site.id)&&scheduleSiteIds.includes(site.id)&&qualificationSiteIds.includes(site.id))
+        .slice(0,12);
+      for(const site of coverageCandidates){
+        const coverage=await evaluateSiteCoverage(user.tenantId,site.id,Number(site.required_staff_count??0),1,6);
+        if(coverage.requirement_count>0||coverage.required_staff_count>0)coverageBySite.set(site.id,coverage);
+      }
+      const sites=dashboardSites.map(site=>{
+        const coverage=coverageBySite.get(site.id);
+        if(!coverage)return site;
+        return {
+          ...site,understaffed:coverage.understaffed,
+          staffing_coverage:{
+            covered:coverage.covered,requirement_count:coverage.requirement_count,
+            required_staff_count:coverage.required_staff_count,
+            eligible_employee_count:Math.max(0,...coverage.shifts.map(shift=>shift.eligible_employee_count)),
+            undercovered_shift_count:coverage.shifts.filter(shift=>!shift.covered).length,
+            reason_codes:coverage.reason_codes,
+          },
+        };
+      });
       const sum=(field:'active_contract_count'|'expiring_contract_count'|'assigned_employee_count'|'open_hazard_count'|'critical_hazard_count'|'overdue_measure_count'|'open_task_count'|'overdue_task_count'|'open_shift_count'|'undercovered_shift_count'|'available_document_count'|'valid_document_count'|'unapproved_document_count'|'expired_document_count'|'expiring_7d_document_count'|'expiring_30d_document_count'|'review_due_document_count'|'missing_requirement_count'|'open_maintenance_count'|'overdue_maintenance_count',authorized:boolean)=>
         authorized?sites.reduce((total,site)=>total+(site[field]??0),0):null;
       const metrics={
@@ -1108,7 +1309,7 @@ objectManagementRouter.get(
                 AND oa.employee_id::text=a.details->>'employee_id'))
             AND a.event_type IN ('employee.object_assignment.created','employee.object_assignment.ended',
               'employee.profile.updated','employee.absence.created','employee.absence.updated',
-              'employee.absence.cancelled','qualification.employee.updated','qualification.employee.deleted')
+              'employee.absence.cancelled','qualification.employee.updated','qualification.employee.removed')
           ORDER BY a.created_at DESC LIMIT 20`,
         [user.tenantId,id,id],
       )).rows:null;
@@ -1225,7 +1426,11 @@ objectManagementRouter.get(
         due_on:day(qualification.valid_until),tab:'personal',permission:'qualifications:read',
         target:`${qualification.employee_url}?qualification=${qualification.id}${qualification.evidence_document_id&&!['missing','not_found'].includes(qualification.evidence_status)?`&document=${qualification.evidence_document_id}`:''}`,
       }));
-      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications:enrichedQualifications,personnelSummary,recentPersonnelChanges,handovers,devices,priorityActions:sortPriorityActions(actions,12)});
+      const canReadCoverage=canReadStaffing&&canReadSchedule&&canReadSiteData('qualifications:read');
+      const staffingCoverage=canReadCoverage
+        ?await evaluateSiteCoverage(user.tenantId,id,Number(site.required_staff_count??0),10,8)
+        :null;
+      res.json({site,customers,contracts,locations,hazards,instructions,journal,staffing,assignmentHistory,shifts,patrols,keys,keyBundles,documents,documentStatusCounts:statusCounts,documentWarningCounts:warningCounts,documentRequirements,alarms,incidents,customerTasks,maintenance,maintenanceOrders,maintenanceStatusCounts,qualifications:enrichedQualifications,personnelSummary,recentPersonnelChanges,handovers,devices,staffing_coverage:staffingCoverage,priorityActions:sortPriorityActions(actions,12)});
     }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Objektkennung'});next(error);}
   },
 );

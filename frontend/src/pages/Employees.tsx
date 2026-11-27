@@ -75,6 +75,7 @@ export function Employees(){
         email:form.email,
         title:form.title||null,
         employee_number:form.employee_number||null,
+        employment_status:'active',employment_type:'employee',reason:'Mitarbeiter im System angelegt',
       })});
       setForm(emptyEmployee);
       setCreateOpen(false);
@@ -143,6 +144,7 @@ export function Employees(){
         <input className="employee-search" placeholder="Name, Personalnummer, Funktion oder E-Mail suchen" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}} />
         <select value={statusFilter} onChange={event=>{setStatusFilter(event.target.value);setPage(1);}} aria-label="Status">
           <option value="all">Status: Alle</option><option value="active">Status: Aktiv</option><option value="probation">Status: In Probezeit</option><option value="leave">Status: Beurlaubt</option><option value="terminated">Status: Beendet</option>
+              <option value="archived">Status: Archiviert</option>
         </select>
         <select value={departmentFilter} onChange={event=>{setDepartmentFilter(event.target.value);setPage(1);}} aria-label="Abteilung">
           <option value="all">Abteilung: Alle</option>{departments.map(department=><option key={department} value={department}>{department}</option>)}
@@ -176,7 +178,7 @@ export function Employees(){
               <td>{employee.department||'–'}</td>
               <td><span className={`employee-status ${employee.employment_status}`}>{statusLabel(employee.employment_status,'employment')}</span></td>
               <td>{employee.current_object||'–'}</td>
-              <td><span className={`qualification-mini ${employee.qualification_status==='abgelaufen'?'expired':''}`}>{statusLabel(employee.qualification_status)}</span></td>
+              <td><span className={`qualification-mini ${['abgelaufen','widerrufen','ungültig','nachweis fehlt'].includes(employee.qualification_status??'')?'expired':''}`}>{statusLabel(employee.qualification_status)}</span></td>
               <td><button type="button" onClick={()=>navigate(`/employees/${employee.id}`)}>Bearbeiten</button></td>
             </tr>)}
           </tbody>

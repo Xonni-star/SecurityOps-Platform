@@ -56,6 +56,24 @@ describe('employee management profile',()=>{
     expect(await screen.findByRole('heading',{name:'Ava Worker'})).toBeTruthy();
     expect(screen.getByRole('button',{name:'Zur Mitarbeiterübersicht'})).toBeTruthy();
   });
+
+  it('sends the audited domain payload when creating an employee',async()=>{
+    apiMock.mockImplementation(async(path:string)=>path==='/employees'?[]:path==='/employees/dashboard'?{
+      employees:{total:0,active:0,inactive:0,on_leave:0,sick:0,terminated:0},open_absences:0,sick_employees:0,
+    }:{});
+    render(<MemoryRouter initialEntries={['/employees']}><Routes><Route path="/employees" element={<Employees/>}/></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button',{name:'Mitarbeiter anlegen'}));
+    fireEvent.change(await screen.findByLabelText('Name'),{target:{value:'Neue Kraft'}});
+    fireEvent.change(await screen.findByLabelText('E-Mail'),{target:{value:'neu@example.invalid'}});
+    fireEvent.click(screen.getByRole('button',{name:'Anlegen'}));
+    await waitFor(()=>{
+      const call=apiMock.mock.calls.find(([path,options])=>path==='/employees'&&options?.method==='POST');
+      expect(call).toBeTruthy();
+      expect(JSON.parse(call![1]!.body as string)).toMatchObject({
+        name:'Neue Kraft',email:'neu@example.invalid',employment_status:'active',employment_type:'employee',reason:'Mitarbeiter im System angelegt',
+      });
+    });
+  });
 });
 
 const employeeId='00000000-0000-4000-8000-000000000111';

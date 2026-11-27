@@ -6,6 +6,8 @@ import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
 import {createSitePermissionReader} from '../services/site-permissions.js';
 import {classifyQualification,daysUntil,evidenceStatusOf,qualificationLocalDate} from '../services/qualification-status.js';
+import {qualificationStatusSql as statusExpression,qualificationTodaySql as todaySql} from '../services/qualification-status-sql.js';
+import {reevaluatePlannedAssignments} from '../services/staffing-verdict.js';
 
 type Row=Record<string,unknown>;
 const uuid=z.string().uuid();
@@ -158,23 +160,7 @@ qualificationsRouter.patch('/qualifications/catalog/:id',catalogWrite,async(req,
   }catch(error){next(error);}
 });
 
-// Einheitlicher Kalendertag (Europe/Berlin) für SQL- und JS-Klassifikation.
-const todaySql="(now() AT TIME ZONE 'Europe/Berlin')::date";
-
-/** Statusausdruck mit parametrierbaren Alias-Namen für Unterabfragen. */
-function statusExpression(q='q',c='c',d='d',dv='dv'):string{
-  const evidenceRequired=`(${c}.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(${c}.required_documents),0)>0)`;
-  return `CASE
-  WHEN ${q}.status='revoked' OR ${q}.revoked_at IS NOT NULL THEN 'revoked'
-  WHEN ${q}.status='invalid' OR ${c}.active=false THEN 'invalid'
-  WHEN ${q}.status='expired' OR ${q}.valid_until<${todaySql} THEN 'expired'
-  WHEN ${q}.valid_from>${todaySql} THEN 'not_yet_valid'
-  WHEN ${evidenceRequired} AND ${q}.document_id IS NULL THEN 'missing_evidence'
-  WHEN ${evidenceRequired} AND (${d}.document_status IS DISTINCT FROM 'active' OR ${d}.approval_status IS DISTINCT FROM 'approved' OR ${dv}.lifecycle_state IS DISTINCT FROM 'available') THEN 'awaiting_review'
-  WHEN ${evidenceRequired} AND (${d}.valid_from>${todaySql} OR ${d}.valid_until<${todaySql}) THEN 'expired'
-  WHEN ${q}.valid_until<=${todaySql}+INTERVAL '90 days' THEN 'expiring'
-  ELSE 'valid' END`;
-}
+// Einheitlicher Kalendertag und Statusausdruck für alle Qualifikationsansichten.
 const statusSql=statusExpression();
 
 // Nur verfügbare Versionen gelten als Nachweis; eine quarantänisierte neuere
@@ -279,7 +265,7 @@ function overviewRow(row:Row):Row{
 const overviewSelect=`SELECT q.id,q.employee_id,e.name employee_name,e.employee_number AS personnel_number,q.code,c.name qualification_name,
   c.category,q.issued_on,q.valid_from,q.valid_until,q.status,q.revoked_at,q.document_id,q.notes,c.required,
   c.required_document_type,c.required_documents,c.default_validity_days,c.active catalog_active,q.valid_until_source,d.title document_title,
-  d.approval_status document_approval_status,d.valid_from document_valid_from,d.valid_until document_valid_until,
+  d.document_status,d.approval_status document_approval_status,d.valid_from document_valid_from,d.valid_until document_valid_until,
   dv.lifecycle_state document_lifecycle_state,site.site_name,site.site_id,q.created_at,q.updated_at`;
 
 qualificationsRouter.get('/qualifications/overview',read,async(req,res,next)=>{
@@ -508,6 +494,8 @@ qualificationsRouter.post('/employees/:employeeId/qualifications',write,async(re
         valid_until_source:validity.valid_until_source,document_id:body.document_id??null,
         previous:assignmentSnapshot(current),current:assignmentSnapshot(result),
       },client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,
+        current?'qualification.employee.updated':'qualification.employee.created',{employee_ids:[employeeId]});
       return result;
     });
     res.status(201).json(row);
@@ -548,6 +536,7 @@ qualificationsRouter.patch('/employees/:employeeId/qualifications/:id',write,asy
         reason:body.reason,employee_id:employeeId,site_id:await currentSiteId(client,tenant,employeeId),code:catalog.code,
         previous:assignmentSnapshot(current),current:assignmentSnapshot(updated),
       },client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,'qualification.employee.updated',{employee_ids:[employeeId]});
       return updated;
     });
     res.json(row);
@@ -570,6 +559,7 @@ qualificationsRouter.post('/employees/:employeeId/qualifications/:id/revoke',rev
         reason:body.reason,employee_id:employeeId,site_id:await currentSiteId(client,tenant,employeeId),
         code:current.code,previous:{status:current.status,revoked_at:current.revoked_at},current:{status:'revoked',revoked_at:updated.revoked_at},
       },client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,'qualification.employee.revoked',{employee_ids:[employeeId]});
       return updated;
     });
     res.json(row);
@@ -593,6 +583,7 @@ qualificationsRouter.delete('/employees/:employeeId/qualifications/:id',write,as
         reason:body.reason,employee_id:employeeId,site_id:await currentSiteId(client,tenant,employeeId),
         code:current.code,previous:{status:current.status},current:{status:'invalid'},
       },client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,'qualification.employee.removed',{employee_ids:[employeeId]});
     });
     res.status(204).send();
   }catch(error){next(mapDatabaseError(error,'Ungültige Entfernungsdaten.'));}
@@ -686,6 +677,7 @@ qualificationsRouter.post('/sites/:siteId/qualification-requirements',siteWrite,
       await recordAudit(tenant,req.user!.id,'site.qualification_requirement.created','site_qualification_requirement',asText(created.id),
         {reason:body.reason,site_id:siteId,code:catalog.code,active:created.active,required:created.required,
           responsible_employee_id:created.responsible_employee_id,notes:created.notes},client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,'site.qualification_requirement.created',{site_ids:[siteId]});
       return created;
     });
     res.status(201).json(row);
@@ -716,6 +708,7 @@ qualificationsRouter.patch('/sites/:siteId/qualification-requirements/:id',siteW
         {reason:body.reason,site_id:siteId,
           previous:{active:current.active,required:current.required,responsible_employee_id:current.responsible_employee_id,notes:current.notes},
           current:{active:updated.active,required:updated.required,responsible_employee_id:updated.responsible_employee_id,notes:updated.notes}},client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,'site.qualification_requirement.updated',{site_ids:[siteId]});
       return updated;
     });
     res.json(row);
@@ -736,6 +729,7 @@ qualificationsRouter.delete('/sites/:siteId/qualification-requirements/:id',site
       await client.query('UPDATE site_qualification_requirements SET active=false,updated_at=now() WHERE tenant_id=$1 AND site_id=$2 AND id=$3',[tenant,siteId,requirementId]);
       await recordAudit(tenant,req.user!.id,'site.qualification_requirement.deactivated','site_qualification_requirement',asText(current.id),
         {reason:body.reason,site_id:siteId,active:false},client);
+      await reevaluatePlannedAssignments(client,tenant,req.user!.id,'site.qualification_requirement.deactivated',{site_ids:[siteId]});
     });
     res.status(204).send();
   }catch(error){next(mapDatabaseError(error,'Ungültige Objektanforderung.'));}
@@ -758,6 +752,11 @@ qualificationsRouter.get('/qualifications/assignments/:id/document',documentDown
     const canRead=createSitePermissionReader(req);
     if(!await canRead('qualifications:documents:download',String(row.site_id??''))||
        !await canRead('dms:read',String(row.site_id??'')))return res.status(403).json({error:'Kein Zugriff auf diesen Nachweis'});
+    const reason=z.string().trim().max(500).optional().safeParse(req.query.reason);
+    await recordAudit(req.user!.tenantId,req.user!.id,'qualification.document.accessed','employee_qualification',qualificationId,{
+      document_id:row.document_id,version_id:row.version_id,employee_id:row.employee_id,
+      site_id:row.site_id??null,reason:reason.success?reason.data:null,
+    });
     const base=`/api/v1/dms/documents/${row.document_id}/versions/${row.version_id}`;
     res.json({document_id:row.document_id,version_id:row.version_id,title:row.title,
       download_url:`${base}/download`,preview_url:`${base}/preview`});
