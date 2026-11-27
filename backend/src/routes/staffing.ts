@@ -46,13 +46,27 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
       [tenantId,siteId,startsAt.slice(0,10),endsAt.slice(0,10)],
     )).rows;
     const employeeIds=employees.map(employee=>employee.id);
-    const qualificationRows=employeeIds.length?(await query<QualificationRecord & {employee_id:string}>(
-      `SELECT q.id,q.employee_id,q.code,q.status,q.valid_from,q.valid_until,q.revoked_at,q.document_id,c.active AS catalog_active
+    const qualificationRows=employeeIds.length?(await query<QualificationRecord & {employee_id:string;required_documents:string[]|string|null}>(
+      `SELECT q.id,q.employee_id,q.code,q.status,q.valid_from,q.valid_until,q.revoked_at,q.document_id,
+         c.active AS catalog_active,c.required_document_type,c.required_documents,
+         d.approval_status AS document_approval_status,dv.lifecycle_state AS document_lifecycle_state
        FROM employee_qualifications q
-       LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
+       LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
+         AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
+       LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+       LEFT JOIN LATERAL (
+         SELECT v.lifecycle_state FROM dms_versions v
+          WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id ORDER BY v.version_no DESC LIMIT 1
+       ) dv ON TRUE
        WHERE q.tenant_id=$1 AND q.employee_id=ANY($2::uuid[])`,
       [tenantId,employeeIds],
     )).rows:[];
+    const requirementRows=(await query<{code:string}>(
+      `SELECT c.code FROM site_qualification_requirements r
+        JOIN qualification_catalog c ON c.tenant_id=r.tenant_id AND c.id=r.catalog_id
+       WHERE r.tenant_id=$1 AND r.site_id=$2 AND r.active=true AND r.required=true`,
+      [tenantId,siteId],
+    )).rows;
     const instructionRows=(await query<InstructionRecord>(
       `SELECT DISTINCT ON (i.title) i.id,i.title,i.status,i.version,i.requires_acknowledgement,i.valid_from,i.valid_until
        FROM site_instructions i
@@ -88,14 +102,20 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
       :typeof shift.required_qualification_codes==='string'?JSON.parse(shift.required_qualification_codes):[];
     const parameters=typeof shift.profile_parameters==='string'?JSON.parse(shift.profile_parameters):shift.profile_parameters??{};
     const profileCodes=Array.isArray(parameters.required_qualification_codes)?parameters.required_qualification_codes:[];
-    const requiredCodes=[...new Set([...shiftCodes,...profileCodes])];
+    const objectCodes=requirementRows.map(row=>row.code);
+    const requiredCodes=[...new Set([...shiftCodes,...profileCodes,...objectCodes])];
     const overlappingIds=new Set(overlappingRows.map(row=>row.employee_id));
     const verdicts=employees.map(employee=>{
       const input:EligibilityInput={
         employee:{id:employee.id,name:employee.name,employment_status:employee.employment_status,
           assignment:{starts_on:employee.starts_on,ends_on:employee.ends_on}},
         shift:{starts_at:startsAt,ends_at:endsAt,required_qualification_codes:requiredCodes},
-        qualifications:qualificationRows.filter(row=>row.employee_id===employee.id),
+        qualifications:qualificationRows.filter(row=>row.employee_id===employee.id).map(row=>({
+          ...row,
+          required_documents:typeof row.required_documents==='string'
+            ?JSON.parse(row.required_documents) as string[]
+            :row.required_documents,
+        })),
         instructions:instructionRows.map(row=>({
           id:row.id,title:row.title,status:row.status,requires_acknowledgement:row.requires_acknowledgement,
           version:row.version,valid_from:row.valid_from,valid_until:row.valid_until,

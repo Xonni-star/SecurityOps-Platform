@@ -49,6 +49,8 @@ type Profile={
   documents:any[];
   availability:any[];
 };
+type CatalogOption={id:string;code:string;name:string;default_validity_days:number|null;required:boolean;required_document_type:string|null;active:boolean};
+type QualificationForm={catalog_id:string;valid_from:string;valid_until:string;document_id:string;issuing_authority:string;notes:string;reason:string};
 
 const tabs=[
   ['uebersicht','Übersicht'],
@@ -75,6 +77,14 @@ export function EmployeeDetail(){
   const [fieldErrors,setFieldErrors]=useState<Record<string,string>>({});
   const [saving,setSaving]=useState(false);
   const [saved,setSaved]=useState(false);
+  const [qualificationCatalog,setQualificationCatalog]=useState<CatalogOption[]>([]);
+  const [qualificationForm,setQualificationForm]=useState<QualificationForm>({catalog_id:'',valid_from:'',valid_until:'',document_id:'',issuing_authority:'',notes:'',reason:''});
+  const [editingQualification,setEditingQualification]=useState<string|null>(null);
+  const [qualificationAction,setQualificationAction]=useState<{id:string;type:'revoke'|'remove'}|null>(null);
+  const [qualificationReason,setQualificationReason]=useState('');
+  const [qualificationError,setQualificationError]=useState('');
+  const [qualificationNotice,setQualificationNotice]=useState('');
+  const [evidenceReason,setEvidenceReason]=useState('');
   const active=tabs.some(([key])=>key===section)?section:'uebersicht';
 
   const load=async()=>{
@@ -88,6 +98,15 @@ export function EmployeeDetail(){
   };
 
   useEffect(()=>{void load();},[employeeId]);
+
+  useEffect(()=>{
+    if(!hasPermission('qualifications:read'))return;
+    let current=true;
+    void Promise.resolve(api<CatalogOption[]>('/qualifications/catalog'))
+      .then(value=>{if(current)setQualificationCatalog(Array.isArray(value)?value:[]);})
+      .catch(()=>{if(current)setQualificationCatalog([]);});
+    return ()=>{current=false;};
+  },[employeeId]);
 
   const updateField=(patch:Partial<Employee>)=>{
     setForm(current=>current?{...current,...patch}:current);
@@ -154,12 +173,111 @@ export function EmployeeDetail(){
       link.href=url;link.download=`${document.title||'nachweis'}-v${version.version_no}`;link.click();URL.revokeObjectURL(url);
     }catch(e){setError((e as Error).message);}
   };
+  const qualificationStatus=(item:any)=>item.status_label||statusLabel(item.computed_status??item.status,'qualification');
+  const qualificationFormFor=(item?:any):QualificationForm=>({
+    catalog_id:item?.catalog_id??'',valid_from:(item?.valid_from??'').slice(0,10),valid_until:(item?.valid_until??'').slice(0,10),
+    document_id:item?.document_id??'',issuing_authority:item?.issuing_authority??'',notes:item?.notes??'',reason:'',
+  });
+  const saveQualification=async(event:FormEvent)=>{
+    event.preventDefault();
+    if(!employeeId||!hasPermission('qualifications:write'))return;
+    if(!qualificationForm.catalog_id){setQualificationError('Bitte eine Qualifikation aus dem Katalog auswählen.');return;}
+    if(!qualificationForm.reason.trim()){setQualificationError('Bitte eine Begründung angeben.');return;}
+    const body:Record<string,unknown>={catalog_id:qualificationForm.catalog_id,
+      valid_from:qualificationForm.valid_from||null,
+      issuing_authority:qualificationForm.issuing_authority.trim()||null,
+      notes:qualificationForm.notes.trim()||null,
+      reason:qualificationForm.reason.trim()};
+    if(qualificationForm.valid_until)body.valid_until=qualificationForm.valid_until;
+    if(qualificationForm.document_id&&/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(qualificationForm.document_id))body.document_id=qualificationForm.document_id;
+    try{
+      await api(editingQualification
+        ?`/employees/${employeeId}/qualifications/${editingQualification}`
+        :`/employees/${employeeId}/qualifications`,
+        {method:editingQualification?'PATCH':'POST',body:JSON.stringify(body)});
+      setQualificationForm(qualificationFormFor());setEditingQualification(null);
+      setQualificationError('');setQualificationNotice(editingQualification?'Die Qualifikation wurde geändert.':'Die Qualifikation wurde zugewiesen.');
+      await load();
+    }catch(e){setQualificationError((e as Error).message);}
+  };
+  const runQualificationAction=async()=>{
+    if(!employeeId||!qualificationAction||!qualificationReason.trim()){setQualificationError('Bitte eine Begründung angeben.');return;}
+    try{
+      const {id,type}=qualificationAction;
+      if(type==='revoke'&&hasPermission('qualifications:revoke')){
+        await api(`/employees/${employeeId}/qualifications/${id}/revoke`,{method:'POST',body:JSON.stringify({reason:qualificationReason.trim()})});
+      }else if(type==='remove'&&hasPermission('qualifications:write')){
+        await api(`/employees/${employeeId}/qualifications/${id}`,{method:'DELETE',body:JSON.stringify({reason:qualificationReason.trim()})});
+      }else return;
+      setQualificationAction(null);setQualificationReason('');setQualificationError('');
+      setQualificationNotice(type==='revoke'?'Die Qualifikation wurde widerrufen.':'Die Qualifikation wurde entfernt.');
+      await load();
+    }catch(e){setQualificationError((e as Error).message);}
+  };
+  const openQualificationEvidence=async(item:any)=>{
+    if(!evidenceReason.trim()){setQualificationError('Bitte eine Begründung für den Nachweiszugriff angeben.');return;}
+    setQualificationError('');
+    if(hasPermission('qualifications:documents:read')){
+      try{await api(`/qualifications/assignments/${item.id}/document`);}catch(e){setQualificationError((e as Error).message);return;}
+    }
+    const next=new URLSearchParams(searchParams);
+    next.set('qualification',item.id);next.set('grund',evidenceReason.trim());
+    setSearchParams(next,{replace:true});
+  };
+  const renderQualifications=()=>{
+    if(!hasPermission('qualifications:read'))return <p>Keine Berechtigung für Qualifikationsdaten.</p>;
+    const canWrite=hasPermission('qualifications:write');
+    const canRevoke=hasPermission('qualifications:revoke');
+    return <article className="employee-detail-table">
+      <h3>Qualifikationen</h3>
+      {qualificationError&&<p role="alert" className="error">{qualificationError}</p>}
+      {qualificationNotice&&<p role="status" className="employee-save-success">{qualificationNotice}</p>}
+      {profile.qualifications.length===0?<p className="employee-empty">Keine Qualifikationen erfasst.</p>:<table aria-label="Qualifikationen">
+        <thead><tr><th>Qualifikation</th><th>Kategorie</th><th>Gültig ab</th><th>Gültig bis</th><th>Status</th><th>Nachweis</th><th>Aktionen</th></tr></thead>
+        <tbody>{profile.qualifications.map((item:any)=><tr key={item.id} className={item.id===qualificationId?'object-record-highlight':''}>
+          <td>{item.catalog_name||item.qualification_name||item.code}</td>
+          <td>{item.category||'–'}</td>
+          <td>{formatDate(item.valid_from)}</td>
+          <td>{item.valid_until?formatDate(item.valid_until):'Unbefristet'}</td>
+          <td><span className={`qualification-status ${item.computed_status??item.status}`}>{qualificationStatus(item)}</span>{item.days_until_expiry!=null?` · ${item.days_until_expiry} Tage`:''}</td>
+          <td>{item.document_title||'Kein Nachweis verknüpft'}</td>
+          <td>
+            {canWrite&&<button type="button" onClick={()=>{setEditingQualification(item.id);setQualificationForm(qualificationFormFor(item));setQualificationError('');}}>Bearbeiten</button>}
+            {hasPermission('qualifications:documents:read')&&<button type="button" onClick={()=>void openQualificationEvidence(item)}>Nachweis öffnen</button>}
+            {canRevoke&&<button type="button" onClick={()=>{setQualificationAction({id:item.id,type:'revoke'});setQualificationReason('');}}>Widerruf einleiten</button>}
+            {canWrite&&<button type="button" onClick={()=>{setQualificationAction({id:item.id,type:'remove'});setQualificationReason('');}}>Entfernen</button>}
+          </td>
+        </tr>)}</tbody>
+      </table>}
+      {qualificationAction&&<form onSubmit={event=>{event.preventDefault();void runQualificationAction();}} aria-label={qualificationAction.type==='revoke'?'Qualifikation widerrufen':'Qualifikation entfernen'}>
+        <h4>{qualificationAction.type==='revoke'?'Qualifikation widerrufen':'Qualifikation entfernen'}</h4>
+        <label>{qualificationAction.type==='revoke'?'Begründung für den Widerruf':'Begründung für das Entfernen'}<input required value={qualificationReason} onChange={event=>setQualificationReason(event.target.value)}/></label>
+        <button type="submit">{qualificationAction.type==='revoke'?'Widerruf bestätigen':'Entfernung bestätigen'}</button>
+        <button type="button" onClick={()=>{setQualificationAction(null);setQualificationReason('');}}>Abbrechen</button>
+      </form>}
+      {hasPermission('qualifications:documents:read')&&<label>Begründung für den Nachweiszugriff<input value={evidenceReason} onChange={event=>setEvidenceReason(event.target.value)} placeholder="Grund für das Öffnen des Nachweises"/></label>}
+      {canWrite&&<form className="employee-detail-form" onSubmit={saveQualification} aria-label={editingQualification?'Qualifikation bearbeiten':'Qualifikation zuweisen'}>
+        <h4>{editingQualification?'Qualifikation bearbeiten':'Neue Qualifikation zuweisen'}</h4>
+        <label>Katalogqualifikation<select required value={qualificationForm.catalog_id} onChange={event=>setQualificationForm({...qualificationForm,catalog_id:event.target.value})}><option value="">Bitte wählen</option>{qualificationCatalog.filter(entry=>entry.active||entry.id===qualificationForm.catalog_id).map(entry=><option key={entry.id} value={entry.id}>{entry.name} ({entry.code})</option>)}</select></label>
+        <label>Gültig ab<input type="date" value={qualificationForm.valid_from} onChange={event=>setQualificationForm({...qualificationForm,valid_from:event.target.value})}/></label>
+        <label>Gültig bis<input type="date" value={qualificationForm.valid_until} onChange={event=>setQualificationForm({...qualificationForm,valid_until:event.target.value})}/></label>
+        {(()=>{const selected=qualificationCatalog.find(entry=>entry.id===qualificationForm.catalog_id);return selected?.default_validity_days?<small>Leer lassen, um die Standardgültigkeit von {formatNumber(selected.default_validity_days)} Tagen anzuwenden.</small>:<small>Ohne Ablaufdatum wird die Standardgültigkeit des Katalogs angewendet, sofern hinterlegt.</small>;})()}
+        <label>Nachweisdokument (UUID)<input value={qualificationForm.document_id} onChange={event=>setQualificationForm({...qualificationForm,document_id:event.target.value})}/></label>
+        <label>Ausstellende Stelle<input value={qualificationForm.issuing_authority} onChange={event=>setQualificationForm({...qualificationForm,issuing_authority:event.target.value})}/></label>
+        <label>Notizen<textarea value={qualificationForm.notes} onChange={event=>setQualificationForm({...qualificationForm,notes:event.target.value})}/></label>
+        <label>Begründung für die Qualifikation<input required value={qualificationForm.reason} onChange={event=>setQualificationForm({...qualificationForm,reason:event.target.value})}/></label>
+        <button type="submit">{editingQualification?'Änderung speichern':'Qualifikation zuweisen'}</button>
+        {editingQualification&&<button type="button" onClick={()=>{setEditingQualification(null);setQualificationForm(qualificationFormFor());}}>Abbrechen</button>}
+      </form>}
+    </article>;
+  };
+
   const focusPanel=(qualificationId||documentId)&&<section className="object-record-focus employee-record-focus" aria-label="Geöffneter Nachweis">
     <div>
       <span className="object-record-focus-label">Geöffneter Nachweis</span>
       {focusedQualification?<>
         <h3>{focusedQualification.catalog_name||focusedQualification.code||'Qualifikation'}</h3>
-        <p>{focusedQualification.code||'Ohne Katalogkennung'} · {statusLabel(focusedQualification.status,'document')}{focusedQualification.valid_until?` · gültig bis ${formatDate(focusedQualification.valid_until)}`:' · unbefristet'}</p>
+        <p>{focusedQualification.code||'Ohne Katalogkennung'} · {focusedQualification.status_label||statusLabel(focusedQualification.computed_status??focusedQualification.status,'qualification')}{focusedQualification.valid_until?` · gültig bis ${formatDate(focusedQualification.valid_until)}`:' · unbefristet'}</p>
       </>:qualificationId?<h3>Verknüpfte Qualifikation nicht mehr verfügbar</h3>:null}
       {documentId&&<p>{focusedDocument?<>Nachweisdokument: <strong>{focusedDocument.title}</strong> · {statusLabel(focusedDocument.document_status,'document')}{focusedDocument.versions?.some((version:any)=>version.lifecycle_state==='available')&&hasPermission('dms:read')&&<button type="button" onClick={()=>void downloadEvidence(focusedDocument,focusedDocument.versions.find((version:any)=>version.lifecycle_state==='available'))}>Nachweis herunterladen</button>}</>:hasPermission('dms:read')?<a href={`/dms?document=${documentId}`}>Nachweis im Dokumentenmanagement prüfen</a>:'Verknüpfter Nachweis ist nicht verfügbar.'}</p>}
     </div>
@@ -175,7 +293,7 @@ export function EmployeeDetail(){
     </div>
     <div className="employee-detail-grid">
       <article><h3>Aktuelle Stammdaten</h3><dl><dt>Personalnummer</dt><dd>{employee.employee_number||'–'}</dd><dt>Abteilung</dt><dd>{employee.department||'–'}</dd><dt>Position</dt><dd>{employee.position||employee.title||'–'}</dd><dt>Wochenstunden</dt><dd>{employee.weekly_hours??'–'}</dd></dl></article>
-      <article><h3>Nächste Qualifikationsdaten</h3>{profile.qualifications.length?profile.qualifications.slice(0,5).map((item:any)=><p key={item.id}><strong>{item.catalog_name||item.code}</strong><br/><small>{item.valid_until?formatDate(item.valid_until):'unbefristet'} · {statusLabel(item.status,'document')}</small></p>):<p>Keine Qualifikationen erfasst.</p>}</article>
+      <article><h3>Nächste Qualifikationsdaten</h3>{profile.qualifications.length?profile.qualifications.slice(0,5).map((item:any)=><p key={item.id}><strong>{item.catalog_name||item.code}</strong><br/><small>{item.valid_until?formatDate(item.valid_until):'unbefristet'} · {item.status_label||statusLabel(item.computed_status??item.status,'qualification')}</small></p>):<p>Keine Qualifikationen erfasst.</p>}</article>
       <article><h3>Aktuelle Objektzuweisung</h3>{profile.object_assignments.length?profile.object_assignments.slice(0,5).map((item:any)=><p key={item.id}><strong>{item.site_name}</strong><br/><small>{formatDate(item.starts_on)} bis {item.ends_on?formatDate(item.ends_on):'offen'}</small></p>):<p>Keine Objektzuweisung erfasst.</p>}</article>
       <article><h3>Arbeitszeit</h3>{profile.work_time.length?profile.work_time.slice(0,5).map((item:any)=><p key={item.id}><strong>{statusLabel(item.status)}</strong><br/><small>{formatNumber(item.minutes??0)} Minuten</small></p>):<p>Keine Arbeitszeitdaten erfasst.</p>}</article>
     </div>
@@ -244,7 +362,7 @@ export function EmployeeDetail(){
     <div className="employee-detail-content">
       {active==='uebersicht'&&renderOverview()}
       {active==='stammdaten'&&renderStammdaten()}
-      {active==='qualifikationen'&&simpleTable('Qualifikationen',['Qualifikation','Gültig ab','Gültig bis','Status'],profile.qualifications.map((item:any)=>[item.catalog_name||item.code,formatDate(item.valid_from),item.valid_until?formatDate(item.valid_until):'Unbefristet',statusLabel(item.status,'document')]),(_row,index)=>profile.qualifications[index]?.id===qualificationId?'object-record-highlight':'')}
+      {active==='qualifikationen'&&renderQualifications()}
       {active==='vertraege'&&simpleTable('Verträge',['Vertragsart','Status','Beginn','Ende'],profile.contracts.map((item:any)=>[statusLabel(item.contract_type,'employment'),statusLabel(item.status),formatDate(item.starts_on),formatDate(item.ends_on)]))}
       {active==='dokumente'&&simpleTable('Dokumente',['Titel','Kategorie','Status','Erstellt'],profile.documents.map((item:any)=>[item.title,statusLabel(item.employee_document_category,'documentCategory'),statusLabel(item.document_status,'document'),formatDate(item.created_at)]))}
       {active==='dienstplanung'&&simpleTable('Verfügbarkeit',['Wochentag','Von','Bis','Verfügbar'],profile.availability.map((item:any)=>[String(item.weekday),item.starts_time,item.ends_time,item.available?'Ja':'Nein']))}

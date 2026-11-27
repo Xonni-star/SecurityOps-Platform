@@ -22,6 +22,7 @@ export type StatusDomain =
   | 'site'
   | 'customer'
   | 'scheduling'
+  | 'qualification'
   | 'conflict'
   | 'shiftRole'
   | 'delivery'
@@ -269,6 +270,16 @@ const domainLabels: Record<StatusDomain, Record<string, string>> = {
     billing: 'Abrechnung',
     manual: 'Manuell',
     automatic: 'Automatisch',
+  },
+  qualification: {
+    valid: 'Gültig',
+    expiring: 'Läuft bald ab',
+    expired: 'Abgelaufen',
+    not_yet_valid: 'Noch nicht gültig',
+    revoked: 'Widerrufen',
+    invalid: 'Ungültig',
+    missing_evidence: 'Nachweis fehlt',
+    awaiting_review: 'Prüfung ausstehend',
   },
   scheduling: {
     draft: 'Entwurf',

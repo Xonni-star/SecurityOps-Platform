@@ -34,7 +34,7 @@ export async function sendSms(recipient:string,body:string){
   if(!response.ok)throw new Error(`SMS gateway returned ${response.status}`);
 }
 
-export async function queueNotificationEvent(tenantId:string,eventType:string,eventKey:string,title:string,body:string,entityType?:string,entityId?:string){
+export async function queueNotificationEvent(tenantId:string,eventType:string,eventKey:string,title:string,body:string,entityType?:string,entityId?:string,subject?:string){
   await withTenantContext(tenantId,async()=>{
    await query(
     `INSERT INTO notifications(tenant_id,user_id,event_type,title,body,entity_type,entity_id)
@@ -53,7 +53,7 @@ export async function queueNotificationEvent(tenantId:string,eventType:string,ev
      WHERE s.tenant_id=$1 AND s.event_type=$5 AND s.enabled=true
        AND (s.user_id=u.id OR s.role=u.role) AND s.channel IN ('email','sms')
      ON CONFLICT(event_key,channel,recipient) DO NOTHING`,
-    [tenantId,eventKey,'SecurityOps-Benachrichtigung',body,eventType],
+    [tenantId,eventKey,subject??title,body,eventType],
    );
   });
   publish(tenantId,'notification.created',{eventType,title,body},'notifications:read');
