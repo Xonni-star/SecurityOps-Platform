@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {query,withTransaction} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
+import {logger} from '../middleware/errors.js';
 import {recordAudit} from '../services/audit.js';
 import {BlobStorageAdapter,MalwareScannerAdapter,configuredDmsBackupContract,createDmsAdapters,sha256} from '../services/dms-providers.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
@@ -17,6 +18,21 @@ const adapters=createDmsAdapters();
 export let dmsStorage:BlobStorageAdapter=adapters.storage;
 export let dmsScanner:MalwareScannerAdapter=adapters.scanner;
 export function configureDmsAdapters(storage:BlobStorageAdapter,scanner:MalwareScannerAdapter){dmsStorage=storage;dmsScanner=scanner;}
+
+export async function dmsReadiness(){
+  try{
+    await Promise.all([dmsStorage.ready?.(),dmsScanner.ready?.()]);
+    return {status:'ready' as const};
+  }catch(error){
+    // Nur Fehlerklasse und Nachricht, niemals Zugangsdaten oder Bucket-Inhalte.
+    logger.error({event:'dms.readiness.failed',message:error instanceof Error?error.message:String(error)},'DMS readiness check failed');
+    throw Object.assign(new Error('DMS-Speicher oder Virenscanner ist nicht bereit'),{status:503,expose:true});
+  }
+}
+
+function scanFailureDetails(error:unknown){
+  return error instanceof Error?error.message:String(error);
+}
 
 function session(req:Request){if(!req.sessionDbId)throw Object.assign(new Error('Session-Identität fehlt.'),{status:401});return req.sessionDbId;}
 function customerDocumentPermission(req:Request,permission:'customer_documents:read'|'customer_documents:write'){
@@ -144,12 +160,17 @@ dmsRouter.post('/dms/documents',requirePermission('dms:write',{allowedScopes:['t
       let scan;
       try{scan=await dmsScanner.scan(content);}catch(error){
         await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,'scan_provider_error']);
-        throw Object.assign(new Error('Virenscan-Anbieter fehlgeschlagen'),{status:502,cause:error});
+        await recordAudit(req.user!.tenantId,req.user!.id,'dms.scan.provider_error','dms_version',versionId,
+          {document_id:documentId,host:env.CLAMAV_HOST,port:env.CLAMAV_PORT,reason:scanFailureDetails(error)}).catch(()=>undefined);
+        logger.error({event:'dms.scan.provider_error',version_id:versionId,host:env.CLAMAV_HOST,port:env.CLAMAV_PORT,message:scanFailureDetails(error)},'DMS malware scan provider failed');
+        throw Object.assign(new Error('Virenscan-Anbieter ist nicht erreichbar. Das Dokument wurde nicht freigegeben.'),{status:502,expose:true,cause:error});
       }
       const lifecycle=scanLifecycle(scan);
       if(lifecycle.state==='rejected'){
         await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);
         await dmsStorage.delete(objectKey);
+        await recordAudit(req.user!.tenantId,req.user!.id,'dms.scan.rejected','dms_version',versionId,
+          {document_id:documentId,signature:scan.signature??null,sha256:sha256(content)}).catch(()=>undefined);
         return res.status(422).json({error:'Dokument durch Virenscan abgelehnt',state:'rejected',signature:scan.signature});
       }
       const available=(await query(`UPDATE dms_versions SET lifecycle_state='available',scanned_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,versionId])).rows[0];
@@ -286,10 +307,19 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
       let scan;
       try{scan=await dmsScanner.scan(content);}catch(error){
         await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason='scan_provider_error',scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId]);
-        throw Object.assign(new Error('Virenscan-Anbieter fehlgeschlagen'),{status:502,cause:error});
+        await recordAudit(req.user!.tenantId,req.user!.id,'dms.scan.provider_error','dms_version',versionId,
+          {document_id:document.id,host:env.CLAMAV_HOST,port:env.CLAMAV_PORT,reason:scanFailureDetails(error)}).catch(()=>undefined);
+        logger.error({event:'dms.scan.provider_error',version_id:versionId,host:env.CLAMAV_HOST,port:env.CLAMAV_PORT,message:scanFailureDetails(error)},'DMS malware scan provider failed');
+        throw Object.assign(new Error('Virenscan-Anbieter ist nicht erreichbar. Das Dokument wurde nicht freigegeben.'),{status:502,expose:true,cause:error});
       }
       const lifecycle=scanLifecycle(scan);
-      if(lifecycle.state==='rejected'){await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);await dmsStorage.delete(objectKey);return res.status(422).json({error:'Dokument durch Virenscan abgelehnt',state:'rejected'});}
+      if(lifecycle.state==='rejected'){
+        await query(`UPDATE dms_versions SET lifecycle_state='rejected',rejection_reason=$3,scanned_at=now() WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId,lifecycle.rejectionReason]);
+        await dmsStorage.delete(objectKey);
+        await recordAudit(req.user!.tenantId,req.user!.id,'dms.scan.rejected','dms_version',versionId,
+          {document_id:document.id,signature:scan.signature??null,sha256:sha256(content)}).catch(()=>undefined);
+        return res.status(422).json({error:'Dokument durch Virenscan abgelehnt',state:'rejected',signature:scan.signature});
+      }
       const available=(await query(`UPDATE dms_versions SET lifecycle_state='available',scanned_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,[req.user!.tenantId,versionId])).rows[0];
       await recordAudit(req.user!.tenantId,req.user!.id,'dms.version.uploaded','dms_version',versionId,{document_id:document.id,version_no:available.version_no});
       return res.status(201).json(available);

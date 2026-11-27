@@ -59,7 +59,10 @@ const fileData:NfcFileData={
   assignment_history:[{id:'a-1',previous_assignment:{},assignment:{control_point_id:pointId},assigned_at:'2026-01-02T10:00:00Z',reason:'Initial'}],
   replacements:[],
   documents:[{id:'doc-1',title:'Prüfprotokoll',document_number:'DOC-1',created_at:'2026-03-01T10:00:00Z',versions:[{id:'v2',version_no:2,lifecycle_state:'available'}]}],
-  history:[{id:'audit-1',event_type:'nfc_device.created',details:{identifier:'TAG-001'},created_at:'2026-01-01T10:00:00Z',actor_email:'operator@example.invalid'}],
+  history:[
+    {id:'audit-1',event_type:'nfc_device.created',details:{identifier:'TAG-001'},created_at:'2026-01-01T10:00:00Z',actor_email:'operator@example.invalid'},
+    {id:'audit-2',event_type:'nfc_device.assigned',details:{assignment:{control_point_id:pointId},previous_assignment:{}},created_at:'2026-01-02T10:00:00Z',actor_email:'operator@example.invalid'},
+  ],
 };
 
 function mockApi(fileOverride=fileData){
@@ -212,6 +215,20 @@ describe('NFC-Geräteverwaltung',()=>{
     }));
   });
 
+  it('zeigt im Austauschdialog auch die Kennung eines neuen Ersatzgeräts in der Zusammenfassung',async()=>{
+    apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+      if(path.startsWith('/nfc-devices/overview'))return overview;
+      if(path.startsWith('/nfc-devices/inventory'))return {...inventory,rows:[{...device,status:'lost'}]};
+      if(path==='/nfc-devices/filter-options')return options;
+      if(init?.method==='POST')return device;
+      return {};
+    });
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button',{name:'Ersatz'}));
+    fireEvent.change(await screen.findByLabelText(/NFC-Kennung des Ersatzgeräts/),{target:{value:'TAG-NEU'}});
+    expect(await screen.findByText(/TAG-NEU · Nicht zugewiesen · Neu nach Austausch aktiv/)).toBeTruthy();
+  });
+
   it('tauscht gegen ein vorhandenes Gerät ohne Neu-registrierung',async()=>{
     apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
       if(path.startsWith('/nfc-devices/overview'))return overview;
@@ -227,6 +244,7 @@ describe('NFC-Geräteverwaltung',()=>{
     fireEvent.change(screen.getByLabelText('Ersatzgerät-Art'),{target:{value:'existing'}});
     fireEvent.change(dialog.querySelector('select[aria-label="Ersatzgerät"]') as HTMLSelectElement,{target:{value:newDeviceId}});
     fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt'}});
+    fireEvent.click(screen.getByLabelText(/bestätige den Austausch/));
     fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/replace`,expect.objectContaining({method:'POST'})));
     const call=apiMock.mock.calls.find(([path])=>String(path).endsWith('/replace'));
@@ -286,6 +304,7 @@ describe('NFC-Geräteakte',()=>{
     renderFile();
     expect((await screen.findAllByText('TAG-001')).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('tab',{name:'Zuordnung'}));
+    expect(screen.getByLabelText('Zuordnung',{exact:true})).toBeTruthy();
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith('/nfc-devices/filter-options'));
     fireEvent.change(screen.getAllByRole('combobox')[0],{target:{value:'employee'}});
     await screen.findByRole('option',{name:'Ava Worker'});
@@ -293,6 +312,122 @@ describe('NFC-Geräteakte',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Zuordnung speichern'}));
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/assign`,
       expect.objectContaining({method:'POST',body:JSON.stringify({employee_id:employeeId})})));
+  });
+
+  it('trennt Stammdaten von der Zuordnung und speichert alle technischen Felder',async()=>{
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    fireEvent.click(screen.getByRole('tab',{name:'Technische Stammdaten'}));
+    expect(await screen.findByText(/ausschließlich die technischen Eigenschaften/)).toBeTruthy();
+    expect(screen.queryByLabelText('Zuordnung')).toBeNull();
+    fireEvent.change(screen.getByLabelText(/Modell/),{target:{value:'MX-20'}});
+    fireEvent.change(screen.getByLabelText(/Seriennummer/),{target:{value:'SN-2'}});
+    fireEvent.change(screen.getByLabelText(/Beschreibung/),{target:{value:'Technik'}});
+    fireEvent.change(screen.getByLabelText(/Interne Notizen/),{target:{value:'Intern'}});
+    fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
+    await waitFor(()=>{
+      const call=apiMock.mock.calls.find(([path,init])=>path===`/nfc-devices/${deviceId}`&&init?.method==='PATCH');
+      expect(call).toBeTruthy();
+      const body=JSON.parse(String(call?.[1]?.body));
+      expect(body).toEqual(expect.objectContaining({model:'MX-20',serial_number:'SN-2',description:'Technik',notes:'Intern'}));
+      expect(body).not.toHaveProperty('employee_id');
+      expect(body).not.toHaveProperty('site_id');
+      expect(body).not.toHaveProperty('control_point_id');
+    });
+  });
+
+  it('fragt bei nicht gespeicherten Stammdaten vor dem Verlassen des Bereichs nach',async()=>{
+    const confirmMock=vi.spyOn(window,'confirm').mockReturnValue(false);
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    fireEvent.click(screen.getByRole('tab',{name:'Technische Stammdaten'}));
+    fireEvent.change(screen.getByLabelText(/Modell/),{target:{value:'MX-20'}});
+    fireEvent.click(screen.getByRole('tab',{name:'Zuordnung'}));
+    expect(confirmMock).toHaveBeenCalled();
+    expect(screen.getByRole('tab',{name:'Technische Stammdaten'}).getAttribute('aria-selected')).toBe('true');
+    confirmMock.mockRestore();
+  });
+
+  it('zeigt Zuordnungen im Ereignisverlauf als lesbare Namen statt Rohdaten',async()=>{
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    fireEvent.click(screen.getByRole('tab',{name:'Status & Ereignisse'}));
+    expect(await screen.findByText('Zuordnung: Punkt 1 · Objekt 1')).toBeTruthy();
+    expect(screen.queryByText(/control_point_id/)).toBeNull();
+  });
+
+  it('verwirft Änderungen nach Bestätigung vollständig und zeigt keine Warnung mehr',async()=>{
+    const confirmMock=vi.spyOn(window,'confirm').mockReturnValue(true);
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    fireEvent.click(screen.getByRole('tab',{name:'Technische Stammdaten'}));
+    fireEvent.change(screen.getByLabelText(/Modell/),{target:{value:'MX-20'}});
+    fireEvent.click(screen.getByRole('tab',{name:'Zuordnung'}));
+    expect(screen.getByRole('tab',{name:'Zuordnung'}).getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByText(/Nicht gespeicherte Änderungen/)).toBeNull();
+    fireEvent.click(screen.getByRole('tab',{name:'Technische Stammdaten'}));
+    expect((screen.getByLabelText(/Modell/) as HTMLInputElement).value).toBe('');
+    confirmMock.mockRestore();
+  });
+
+  it('setzt den Änderungsstatus vor der Erfolgsmeldung zurück und erlaubt dann den Bereichswechsel',async()=>{
+    let finishReload!:()=>void;
+    const pendingReload=new Promise<void>(resolve=>{finishReload=resolve;});
+    let fileCalls=0;
+    apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+      if(path===`/nfc-devices/${deviceId}/file`){
+        fileCalls+=1;
+        return fileCalls===1?fileData:pendingReload.then(()=>fileData);
+      }
+      if(path==='/nfc-devices/filter-options')return options;
+      if(path===`/nfc-devices/${deviceId}`&&init?.method==='PATCH')return device;
+      return {};
+    });
+    const confirmMock=vi.spyOn(window,'confirm').mockReturnValue(false);
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    fireEvent.click(screen.getByRole('tab',{name:'Technische Stammdaten'}));
+    fireEvent.change(screen.getByLabelText(/Modell/),{target:{value:'MX-20'}});
+    fireEvent.click(screen.getByRole('button',{name:'Speichern'}));
+    expect(await screen.findByText('Stammdaten wurden gespeichert.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab',{name:'Zuordnung'}));
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('tab',{name:'Zuordnung'}).getAttribute('aria-selected')).toBe('true');
+    finishReload();
+    confirmMock.mockRestore();
+  });
+
+  it('verhindert mehrfaches Speichern der Stammdaten während eines laufenden Vorgangs',async()=>{
+    let finish!:()=>void;
+    const pending=new Promise<void>(resolve=>{finish=resolve;});
+    apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+      if(path===`/nfc-devices/${deviceId}/file`)return fileData;
+      if(path==='/nfc-devices/filter-options')return options;
+      if(path===`/nfc-devices/${deviceId}`&&init?.method==='PATCH')return pending.then(()=>device);
+      return {};
+    });
+    renderFile();
+    await screen.findByRole('heading',{name:'TAG-001'});
+    fireEvent.click(screen.getByRole('tab',{name:'Technische Stammdaten'}));
+    const button=screen.getByRole('button',{name:'Speichern'}) as HTMLButtonElement;
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain('Wird gespeichert');
+    fireEvent.click(button);
+    finish();
+    await waitFor(()=>expect(apiMock.mock.calls.filter(([path,init])=>path===`/nfc-devices/${deviceId}`&&init?.method==='PATCH')).toHaveLength(1));
+  });
+
+  it('zeigt Downloadfehler direkt im Dokumentenbereich',async()=>{
+    const fetchMock=vi.fn().mockRejectedValue(new Error('Download nicht verfügbar'));
+    vi.stubGlobal('fetch',fetchMock);
+    try{
+      renderFile();
+      await screen.findByRole('heading',{name:'TAG-001'});
+      fireEvent.click(screen.getByRole('tab',{name:'Dokumente'}));
+      fireEvent.click(await screen.findByRole('button',{name:'Version 2 herunterladen'}));
+      expect((await screen.findByRole('alert')).textContent).toContain('Download nicht verfügbar');
+    }finally{vi.unstubAllGlobals();}
   });
 
   it('meldet Verlust mit Datum und Begründung über den Workflow-Endpunkt',async()=>{
@@ -311,7 +446,7 @@ describe('NFC-Geräteakte',()=>{
     expect(await screen.findByText('Wiedergefunden')).toBeTruthy();
     expect(screen.getAllByText('Archiviert').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('tab',{name:'Status & Ereignisse'}));
-    expect(await screen.findByText(/Ausgeführt: operator@example.invalid/)).toBeTruthy();
+    expect((await screen.findAllByText(/Ausgeführt: operator@example.invalid/)).length).toBeGreaterThan(0);
   });
 
   it('lädt die echte Scan-Historie mit Filtern und Pagination aus dem dedizierten Endpunkt',async()=>{

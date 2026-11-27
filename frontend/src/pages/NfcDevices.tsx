@@ -55,6 +55,7 @@ export function NfcDevices(){
   const [recover,setRecover]=useState({found_at:today,identifier_confirmation:'',reason:''});
   const [dialogError,setDialogError]=useState('');
   const [busy,setBusy]=useState(false);
+  const [replaceConfirmed,setReplaceConfirmed]=useState(false);
 
   const queryString=useMemo(()=>{
     const params=new URLSearchParams();
@@ -102,6 +103,7 @@ export function NfcDevices(){
       setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,mode:'new',
         existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
       setRecover({found_at:today,identifier_confirmation:'',reason:''});
+      setReplaceConfirmed(false);
     }
   };
 
@@ -134,9 +136,11 @@ export function NfcDevices(){
   };
 
   const candidate=(options.devices??[]).find(item=>item.id===replacement.existing_device_id);
-  const candidateAssignment=candidate
-    ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
-    :'Noch kein Ersatzgerät ausgewählt';
+  const candidateAssignment=replacement.mode==='new'
+    ?[replacement.identifier.trim()||'Noch keine Kennung',commonText.notAssigned,'Neu nach Austausch aktiv'].join(' · ')
+    :candidate
+      ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
+      :'Noch kein Ersatzgerät ausgewählt';
   const replacementPayload=()=>{
     const payload:Record<string,unknown>={
       reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment,
@@ -342,7 +346,8 @@ export function NfcDevices(){
       existingDeviceId={replacement.existing_device_id}
       onExistingDeviceId={value=>setReplacement(current=>({...current,existing_device_id:value}))}
       devices={(options.devices??[]).filter(device=>device.id!==selected.id)}
-      currentAssignment={nfcAssignmentLabel(selected)} candidateAssignment={candidateAssignment}
+      oldDeviceLabel={[selected.identifier,nfcStatusText(selected),nfcAssignmentLabel(selected)].join(' · ')}
+      candidateAssignment={candidateAssignment}
       reason={replacement.reason} onReason={value=>setReplacement(current=>({...current,reason:value}))}
       notes={replacement.notes} onNotes={value=>setReplacement(current=>({...current,notes:value}))}
       copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>setReplacement(current=>({...current,copy_assignment:value}))}
@@ -350,8 +355,10 @@ export function NfcDevices(){
       onAcknowledgeExisting={value=>setReplacement(current=>({...current,acknowledge_existing:value}))}
       acknowledgeRestricted={replacement.acknowledge_restricted}
       onAcknowledgeRestricted={value=>setReplacement(current=>({...current,acknowledge_restricted:value}))}
+      confirmed={replaceConfirmed} onConfirmed={setReplaceConfirmed}
       error={dialogError} busy={busy}
       onConfirm={()=>{
+        if(!replaceConfirmed){setDialogError('Bitte bestätigen Sie die Zusammenfassung des Austauschs.');return;}
         if(replacement.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
         if(replacement.mode==='new'&&(!replacement.identifier.trim()||!replacement.manufacturer.trim())){
           setDialogError('Bitte Kennung und Hersteller des Ersatzgeräts angeben.');return;

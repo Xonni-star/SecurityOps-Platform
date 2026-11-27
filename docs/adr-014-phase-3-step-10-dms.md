@@ -25,6 +25,10 @@ uploads/downloads require the online API and explicit provider availability.
 
 Set `MINIO_ENDPOINT`, `MINIO_BUCKET`, `MINIO_ACCESS_KEY` and
 `MINIO_SECRET_KEY`, plus `CLAMAV_HOST`, `CLAMAV_PORT` and timeout/chunk
-settings. Configure an independent blob backup/restore process and expose its
-status through `/api/v1/dms/backup/status`. Provider access is mocked in unit
-and integration tests.
+settings. Both Compose stacks provide a real ClamAV service and a MinIO bucket
+init job; the backend healthcheck uses `/ready/dms`, which probes both
+providers. A scan provider error or timeout fails closed: the version becomes
+`rejected`, the blob is deleted, an audit event is recorded and the API returns
+an explicit error. Provider access is injected in the isolated HTTP regression
+tests; the E2E suite uses the real scanner. The harmless EICAR test string is
+used only inside the isolated backend tests.

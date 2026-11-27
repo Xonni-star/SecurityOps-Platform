@@ -17,6 +17,32 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes: ["minio-data:/data"]
     healthcheck: {test: ["CMD", "mc", "ready", "local"], interval: 5s, timeout: 5s, retries: 12}
+  minio-init:
+    image: cgr.dev/chainguard/minio@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
+    entrypoint: ["/usr/bin/sh", "-c"]
+    command:
+      - 'mc --config-dir /tmp/mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" && mc --config-dir /tmp/mc mb --ignore-existing local/"$$MINIO_BUCKET"'
+    environment:
+      MINIO_ROOT_USER: restore-drill
+      MINIO_ROOT_PASSWORD: restore-drill-secret
+      MINIO_BUCKET: securityops-dms
+    depends_on: {minio: {condition: service_healthy}}
+    restart: "no"
+  clamav:
+    image: clamav/clamav:1.5.5-debian13-slim@sha256:85f35b3eee903dbd96c5ca250c5aa13d230d97987c0f876f7d46f001f9414239
+    restart: unless-stopped
+    environment:
+      # Das Image lauscht standardmäßig nur auf 127.0.0.1; der Backend-Container
+      # erreicht den Dienst nur über das Compose-Netzwerk auf 0.0.0.0:3310.
+      CLAMD_CONF_TCPAddr: 0.0.0.0
+      CLAMD_CONF_TCPSocket: "3310"
+    volumes: ["clamav-data:/var/lib/clamav"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
   backend:
     build: ./backend
     environment:
@@ -26,11 +52,24 @@ services:
       API_RATE_LIMIT_MAX: "1000"
       LOGIN_RATE_LIMIT_MAX: "100"
       MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKET: securityops-dms
       MINIO_ACCESS_KEY: restore-drill
       MINIO_SECRET_KEY: restore-drill-secret
-      CLAMAV_HOST: 127.0.0.1
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      CLAMAV_TIMEOUT_MS: "15000"
     ports: ["3000:3000"]
-    depends_on: {db: {condition: service_healthy}, minio: {condition: service_healthy}}
+    depends_on:
+      db: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+      clamav: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ready/dms >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
   frontend:
     build:
       context: ./frontend
@@ -39,4 +78,7 @@ services:
       VITE_API_PROXY_TARGET: http://backend:3000
     ports: ["5173:5173"]
     depends_on: [backend]
-volumes: {postgres-data: {}, minio-data: {}}
+volumes:
+  postgres-data: {}
+  minio-data: {}
+  clamav-data: {}

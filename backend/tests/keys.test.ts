@@ -101,4 +101,16 @@ describe('key management domain',()=>{
     expect(verifyKeyQrToken(oldSecret,token,{tenantId,keyId},now)).toMatchObject({valid:true});
     expect(verifyKeyQrToken(newSecret,token,{tenantId,keyId},now)).toEqual({valid:false,reason:'invalid_signature'});
   });
+  it('accepts references signed by a previous key during rotation but rejects them afterwards',()=>{
+    const oldSecret='a-strong-test-secret-value-with-entropy-12345';
+    const newSecret='a-different-strong-test-secret-value-67890!';
+    const tenantId='11111111-1111-4111-8111-111111111111';
+    const keyId='22222222-2222-4222-8222-222222222222';
+    const token=buildKeyQrToken(oldSecret,tenantId,keyId,'2026-06-15T12:15:00.000Z');
+    const now=new Date('2026-06-15T12:00:00.000Z');
+    expect(verifyKeyQrToken([newSecret,oldSecret],token,{tenantId,keyId},now)).toMatchObject({valid:true});
+    expect(verifyKeyQrToken([newSecret],token,{tenantId,keyId},now)).toEqual({valid:false,reason:'invalid_signature'});
+    const forged=buildKeyQrToken(oldSecret,tenantId,'33333333-3333-4333-8333-333333333333','2026-06-15T12:15:00.000Z');
+    expect(verifyKeyQrToken([newSecret,oldSecret],forged,{tenantId,keyId},now)).toEqual({valid:false,reason:'key_mismatch'});
+  });
 });

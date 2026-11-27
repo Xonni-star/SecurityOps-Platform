@@ -21,7 +21,7 @@ test.beforeAll(async({request})=>{
 test.afterAll(async({request})=>{
   const session=await loginApi(request,email!,password!);
   for(const id of createdDeviceIds){
-    const response=await session.context.delete(`/api/v1/nfc-devices/${id}`,{headers:session.headers});
+    const response=await session.context.delete(`${apiBase}/api/v1/nfc-devices/${id}`,{headers:session.headers});
     if(!response.ok()&&response.status()!==404&&response.status()!==409){
       throw new Error(`Cleanup of NFC test device ${id} failed with ${response.status()}.`);
     }
@@ -115,7 +115,7 @@ for(const viewport of viewports){
   });
 }
 
-test('complete NFC lifecycle with 13 audited steps and role checks',async({page})=>{
+test('complete NFC lifecycle with audited steps, master-data separation and role checks',async({page})=>{
   test.setTimeout(180_000);
   const errors=watchErrors(page);
 
@@ -153,6 +153,13 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   expect(controlPoint.status()).toBe(201);
   const controlPointId=(await controlPoint.json()).id as string;
   expect((await api(`/nfc-devices/${deviceId}/assign`,{control_point_id:controlPointId,reason:'E2E Kontrollpunktzuordnung'})).status()).toBe(200);
+  // Statusregeln dürfen nicht über einen anderen Endpunkt umgangen werden.
+  const directReplace=await api(`/nfc-devices/${deviceId}/replace`,{
+    identifier:`e2e-nfc-direct-${suffix}`,device_type:'tag',manufacturer:'E2E Acme',reason:'E2E Umgehung',copy_assignment:false,
+  });
+  expect(directReplace.status()).toBe(409);
+  expect(await directReplace.text()).toContain('aktives NFC-Gerät');
+  expect((await api(`/nfc-devices/${deviceId}`,{status:'blocked',reason:'E2E Umgehung'},'PATCH')).status()).toBe(400);
   const second=await api('/nfc-devices',{identifier:`e2e-nfc-second-${suffix}`,device_type:'tag',manufacturer:'E2E Acme'});
   expect(second.status()).toBe(201);
   const secondId=(await second.json()).id as string;
@@ -162,7 +169,35 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   await page.goto(`/nfc-devices/${deviceId}`);
   await expect(page.getByRole('heading',{name:identifier})).toBeVisible();
 
-  // 5. Sperren mit Begründung
+  // 5. Stammdaten getrennt von der Zuordnung speichern und neu laden
+  await page.getByRole('tab',{name:'Technische Stammdaten'}).click();
+  await expect(page.getByText(/ausschließlich die technischen Eigenschaften/)).toBeVisible();
+  await expect(page.getByLabel('Zuordnung',{exact:true})).toHaveCount(0);
+  await page.getByLabel('Modell').fill('E2E Modell');
+  await page.getByLabel('Seriennummer').fill('E2E-SN-1');
+  await page.getByLabel('Beschreibung').fill('E2E Beschreibung');
+  await page.getByLabel('Interne Notizen').fill('E2E Notiz');
+  await page.getByRole('button',{name:'Speichern'}).click();
+  await expect(page.getByText('Stammdaten wurden gespeichert.')).toBeVisible();
+  await page.reload();
+  await page.getByRole('tab',{name:'Technische Stammdaten'}).click();
+  await expect(page.getByLabel('Modell')).toHaveValue('E2E Modell');
+  await expect(page.getByLabel('Seriennummer')).toHaveValue('E2E-SN-1');
+  await expect(page.getByLabel('Beschreibung')).toHaveValue('E2E Beschreibung');
+  await expect(page.getByLabel('Interne Notizen')).toHaveValue('E2E Notiz');
+
+  // 6. Zuordnung über die Geräteakte speichern und neu laden
+  await page.getByRole('tab',{name:'Zuordnung'}).click();
+  await page.getByLabel('Zuordnung',{exact:true}).selectOption('employee');
+  await page.getByLabel('Mitarbeiter',{exact:true}).selectOption(employeeId);
+  await page.getByLabel('Änderungsgrund').fill('E2E Zuordnung in der Geräteakte');
+  await page.getByRole('button',{name:'Zuordnung speichern'}).click();
+  await expect(page.getByText('Zuordnung wurde gespeichert.')).toBeVisible();
+  await page.reload();
+  await page.getByRole('tab',{name:'Zuordnung'}).click();
+  await expect(page.getByLabel('Mitarbeiter',{exact:true})).toHaveValue(employeeId);
+
+  // 7. Sperren mit Begründung
   await page.getByRole('button',{name:'Sperren'}).click();
   await page.getByRole('dialog').getByLabel(/Begründung/).fill('E2E Sperrung');
   await page.getByRole('dialog').getByRole('button',{name:'Sperren'}).click();
@@ -180,6 +215,9 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   await page.getByRole('dialog').getByLabel(/Begründung/).fill('E2E Verlust');
   await page.getByRole('dialog').getByRole('button',{name:'Verlust melden'}).click();
   await expect(page.getByText('Verlust wurde dokumentiert.')).toBeVisible();
+  // Verlorene Geräte dürfen weder direkt reaktiviert noch direkt gesperrt werden.
+  expect((await api(`/nfc-devices/${deviceId}/reactivate`,{reason:'E2E unzulässig'})).status()).toBe(409);
+  expect((await api(`/nfc-devices/${deviceId}/block`,{reason:'E2E unzulässig'})).status()).toBe(409);
 
   // 8. Wiederauffinden führt zunächst in Quarantäne
   await page.getByRole('button',{name:'Wieder in Betrieb nehmen'}).click();
@@ -203,11 +241,14 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   await expect(page.getByText('NFC-Gerät wurde gesperrt.')).toBeVisible();
   await page.getByRole('button',{name:'Ersatzgerät festlegen'}).click();
   const replace=page.getByRole('dialog');
-  await expect(replace.getByText(/Bisheriges Gerät/)).toBeVisible();
+  await expect(replace.getByText(/Zusammenfassung vor dem Austausch/)).toBeVisible();
+  await expect(replace.getByText(/Altes Gerät \(Kennung · Status · bisherige Zuordnung\)/)).toBeVisible();
   await replace.getByLabel(/NFC-Kennung des Ersatzgeräts/).fill(replacementIdentifier);
   await replace.getByLabel(/Hersteller/).fill('E2E Ersatz Acme');
   await replace.getByLabel(/Austauschgrund/).fill('E2E Defekt');
   await replace.getByLabel('Zuordnung übernehmen').check();
+  await expect(replace.getByText(/Übernahmeentscheidung/)).toBeVisible();
+  await replace.getByLabel(/bestätige den Austausch/).check();
   await replace.getByRole('button',{name:'Austausch durchführen'}).click();
   await expect(page.getByText('Austausch wurde dokumentiert.')).toBeVisible();
   const replacementFile=await session.context.get(`${apiBase}/api/v1/nfc-devices/${deviceId}/file`);
@@ -240,10 +281,15 @@ test('complete NFC lifecycle with 13 audited steps and role checks',async({page}
   })).status()).toBe(409);
   const oldFile=await session.context.get(`${apiBase}/api/v1/nfc-devices/${deviceId}/file`);
   expect(oldFile.status()).toBe(200);
-  const oldData=await oldFile.json() as {device:{status:string};assignment_history:unknown[];replacements:unknown[]};
+  const oldData=await oldFile.json() as {device:{status:string};assignment_history:unknown[];replacements:unknown[];
+    history:{event_type:string}[]};
   expect(oldData.device.status).toBe('replaced');
   expect(oldData.assignment_history.length).toBeGreaterThan(0);
   expect(oldData.replacements.length).toBeGreaterThan(0);
+  expect(oldData.history.map(entry=>entry.event_type)).toContain('nfc_device.replaced');
+  const archivedFile=await session.context.get(`${apiBase}/api/v1/nfc-devices/${replacementId}/file`);
+  const archivedData=await archivedFile.json() as {history:{event_type:string}[]};
+  expect(archivedData.history.map(entry=>entry.event_type)).toContain('nfc_device.archived');
 
   // 13. Rollenprüfung: Viewer ohne Mutation, Operator mit Zugriff
   const viewer=await loginApi(page.request,'e2e-viewer@example.invalid',password!);

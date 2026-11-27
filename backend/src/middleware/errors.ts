@@ -8,7 +8,11 @@ export function errorHandler(err:Error,_req:Request,res:Response,_next:NextFunct
     return res.status(400).json({error:'Ungültige Anfrage',...(fields?{fields}:{})});
   }
   const status=(err as Error&{status?:number}).status;
-  const clientError=status!==undefined&&status>=400&&status<500;
+  const expose=(err as Error&{expose?:boolean}).expose===true;
+  // Explizit freigegebene 5xx-Fehler (z. B. ein nicht erreichbarer
+  // Virenscanner) erhalten eine verständliche deutsche Meldung, ohne dass
+  // interne Fehlerdetails oder Zugangsdaten nach außen gelangen.
+  const clientError=status!==undefined&&((status>=400&&status<500)||expose);
   logger.error({type:err.name,message:err.message,status:status??500},'Request failed');
   res.status(clientError?status:500).json({
     error:clientError?(err.message||'Ungültige Anfrage'):'Interner Serverfehler',

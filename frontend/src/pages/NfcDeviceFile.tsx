@@ -15,6 +15,14 @@ type Section='uebersicht'|'stammdaten'|'zuordnung'|'scans'|'verlauf'|'dokumente'
 type ScanFilters={from:string;to:string;control_point_id:string;site_id:string;employee_id:string;outcome:string};
 type ScanPage={rows:NfcScanRecord[];total:number;page:number;pageSize:number;totalPages:number};
 
+/** Verlaufseinzelheiten in lesbarer Form statt roher JSON-Zuordnungen. */
+function historyValueText(key:string,value:unknown,options:NfcOptions|null):unknown{
+  if((key==='assignment'||key==='previous_assignment')&&value&&typeof value==='object'&&!Array.isArray(value)){
+    return nfcAssignmentDetail(value as Record<string,string|null>,options);
+  }
+  return typeof value==='object'&&value!==null?JSON.stringify(value):value;
+}
+
 const sections:{id:Section;label:string}[]=[
   {id:'uebersicht',label:'Übersicht'},
   {id:'stammdaten',label:'Technische Stammdaten'},
@@ -54,7 +62,10 @@ export function NfcDeviceFile(){
   const [error,setError]=useState('');
   const [success,setSuccess]=useState('');
   const [dialogError,setDialogError]=useState('');
+  const [downloadError,setDownloadError]=useState('');
   const [busy,setBusy]=useState(false);
+  const [dirty,setDirty]=useState(false);
+  const [replaceConfirmed,setReplaceConfirmed]=useState(false);
 
   const load=async()=>{
     if(!deviceId)return;
@@ -65,11 +76,21 @@ export function NfcDeviceFile(){
         setForm(nfcFormFromDevice(value.device));
         setAssignment(nfcFormFromDevice(value.device));
       }
+      setDirty(false);
       setError('');
     }catch(cause){setError(nfcMessage(cause));}
   };
 
   useEffect(()=>{void load();},[deviceId]);
+  useEffect(()=>{
+    const warn=(event:BeforeUnloadEvent)=>{
+      if(!dirty)return;
+      event.preventDefault();
+      event.returnValue='';
+    };
+    window.addEventListener('beforeunload',warn);
+    return ()=>window.removeEventListener('beforeunload',warn);
+  },[dirty]);
   useEffect(()=>{
     void api<NfcOptions>('/nfc-devices/filter-options').then(value=>setOptions(value??emptyOptions)).catch(()=>undefined);
   },[]);
@@ -93,7 +114,10 @@ export function NfcDeviceFile(){
 
   const run=async(action:()=>Promise<void>,successText:string)=>{
     setError('');setSuccess('');setDialogError('');setBusy(true);
-    try{await action();setSuccess(successText);setDialog(null);await load();}
+    // Der Änderungsstatus muss bereits vor der Erfolgsmeldung zurückgesetzt
+    // werden: sonst löst ein direkt im Anschluss ausgelöster Reload noch eine
+    // beforeunload-Warnung aus, obwohl gespeichert wurde.
+    try{await action();setDirty(false);setSuccess(successText);setDialog(null);await load();}
     catch(cause){setDialogError(nfcMessage(cause));}
     finally{setBusy(false);}
   };
@@ -111,21 +135,44 @@ export function NfcDeviceFile(){
       link.download=`${document.title}-v${document.versions.find(version=>version.id===versionId)?.version_no??1}`;
       link.click();
       URL.revokeObjectURL(url);
-    }catch(cause){setError((cause as Error).message||'Der Download ist fehlgeschlagen.');}
+    }catch(cause){setDownloadError((cause as Error).message||'Der Download ist fehlgeschlagen.');}
+  };
+
+  const discardChanges=(message:string)=>dirty?window.confirm(message):true;
+  const backToOverview=()=>{
+    if(!discardChanges('Nicht gespeicherte Änderungen verwerfen und die Geräteübersicht öffnen?'))return;
+    navigate('/nfc-devices');
   };
 
   if(!data)return <section className="object-management">
-    <button type="button" className="object-back" onClick={()=>navigate('/nfc-devices')}>← {commonText.backToOverview}</button>
+    <button type="button" className="object-back" onClick={backToOverview}>← {commonText.backToOverview}</button>
     <p role="status">{error||commonText.loading}</p>
   </section>;
 
   const device=data.device;
-  const open=(kind:Exclude<typeof dialog,null>)=>{
-    setError('');setSuccess('');setDialogError('');setReason('');setLostDate(today);setDialog(kind);
+  const discardLocalEdits=()=>{
     setForm(nfcFormFromDevice(device));
+    setAssignment(nfcFormFromDevice(device));
+    setAssignmentReason('');
+    setDialogError('');
+    setDirty(false);
+  };
+  const changeSection=(next:Section)=>{
+    if(dirty){
+      if(!window.confirm('Nicht gespeicherte Änderungen verwerfen und den Bereich wechseln?'))return;
+      discardLocalEdits();
+    }
+    setSection(next);
+    setDownloadError('');
+  };
+  const open=(kind:Exclude<typeof dialog,null>)=>{
+    if(!discardChanges('Nicht gespeicherte Änderungen verwerfen und den Vorgang starten?'))return;
+    setError('');setSuccess('');setDialogError('');setDownloadError('');setReason('');setLostDate(today);setDialog(kind);
+    discardLocalEdits();
     setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,mode:'new',
       existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
     setRecover({found_at:today,identifier_confirmation:'',reason:''});
+    setReplaceConfirmed(false);
   };
 
   const saveMaster=()=>{
@@ -150,9 +197,11 @@ export function NfcDeviceFile(){
   };
 
   const candidate=(options.devices??[]).find(item=>item.id===replacement.existing_device_id);
-  const candidateAssignment=candidate
-    ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
-    :'Noch kein Ersatzgerät ausgewählt';
+  const candidateAssignment=replacement.mode==='new'
+    ?[replacement.identifier.trim()||'Noch keine Kennung',commonText.notAssigned,'Neu nach Austausch aktiv'].join(' · ')
+    :candidate
+      ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
+      :'Noch kein Ersatzgerät ausgewählt';
   const replacementPayload=()=>{
     const payload:Record<string,unknown>={
       reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment,
@@ -175,7 +224,7 @@ export function NfcDeviceFile(){
   };
 
   return <section className="object-management object-detail-page">
-    <button type="button" className="object-back" onClick={()=>navigate('/nfc-devices')}>← {commonText.backToOverview}</button>
+    <button type="button" className="object-back" onClick={backToOverview}>← {commonText.backToOverview}</button>
     <div className="object-detail-header">
       <div>
         <p className="object-eyebrow">Digitale NFC-Geräteakte · {device.identifier}</p>
@@ -204,7 +253,7 @@ export function NfcDeviceFile(){
 
     <div className="object-tabs" role="tablist">
       {sections.map(item=><button key={item.id} type="button" role="tab" aria-selected={section===item.id}
-        className={section===item.id?'active':''} onClick={()=>setSection(item.id)}>{item.label}</button>)}
+        className={section===item.id?'active':''} onClick={()=>changeSection(item.id)}>{item.label}</button>)}
     </div>
 
     {section==='uebersicht'&&<>
@@ -233,10 +282,12 @@ export function NfcDeviceFile(){
 
     {section==='stammdaten'&&<div className="object-detail-content">
       <h3>Technische Stammdaten</h3>
+      <p>Hier werden ausschließlich die technischen Eigenschaften des Geräts geändert. Zuordnungen werden im Bereich „Zuordnung“ gespeichert.</p>
       <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveMaster();}}>
-        <NfcFormFields value={form} onChange={setForm} options={options}/>
+        <NfcFormFields value={form} onChange={value=>{setForm(value);setDirty(true);}} options={options} showAssignment={false}/>
+        {dirty&&<p className="object-warning" role="status">Nicht gespeicherte Änderungen: Beim Verlassen wird um Bestätigung gebeten.</p>}
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
-        <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{commonText.save}</button></div>
+        <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{busy?'Wird gespeichert …':commonText.save}</button></div>
       </form>
     </div>}
 
@@ -244,11 +295,12 @@ export function NfcDeviceFile(){
       <h3>Aktuelle Zuordnung</h3>
       <p>{nfcAssignmentLabel(device)}</p>
       {nfcIsAssignable(device)?<form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveAssignment();}}>
-        <NfcAssignmentFields value={assignment} onChange={(value:NfcForm)=>setAssignment({...assignment,...value})} options={options}/>
+        <NfcAssignmentFields value={assignment} onChange={(value:NfcForm)=>{setAssignment({...assignment,...value});setDirty(true);}} options={options}/>
         <label>Änderungsgrund <input maxLength={2000} value={assignmentReason}
-          onChange={event=>setAssignmentReason(event.target.value)} placeholder="Grund der Zuordnung"/></label>
+          onChange={event=>{setAssignmentReason(event.target.value);setDirty(true);}} placeholder="Grund der Zuordnung"/></label>
+        {dirty&&<p className="object-warning" role="status">Nicht gespeicherte Änderungen: Beim Verlassen wird um Bestätigung gebeten.</p>}
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
-        <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>Zuordnung speichern</button></div>
+        <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{busy?'Wird gespeichert …':'Zuordnung speichern'}</button></div>
       </form>:<p className="object-warning" role="status">
         Nur aktive, nicht archivierte und nicht ersetzte Geräte können zugeordnet werden.
       </p>}
@@ -326,7 +378,7 @@ export function NfcDeviceFile(){
         <time>{formatDateTime(event.created_at)}</time>: {auditEventLabel(event.event_type)}
         {` · Ausgeführt: ${event.actor_email??'Unbekannt'}`}
         {Object.entries(event.details??{}).filter(([key])=>!['changed','changed_fields'].includes(key)).map(([key,value])=>
-          <div key={key}>{historyDetailText(key,typeof value==='object'&&value!==null?JSON.stringify(value):value)}</div>)}
+          <div key={key}>{historyDetailText(key,historyValueText(key,value,options))}</div>)}
       </li>)}</ul>:<p>{commonText.noData}</p>}
       <h4>Ersatzhistorie</h4>
       {data.replacements.length?<ul>{data.replacements.map(item=><li key={item.id}>
@@ -341,6 +393,7 @@ export function NfcDeviceFile(){
 
     {section==='dokumente'&&<div className="object-detail-content">
       <h3>Dokumente und Unterlagen</h3>
+      {downloadError&&<p className="object-warning" role="alert">{downloadError}</p>}
       {data.documents.length?<ul>{data.documents.map(document=><li key={document.id}>
         <strong>{document.title}</strong>
         {document.document_number?` · ${document.document_number}`:''}
@@ -352,12 +405,14 @@ export function NfcDeviceFile(){
       <p>Technische Unterlagen und Austauschdokumentationen werden zentral im Dokumentenmanagement verwaltet und hier mit dem Gerät verknüpft.</p>
     </div>}
 
-    {dialog==='edit'&&<NfcDialog title="NFC-Gerät bearbeiten" onClose={()=>setDialog(null)} wide>
+    {dialog==='edit'&&<NfcDialog title="Stammdaten bearbeiten" onClose={()=>{if(discardChanges('Nicht gespeicherte Stammdaten verwerfen?')){discardLocalEdits();setDialog(null);}}} wide>
       <form className="object-detail-form" onSubmit={event=>{event.preventDefault();saveMaster();}}>
-        <NfcFormFields value={form} onChange={setForm} options={options} showAssignment={false}/>
+        <p>Hier werden ausschließlich die technischen Eigenschaften des Geräts geändert. Zuordnungen werden im Bereich „Zuordnung“ gespeichert.</p>
+        <NfcFormFields value={form} onChange={value=>{setForm(value);setDirty(true);}} options={options} showAssignment={false}/>
+        {dirty&&<p className="object-warning" role="status">Nicht gespeicherte Änderungen: Beim Schließen wird um Bestätigung gebeten.</p>}
         {dialogError&&<p className="object-warning" role="alert">{dialogError}</p>}
-        <div className="object-actions"><button type="submit" disabled={busy}>{commonText.save}</button>
-          <button type="button" onClick={()=>setDialog(null)}>{commonText.cancel}</button></div>
+        <div className="object-actions"><button type="submit" disabled={busy||!canWrite}>{busy?'Wird gespeichert …':commonText.save}</button>
+          <button type="button" onClick={()=>{if(discardChanges('Nicht gespeicherte Stammdaten verwerfen?')){discardLocalEdits();setDialog(null);}}}>{commonText.cancel}</button></div>
       </form>
     </NfcDialog>}
 
@@ -413,7 +468,8 @@ export function NfcDeviceFile(){
       existingDeviceId={replacement.existing_device_id}
       onExistingDeviceId={value=>setReplacement(current=>({...current,existing_device_id:value}))}
       devices={(options.devices??[]).filter(item=>item.id!==device.id)}
-      currentAssignment={nfcAssignmentLabel(device)} candidateAssignment={candidateAssignment}
+      oldDeviceLabel={[device.identifier,nfcStatusText(device),nfcAssignmentLabel(device)].join(' · ')}
+      candidateAssignment={candidateAssignment}
       reason={replacement.reason} onReason={value=>setReplacement(current=>({...current,reason:value}))}
       notes={replacement.notes} onNotes={value=>setReplacement(current=>({...current,notes:value}))}
       copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>setReplacement(current=>({...current,copy_assignment:value}))}
@@ -421,8 +477,10 @@ export function NfcDeviceFile(){
       onAcknowledgeExisting={value=>setReplacement(current=>({...current,acknowledge_existing:value}))}
       acknowledgeRestricted={replacement.acknowledge_restricted}
       onAcknowledgeRestricted={value=>setReplacement(current=>({...current,acknowledge_restricted:value}))}
+      confirmed={replaceConfirmed} onConfirmed={setReplaceConfirmed}
       error={dialogError} busy={busy}
       onConfirm={()=>{
+        if(!replaceConfirmed){setDialogError('Bitte bestätigen Sie die Zusammenfassung des Austauschs.');return;}
         if(replacement.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
         if(replacement.mode==='new'&&(!replacement.identifier.trim()||!replacement.manufacturer.trim())){
           setDialogError('Bitte Kennung und Hersteller des Ersatzgeräts angeben.');return;

@@ -83,6 +83,27 @@ case "$qr_secret" in
   *' '*|*$'\t'*) fail "KEY_QR_SECRET must not contain whitespace" ;;
 esac
 
+# Preserved only for a documented rotation window (max. 15 minutes). Leave it
+# empty in a fresh installation; the backend validates strength and uniqueness.
+qr_previous=""
+if [ -f "$env_file" ]; then
+  qr_previous="$(sed -n 's/^KEY_QR_SECRET_PREVIOUS=//p' "$env_file" | head -1)"
+fi
+[ -z "$qr_previous" ] || [ "$qr_previous" != "$qr_secret" ] || fail "KEY_QR_SECRET_PREVIOUS must differ from KEY_QR_SECRET"
+
+minio_user=""
+minio_password=""
+if [ -f "$env_file" ]; then
+  minio_user="$(sed -n 's/^MINIO_ROOT_USER=//p' "$env_file" | head -1)"
+  minio_password="$(sed -n 's/^MINIO_ROOT_PASSWORD=//p' "$env_file" | head -1)"
+fi
+if [ -z "$minio_user" ] || [ -z "$minio_password" ]; then
+  need openssl
+  [ -n "$minio_user" ] || minio_user="securityops-$(openssl rand -hex 8)"
+  [ -n "$minio_password" ] || minio_password="$(openssl rand -hex 32)"
+  echo "Strong MinIO credentials were generated and stored in $env_file."
+fi
+
 read -r -p "SMTP host (optional): " smtp_host
 read -r -p "SMS gateway URL (optional): " sms_gateway_url
 read -r -s -p "TimeScan API token (leave blank if unused): " timescan_token
@@ -97,6 +118,9 @@ POSTGRES_PASSWORD=$postgres_password
 POSTGRES_DB=$postgres_db
 MFA_ENCRYPTION_KEY=$mfa_key
 KEY_QR_SECRET=$qr_secret
+KEY_QR_SECRET_PREVIOUS=$qr_previous
+MINIO_ROOT_USER=$minio_user
+MINIO_ROOT_PASSWORD=$minio_password
 CORS_ORIGIN=$cors_origin
 HTTP_PORT=$http_port
 API_PORT=$api_port
@@ -112,8 +136,9 @@ echo "Building and starting SecurityOps Platform..."
 "${compose[@]}" up -d --build
 
 echo "Waiting for readiness..."
-for _ in $(seq 1 60); do
-  if curl --fail --silent "http://127.0.0.1:$http_port/ready" >/dev/null 2>&1; then
+for _ in $(seq 1 90); do
+  if curl --fail --silent "http://127.0.0.1:$http_port/ready" >/dev/null 2>&1 \
+    && curl --fail --silent "http://127.0.0.1:$api_port/ready/dms" >/dev/null 2>&1; then
     echo
     echo "Installation completed successfully."
     echo "Frontend: $cors_origin"
@@ -123,5 +148,5 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 "${compose[@]}" ps
-"${compose[@]}" logs --no-color --tail=100 db backend frontend >&2
-fail "The stack did not become ready within 120 seconds"
+"${compose[@]}" logs --no-color --tail=100 db minio minio-init clamav backend frontend >&2
+fail "The stack (including DMS storage and ClamAV) did not become ready within 180 seconds"
