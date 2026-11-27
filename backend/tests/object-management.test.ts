@@ -153,6 +153,12 @@ describe('object management',()=>{
     const priorityCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH action_source AS'));
     expect(priorityCall?.[0]).toContain("WHEN a.tab='gefaehrdungen' THEN '/sites/'||a.site_id||'/gefaehrdungen?hazard='||a.entity_id");
     expect(priorityCall?.[1]).toEqual([tenant,[site],[site],[site],[site],[site],[site],[site],[site]]);
+    expect(priorityCall?.[0]).toContain("(now() AT TIME ZONE 'Europe/Berlin')::date");
+    expect(priorityCall?.[0]).toContain('oa.starts_on<=');
+    expect(priorityCall?.[0]).toContain('c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code)');
+    expect(priorityCall?.[0]).toContain('c.active IS FALSE');
+    expect(priorityCall?.[0]).toContain("d.document_status<>'active'");
+    expect(priorityCall?.[0]).toContain("dv.lifecycle_state IS DISTINCT FROM 'available'");
   });
 
   it('does not request customer, contract, employee or DMS aggregates without their read scopes',async()=>{

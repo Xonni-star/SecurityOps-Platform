@@ -78,7 +78,7 @@ beforeEach(()=>{
   configureDmsAdapters(storage,scanner);
   activeUser=baseUser;
   const version={id:'00000000-0000-4000-8000-0000000000c1',tenant_id:tenant,document_id:documentId,
-    version_no:1,sha256:sha256(Buffer.from(cleanContent)),size_bytes:Buffer.byteLength(cleanContent),lifecycle_state:'available'};
+    version_no:1,content_type:'video/mp4',sha256:sha256(Buffer.from(cleanContent)),size_bytes:Buffer.byteLength(cleanContent),lifecycle_state:'available'};
   downloadRow={...document,...version,object_key:`${tenant}/${documentId}/${version.id}`,size_bytes:Buffer.byteLength(cleanContent),sha256:sha256(Buffer.from(cleanContent))};
   queryMock.mockImplementation(async(sql:string)=>{
     if(sql.includes('FROM sessions'))return result([activeUser]);
@@ -206,5 +206,61 @@ describe('DMS upload security and provider failures',()=>{
       .set('Cookie',csrf);
     expect(response.status).toBe(502);
     expect(response.body.error).toContain('Integritätsprüfung des Blobs fehlgeschlagen');
+  });
+
+  it('keeps the stored audio/video content type on download',async()=>{
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/00000000-0000-4000-8000-0000000000c1/download`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('video/mp4');
+    expect(response.headers['content-disposition']).toMatch(/^attachment;/);
+  });
+
+  it('previews an available released version inline with the stored content type',async()=>{
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/00000000-0000-4000-8000-0000000000c1/preview`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('video/mp4');
+    expect(response.headers['content-disposition']).toMatch(/^inline;/);
+    expect(storage.get).toHaveBeenCalledWith(downloadRow.object_key);
+  });
+
+  it.each(['quarantined','rejected'])('refuses to preview a %s version',async(state)=>{
+    downloadRow={...downloadRow,lifecycle_state:state};
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/00000000-0000-4000-8000-0000000000c1/preview`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(409);
+    expect(response.body.state).toBe(state);
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it('denies preview without dms:read',async()=>{
+    activeUser={...baseUser,permissions:['dms:write']};
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/00000000-0000-4000-8000-0000000000c1/preview`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(403);
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it('blocks a preview whose stored blob fails the integrity check',async()=>{
+    storage.get.mockResolvedValueOnce({content:Buffer.from('verändert'),contentType:'text/plain'});
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/00000000-0000-4000-8000-0000000000c1/preview`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(502);
+    expect(response.body.error).toContain('Integritätsprüfung des Blobs fehlgeschlagen');
+  });
+
+  it.each(['download','preview'])('rejects an unchecked latest alias on %s',async(endpoint)=>{
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/latest/${endpoint}`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(400);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM dms_documents d JOIN dms_versions v'))).toBe(false);
+    expect(storage.get).not.toHaveBeenCalled();
   });
 });

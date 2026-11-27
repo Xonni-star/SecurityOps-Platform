@@ -4,6 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requirePermission} from '../middleware/auth.js';
 import {createSitePermissionReader} from '../services/site-permissions.js';
 import {evaluateShiftEligibility,type AbsenceRecord,type AvailabilityRecord,type EligibilityInput,type InstructionRecord,type QualificationRecord} from '../services/staffing-eligibility.js';
+import {qualificationLocalDate} from '../services/qualification-status.js';
 
 const uuid=z.string().uuid();
 const iso=(value:string|Date)=>value instanceof Date?value.toISOString():String(value);
@@ -43,20 +44,23 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
        WHERE oa.tenant_id=$1 AND oa.site_id=$2 AND oa.starts_on<=$3::date
          AND (oa.ends_on IS NULL OR oa.ends_on>=$4::date)
        ORDER BY e.id,oa.starts_on DESC`,
-      [tenantId,siteId,startsAt.slice(0,10),endsAt.slice(0,10)],
+      [tenantId,siteId,qualificationLocalDate(new Date(startsAt)),qualificationLocalDate(new Date(endsAt))],
     )).rows;
     const employeeIds=employees.map(employee=>employee.id);
     const qualificationRows=employeeIds.length?(await query<QualificationRecord & {employee_id:string;required_documents:string[]|string|null}>(
       `SELECT q.id,q.employee_id,q.code,q.status,q.valid_from,q.valid_until,q.revoked_at,q.document_id,
          c.active AS catalog_active,c.required_document_type,c.required_documents,
-         d.approval_status AS document_approval_status,dv.lifecycle_state AS document_lifecycle_state
+         d.document_status,d.approval_status AS document_approval_status,
+         d.valid_from AS document_valid_from,d.valid_until AS document_valid_until,
+         dv.lifecycle_state AS document_lifecycle_state
        FROM employee_qualifications q
        LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
          AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
        LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
        LEFT JOIN LATERAL (
          SELECT v.lifecycle_state FROM dms_versions v
-          WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id ORDER BY v.version_no DESC LIMIT 1
+          WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+           ORDER BY v.version_no DESC LIMIT 1
        ) dv ON TRUE
        WHERE q.tenant_id=$1 AND q.employee_id=ANY($2::uuid[])`,
       [tenantId,employeeIds],

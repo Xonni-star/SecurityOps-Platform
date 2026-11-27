@@ -26,6 +26,12 @@ describe('phase 5 reporting',()=>{
     });
     const response=await request(app).get('/api/v1/reports/statistics?from=2026-11-01&to=2026-11-30').set('Cookie',csrf.Cookie);
     expect(response.status).toBe(200);expect(response.body.alarms.open).toBe(1);
+    const qualificationCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_qualifications q'));
+    expect(qualificationCall?.[0]).toContain("(now() AT TIME ZONE 'Europe/Berlin')::date");
+    expect(qualificationCall?.[0]).toContain('c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code)');
+    expect(qualificationCall?.[0]).toContain("d.document_status='active'");
+    expect(qualificationCall?.[0]).toContain('dv.lifecycle_state=\'available\'');
+    expect(qualificationCall?.[0]).toContain('evidence_problems');
   });
 
   it('exports a tenant-scoped employee report',async()=>{

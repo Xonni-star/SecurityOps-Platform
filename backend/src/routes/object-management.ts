@@ -4,9 +4,14 @@ import {query} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
 import {classifyDocument,classifyRequirement,documentStatusCounts,documentWarningCounts} from '../services/dms-document-status.js';
-import {classifyQualification,daysUntil,qualificationLocalDate} from '../services/qualification-status.js';
+import {classifyQualification,daysUntil,qualificationDayNumber,qualificationLocalDate} from '../services/qualification-status.js';
 import {withMaintenanceStatus} from '../services/maintenance-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
+
+/** Einheitlicher Berliner Kalendertag für alle Gültigkeitsvergleiche. */
+const berlinDate=`(now() AT TIME ZONE 'Europe/Berlin')::date`;
+const evidenceRequiredSql=`(c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)`;
+const evidenceProblemSql=`(q.document_id IS NULL OR d.document_status<>'active' OR d.approval_status IS DISTINCT FROM 'approved' OR dv.lifecycle_state IS DISTINCT FROM 'available' OR (d.valid_from IS NOT NULL AND d.valid_from>${berlinDate}) OR (d.valid_until IS NOT NULL AND d.valid_until<${berlinDate}))`;
 
 type ClassifiedObjectDocumentRow={
   id:string;title:string;document_type:string|null;document_status:string|null;approval_status:string|null;
@@ -46,11 +51,12 @@ const evidenceLabels:Record<string,string>={
   fehlend:'Nachweis fehlt',nicht_freigegeben:'Nachweis nicht freigegeben',
   pruefung_ausstehend:'Nachweisprüfung ausstehend',noch_nicht_gueltig:'Nachweis noch nicht gültig',
   missing:'Kein Nachweis verknüpft',not_found:'Verknüpfter Nachweis nicht gefunden',
+  invalid_date:'Nachweis mit ungültigem Datum',
 };
-const blockingIssueCodes=new Set(['revoked','invalid','expired','not_yet_valid','expired_evidence','unapproved_evidence','missing_evidence']);
-const invalidIssueCodes=new Set(['revoked','invalid','expired','expired_evidence']);
+const blockingIssueCodes=new Set(['revoked','invalid','invalid_date','expired','not_yet_valid','expired_evidence','unapproved_evidence','missing_evidence']);
+const invalidIssueCodes=new Set(['revoked','invalid','invalid_date','expired','expired_evidence']);
 const issueSeverity:Record<string,QualificationIssue['severity']>={
-  revoked:'critical',invalid:'critical',expired:'critical',expired_evidence:'critical',
+  revoked:'critical',invalid:'critical',invalid_date:'critical',expired:'critical',expired_evidence:'critical',
   not_yet_valid:'high',unapproved_evidence:'high',missing_evidence:'high',expiring:'medium',none:'medium',
 };
 
@@ -67,6 +73,10 @@ function timestampValue(value:unknown):string|null{
 function classifyEvidence(row:QualificationRow,now=new Date()):{status:string;label:string}{
   if(!row.document_id)return {status:'missing',label:evidenceLabels.missing};
   if(!row.evidence_document_status&&!row.evidence_lifecycle_state)return {status:'not_found',label:evidenceLabels.not_found};
+  const invalidDate=(value:unknown)=>value!==null&&value!==undefined&&value!==''&&qualificationDayNumber(asDateValue(value))===null;
+  if(invalidDate(row.evidence_valid_from)||invalidDate(row.evidence_valid_until)){
+    return {status:'invalid_date',label:evidenceLabels.invalid_date};
+  }
   const classification=classifyDocument({
     document_status:row.evidence_document_status,
     approval_status:row.evidence_approval_status,
@@ -87,8 +97,8 @@ function qualificationIssue(
   const code=classification.issue_code;
   const labels:Record<string,string>={
     none:'Gültig',expiring:'Läuft bald ab',expired:'Abgelaufen',not_yet_valid:'Noch nicht gültig',
-    revoked:'Widerrufen',invalid:'Ungültig',missing_evidence:'Nachweis fehlt',unapproved_evidence:'Nachweis nicht freigegeben',
-    expired_evidence:'Nachweis abgelaufen',
+    revoked:'Widerrufen',invalid:'Ungültig',invalid_date:'Ungültiges Datum',missing_evidence:'Nachweis fehlt',
+    unapproved_evidence:'Nachweis nicht freigegeben',expired_evidence:'Nachweis abgelaufen',
   };
   let detail:string;
   if(code==='revoked')detail=row.revoked_at?`Widerrufen am ${timestampValue(row.revoked_at)?.slice(0,10)}`:'Qualifikationsnachweis wurde widerrufen';
@@ -273,8 +283,8 @@ objectManagementRouter.get(
            GROUP BY cs.site_id
          ), contract_summary AS (
            SELECT cts.site_id,
-             count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.starts_on<=CURRENT_DATE AND (con.ends_on IS NULL OR con.ends_on>=CURRENT_DATE))::int AS active_contract_count,
-               count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.ends_on BETWEEN CURRENT_DATE AND CURRENT_DATE+30)::int AS expiring_contract_count,
+             count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.starts_on<=${berlinDate} AND (con.ends_on IS NULL OR con.ends_on>=${berlinDate}))::int AS active_contract_count,
+               count(*) FILTER (WHERE con.status IN ('active','expiring') AND con.ends_on BETWEEN ${berlinDate} AND ${berlinDate}+30)::int AS expiring_contract_count,
                array_agg(DISTINCT con.status ORDER BY con.status) AS contract_statuses
            FROM contract_sites cts JOIN contracts con ON con.tenant_id=cts.tenant_id AND con.id=cts.contract_id
            WHERE cts.tenant_id=$1 AND cts.site_id=ANY($4::uuid[])
@@ -282,13 +292,13 @@ objectManagementRouter.get(
          ), staffing_summary AS (
            SELECT oa.site_id,count(*)::int AS assigned_employee_count
            FROM employee_object_assignments oa
-           WHERE oa.tenant_id=$1 AND oa.site_id=ANY($5::uuid[]) AND oa.starts_on<=CURRENT_DATE AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+           WHERE oa.tenant_id=$1 AND oa.site_id=ANY($5::uuid[]) AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
            GROUP BY oa.site_id
          ), hazard_summary AS (
            SELECT h.site_id,count(*) FILTER (WHERE h.status='open')::int AS open_hazard_count,
                count(*) FILTER (WHERE h.status='open' AND h.risk_score>=15)::int AS critical_hazard_count,
              (SELECT count(*)::int FROM object_hazard_measures m
-              WHERE m.tenant_id=h.tenant_id AND m.site_id=h.site_id AND m.status IN ('open','in_progress') AND m.due_on<CURRENT_DATE) AS overdue_measure_count
+              WHERE m.tenant_id=h.tenant_id AND m.site_id=h.site_id AND m.status IN ('open','in_progress') AND m.due_on<${berlinDate}) AS overdue_measure_count
            FROM object_hazards h
            WHERE h.tenant_id=$1 AND h.site_id=ANY($6::uuid[])
            GROUP BY h.tenant_id,h.site_id
@@ -312,7 +322,7 @@ objectManagementRouter.get(
          ), maintenance_summary AS (
            SELECT m.site_id,
              count(*) FILTER (WHERE m.status IN ('planned','open','in_progress'))::int AS open_maintenance_count,
-             count(*) FILTER (WHERE m.status IN ('planned','open','in_progress') AND m.due_on<CURRENT_DATE)::int AS overdue_maintenance_count
+             count(*) FILTER (WHERE m.status IN ('planned','open','in_progress') AND m.due_on<${berlinDate})::int AS overdue_maintenance_count
            FROM maintenance_orders m
            WHERE m.tenant_id=$1 AND m.site_id=ANY($11::uuid[])
            GROUP BY m.site_id
@@ -325,23 +335,23 @@ objectManagementRouter.get(
            SELECT d.site_id,
              count(*) FILTER (WHERE latest.lifecycle_state='available')::int AS available_document_count,
              count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved'
-               AND (d.valid_from IS NULL OR d.valid_from<=CURRENT_DATE)
-               AND (d.valid_until IS NULL OR d.valid_until>=CURRENT_DATE))::int AS valid_document_count,
+               AND (d.valid_from IS NULL OR d.valid_from<=${berlinDate})
+               AND (d.valid_until IS NULL OR d.valid_until>=${berlinDate}))::int AS valid_document_count,
              count(*) FILTER (WHERE latest.lifecycle_state IS DISTINCT FROM 'available' OR d.approval_status<>'approved')::int AS unapproved_document_count,
-             count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved' AND d.valid_until<CURRENT_DATE)::int AS expired_document_count,
+             count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved' AND d.valid_until<${berlinDate})::int AS expired_document_count,
              count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved'
-               AND d.valid_until>=CURRENT_DATE AND d.valid_until<=CURRENT_DATE+7)::int AS expiring_7d_document_count,
+               AND d.valid_until>=${berlinDate} AND d.valid_until<=${berlinDate}+7)::int AS expiring_7d_document_count,
              count(*) FILTER (WHERE latest.lifecycle_state='available' AND d.approval_status='approved'
-               AND d.valid_until>CURRENT_DATE+7 AND d.valid_until<=CURRENT_DATE+30)::int AS expiring_30d_document_count,
-             count(*) FILTER (WHERE d.review_on IS NOT NULL AND d.review_on<=CURRENT_DATE+30)::int AS review_due_document_count,
+               AND d.valid_until>${berlinDate}+7 AND d.valid_until<=${berlinDate}+30)::int AS expiring_30d_document_count,
+             count(*) FILTER (WHERE d.review_on IS NOT NULL AND d.review_on<=${berlinDate}+30)::int AS review_due_document_count,
              (SELECT count(*)::int FROM dms_document_requirements r
                WHERE r.tenant_id=d.tenant_id AND r.site_id=d.site_id AND r.required
                  AND NOT EXISTS (
                    SELECT 1 FROM dms_documents doc JOIN latest_document_versions lv ON lv.document_id=doc.id
                    WHERE doc.tenant_id=r.tenant_id AND doc.site_id=r.site_id AND doc.document_type=r.document_type
                      AND doc.document_status='active' AND doc.approval_status='approved' AND lv.lifecycle_state='available'
-                     AND (doc.valid_from IS NULL OR doc.valid_from<=CURRENT_DATE)
-                     AND (doc.valid_until IS NULL OR doc.valid_until>=CURRENT_DATE)
+                     AND (doc.valid_from IS NULL OR doc.valid_from<=${berlinDate})
+                     AND (doc.valid_until IS NULL OR doc.valid_until>=${berlinDate})
                  ))::int AS missing_requirement_count
            FROM dms_documents d LEFT JOIN latest_document_versions latest ON latest.document_id=d.id
            WHERE d.tenant_id=$1 AND d.site_id=ANY($7::uuid[]) AND d.document_status='active'
@@ -471,7 +481,7 @@ objectManagementRouter.get(
           FROM object_hazard_measures m
           LEFT JOIN object_hazards h ON h.tenant_id=m.tenant_id AND h.id=m.hazard_id
           WHERE m.tenant_id=$1 AND m.site_id=ANY($2::uuid[])
-            AND m.status IN ('open','in_progress') AND m.due_on<CURRENT_DATE
+            AND m.status IN ('open','in_progress') AND m.due_on<${berlinDate}
           UNION ALL
           SELECT i.site_id,'high'::text,'Dienstanweisungen',
             'Freigabe ausstehend: '||i.title,'Fassung '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
@@ -482,7 +492,7 @@ objectManagementRouter.get(
             'Dienstanweisung abgelaufen: '||i.title,'Fassung '||i.version,i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
           FROM site_instructions i
           WHERE i.tenant_id=$1 AND i.site_id=ANY($3::uuid[]) AND i.status='approved'
-            AND i.valid_until IS NOT NULL AND i.valid_until<CURRENT_DATE
+            AND i.valid_until IS NOT NULL AND i.valid_until<${berlinDate}
           UNION ALL
           SELECT i.site_id,'medium'::text,'Dienstanweisungen',
             'Bestätigung ausstehend: '||i.title,
@@ -490,7 +500,7 @@ objectManagementRouter.get(
             i.valid_until,'anweisungen','watchbook:read',i.id::text,NULL::text
           FROM site_instructions i
           JOIN employee_object_assignments oa ON oa.tenant_id=i.tenant_id AND oa.site_id=i.site_id
-            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+            AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
           WHERE i.tenant_id=$1 AND i.site_id=ANY($9::uuid[]) AND i.status='approved' AND i.requires_acknowledgement
             AND NOT EXISTS (
               SELECT 1 FROM instruction_acknowledgements ia
@@ -510,15 +520,15 @@ objectManagementRouter.get(
               JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
               WHERE d.tenant_id=r.tenant_id AND d.site_id=r.site_id AND d.document_type=r.document_type
                 AND d.document_status='active' AND d.approval_status='approved'
-                AND (d.valid_from IS NULL OR d.valid_from<=CURRENT_DATE)
-                AND (d.valid_until IS NULL OR d.valid_until>=CURRENT_DATE)
+                AND (d.valid_from IS NULL OR d.valid_from<=${berlinDate})
+                AND (d.valid_until IS NULL OR d.valid_until>=${berlinDate})
             )
           UNION ALL
           SELECT d.site_id,'high'::text,'Dokumente',
             'Dokument abgelaufen: '||d.title,'Ablaufdatum '||d.valid_until::text,d.valid_until::date,'dokumente','dms:read',d.id::text,NULL::text
           FROM dms_documents d
           WHERE d.tenant_id=$1 AND d.site_id=ANY($4::uuid[]) AND d.document_status='active'
-            AND d.approval_status='approved' AND d.valid_until<CURRENT_DATE
+            AND d.approval_status='approved' AND d.valid_until<${berlinDate}
             AND EXISTS (SELECT 1 FROM dms_versions v WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available')
           UNION ALL
           SELECT d.site_id,'high'::text,'Dokumente',
@@ -533,7 +543,7 @@ objectManagementRouter.get(
             'Dokumentprüfung fällig: '||d.title,'Prüffrist '||d.review_on::text,d.review_on,'dokumente','dms:read',d.id::text,NULL::text
           FROM dms_documents d
           WHERE d.tenant_id=$1 AND d.site_id=ANY($4::uuid[]) AND d.document_status='active'
-            AND d.review_on<CURRENT_DATE
+            AND d.review_on<${berlinDate}
             AND (d.reviewed_at IS NULL OR d.reviewed_at::date<d.review_on)
           UNION ALL
           SELECT o.site_id,'high'::text,'Technik & Wartung',
@@ -542,7 +552,7 @@ objectManagementRouter.get(
           FROM maintenance_orders o
           LEFT JOIN devices d ON d.tenant_id=o.tenant_id AND d.id=o.device_id
           WHERE o.tenant_id=$1 AND o.site_id=ANY($5::uuid[])
-            AND o.status IN ('planned','open','in_progress') AND o.due_on<CURRENT_DATE
+            AND o.status IN ('planned','open','in_progress') AND o.due_on<${berlinDate}
           UNION ALL
           SELECT cs.site_id,'high'::text,'Aufgaben',
             'Überfällige Aufgabe: '||ct.title,'Kunde: '||c.name,ct.due_at::date,'aufgaben','customers:read',ct.id::text,NULL::text
@@ -562,35 +572,39 @@ objectManagementRouter.get(
           UNION ALL
           SELECT oa.site_id,
             CASE WHEN q.status='revoked' OR q.revoked_at IS NOT NULL THEN 'critical'::text
-                 WHEN q.status='invalid' OR c.active=false THEN 'critical'::text
-                 WHEN q.status='expired' OR q.valid_until<CURRENT_DATE THEN 'critical'::text
-                 WHEN q.valid_from>CURRENT_DATE THEN 'high'::text
-                 WHEN (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
-                      AND (q.document_id IS NULL OR d.approval_status IS DISTINCT FROM 'approved') THEN 'high'::text
+                 WHEN q.status='invalid' OR c.active IS FALSE THEN 'critical'::text
+                 WHEN q.status='expired' OR q.valid_until<${berlinDate} THEN 'critical'::text
+                 WHEN q.valid_from>${berlinDate} THEN 'high'::text
+                 WHEN ${evidenceRequiredSql} AND ${evidenceProblemSql} THEN 'high'::text
                  ELSE 'medium'::text END,
             'Personal','Qualifikation prüfen: '||e.name||' · '||COALESCE(c.name,q.code),
             CASE WHEN q.status='revoked' OR q.revoked_at IS NOT NULL THEN 'Qualifikation widerrufen'
-                 WHEN q.status='invalid' OR c.active=false THEN 'Qualifikation ungültig oder Katalogeintrag inaktiv'
-                 WHEN q.status='expired' OR q.valid_until<CURRENT_DATE THEN 'Qualifikation abgelaufen'
-                 WHEN q.valid_from>CURRENT_DATE THEN 'Qualifikation noch nicht gültig'
-                 WHEN (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
-                      AND q.document_id IS NULL THEN 'Kein Nachweis verknüpft'
-                 WHEN (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
-                      AND d.approval_status IS DISTINCT FROM 'approved' THEN 'Nachweis nicht freigegeben'
+                 WHEN q.status='invalid' OR c.active IS FALSE THEN 'Qualifikation ungültig oder Katalogeintrag inaktiv'
+                 WHEN q.status='expired' OR q.valid_until<${berlinDate} THEN 'Qualifikation abgelaufen'
+                 WHEN q.valid_from>${berlinDate} THEN 'Qualifikation noch nicht gültig'
+                 WHEN ${evidenceRequiredSql} AND q.document_id IS NULL THEN 'Kein Nachweis verknüpft'
+                 WHEN ${evidenceRequiredSql} AND (d.document_status IS DISTINCT FROM 'active'
+                      OR d.approval_status IS DISTINCT FROM 'approved' OR dv.lifecycle_state IS DISTINCT FROM 'available'
+                      OR (d.valid_until IS NOT NULL AND d.valid_until<${berlinDate})
+                      OR (d.valid_from IS NOT NULL AND d.valid_from>${berlinDate})) THEN 'Nachweis nicht freigegeben oder abgelaufen'
                  ELSE 'Qualifikation läuft bald ab' END,
             q.valid_until,'personal','qualifications:read',q.id::text,q.employee_id::text
           FROM employee_qualifications q
           JOIN employee_object_assignments oa ON oa.tenant_id=q.tenant_id AND oa.employee_id=q.employee_id
-            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+            AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
           JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
           LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
             AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
           LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+          LEFT JOIN LATERAL (
+            SELECT v.lifecycle_state FROM dms_versions v
+            WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+            ORDER BY v.version_no DESC LIMIT 1
+          ) dv ON TRUE
           WHERE q.tenant_id=$1 AND oa.site_id=ANY($8::uuid[])
-            AND (q.status IN ('revoked','invalid','expired') OR q.revoked_at IS NOT NULL OR q.valid_until<CURRENT_DATE
-              OR q.valid_from>CURRENT_DATE OR q.valid_until<=CURRENT_DATE+INTERVAL '90 days'
-              OR ((c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
-                  AND (q.document_id IS NULL OR d.approval_status IS DISTINCT FROM 'approved')))
+            AND (q.status IN ('revoked','invalid','expired') OR q.revoked_at IS NOT NULL OR q.valid_until<${berlinDate}
+              OR q.valid_from>${berlinDate} OR q.valid_until<=${berlinDate}+INTERVAL '90 days' OR c.active IS FALSE
+              OR (${evidenceRequiredSql} AND ${evidenceProblemSql}))
         )
         SELECT a.*,s.name AS site_name,
           CASE WHEN a.severity='critical' THEN 'A' WHEN a.severity='high' THEN 'B' ELSE 'C' END AS priority,
@@ -660,7 +674,7 @@ async function employeeAssignedToSite(tenantId:string,siteId:string,employeeId:s
   return Boolean((await query(
     `SELECT 1 FROM employee_object_assignments oa
      WHERE oa.tenant_id=$1 AND oa.site_id=$2 AND oa.employee_id=$3
-       AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)`,
+       AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})`,
     [tenantId,siteId,employeeId],
   )).rows[0]);
 }
@@ -787,8 +801,8 @@ objectManagementRouter.get(
          FROM employee_object_assignments oa
          JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
          WHERE oa.tenant_id=$1 AND oa.site_id=$2
-           AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
-         ORDER BY oa.starts_on<=CURRENT_DATE DESC,oa.primary_assignment DESC,oa.starts_on, e.name`,
+           AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
+         ORDER BY oa.starts_on<=${berlinDate} DESC,oa.primary_assignment DESC,oa.starts_on, e.name`,
         [user.tenantId,id],
       )).rows:null;
       const assignmentHistory=canReadStaffing?(await query(
@@ -969,17 +983,18 @@ objectManagementRouter.get(
           latest.lifecycle_state AS evidence_lifecycle_state
          FROM employee_qualifications q
          JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
-         LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.code=q.code
-          LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
-          LEFT JOIN LATERAL (
-            SELECT v.lifecycle_state FROM dms_versions v
-            WHERE v.tenant_id=q.tenant_id AND v.document_id=q.document_id
-            ORDER BY v.version_no DESC LIMIT 1
-          ) latest ON true
+         LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
+           AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
+         LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+         LEFT JOIN LATERAL (
+           SELECT v.lifecycle_state FROM dms_versions v
+           WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+           ORDER BY v.version_no DESC LIMIT 1
+         ) latest ON true
          WHERE q.tenant_id=$1 AND EXISTS (
            SELECT 1 FROM employee_object_assignments oa
            WHERE oa.tenant_id=q.tenant_id AND oa.employee_id=q.employee_id AND oa.site_id=$2
-             AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+             AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
          )
          ORDER BY e.name,c.name,q.valid_until NULLS LAST LIMIT 200`,
         [user.tenantId,id],
@@ -1108,7 +1123,7 @@ objectManagementRouter.get(
       const today=qualificationLocalDate(now);
       const day=(value:unknown):string|null=>{
         if(value===null||value===undefined||value==='')return null;
-        return value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);
+        return value instanceof Date?qualificationLocalDate(value):String(value).slice(0,10);
       };
       const sectionTarget=(tab:string,param?:string,recordId?:string|null)=>`/sites/${id}/${tab}${param&&recordId?`?${param}=${recordId}`:''}`;
       const action=(input:Omit<PriorityAction,'priority'>):PriorityAction=>({...input,priority:priorityForSeverity(input.severity)});
@@ -1495,7 +1510,7 @@ objectManagementRouter.post('/sites/:id/instructions/:instructionId/acknowledgem
       WHERE e.tenant_id=$1 AND e.id=$2
         AND EXISTS(SELECT 1 FROM employee_object_assignments oa
           WHERE oa.tenant_id=e.tenant_id AND oa.site_id=$3 AND oa.employee_id=e.id
-            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE))`,[tenantId,body.employee_id,siteId])).rows[0];
+            AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate}))`,[tenantId,body.employee_id,siteId])).rows[0];
     if(!instruction||!employee)return res.status(404).json({error:'Dienstanweisung oder Mitarbeiter nicht gefunden'});
     if(instruction.status!=='approved')return res.status(409).json({error:'Nur freigegebene Dienstanweisungen können bestätigt werden'});
     if(!instruction.requires_acknowledgement)return res.status(409).json({error:'Für diese Dienstanweisung ist keine Bestätigung erforderlich'});

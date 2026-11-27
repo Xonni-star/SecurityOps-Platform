@@ -27,7 +27,7 @@ const csrf={Cookie:['securityops_session=opaque','securityops_csrf=csrf-value'],
 const permissions=[
   'qualifications:read','qualifications:write','qualifications:catalog:write','qualifications:revoke',
   'qualifications:documents:read','qualifications:documents:download','qualifications:reminders:write',
-  'qualifications:export','sites:read','employees:read',
+  'qualifications:export','sites:read','employees:read','dms:read',
 ];
 const baseUser={
   id:userId,tenantId:tenant,email:'admin@example.invalid',role:'admin',permissions,permission_grants:[],
@@ -87,8 +87,12 @@ function setupAssignment(existing:Record<string,unknown>[]=[]){
   on('FROM qualification_catalog WHERE tenant_id=$1 AND id=$2 AND active=true',[{
     id:catalogId,code:'sachkunde_34a',default_validity_days:30,required:true,required_document_type:null,
   }]);
-  on('SELECT id,status,revoked_at,code FROM employee_qualifications',existing);
+  on('FROM employee_qualifications',
+    (sql)=>existing.filter(row=>!sql.includes("status IN ('valid','expired')")||['valid','expired'].includes(String(row.status))));
   on('INSERT INTO employee_qualifications',[{
+    id:qualification,tenant_id:tenant,employee_id:employee,catalog_id:catalogId,code:'sachkunde_34a',status:'valid',
+  }]);
+  on('UPDATE employee_qualifications',[{
     id:qualification,tenant_id:tenant,employee_id:employee,catalog_id:catalogId,code:'sachkunde_34a',status:'valid',
   }]);
   on('SELECT site_id FROM employee_object_assignments',[{site_id:site}]);
@@ -185,7 +189,7 @@ describe('qualification routes: Übersicht, Export und Analytics',()=>{
     expect(String(data[0])).toContain('ORDER BY e.name DESC,q.id ASC LIMIT $12 OFFSET $13');
     expect(String(data[0])).toContain('lower(e.name) LIKE $2');
     expect(String(data[0])).toContain('oa.site_id=$4');
-    expect(String(data[0])).toContain("(q.document_id IS NULL OR d.approval_status IS DISTINCT FROM 'approved')");
+    expect(String(data[0])).toContain("q.document_id IS NULL THEN 'missing_evidence'");
     expect(String(data[0])).toContain("Europe/Berlin");
   });
 
@@ -195,6 +199,14 @@ describe('qualification routes: Übersicht, Export und Analytics',()=>{
     const response=await request(app).get('/api/v1/qualifications/overview?q=erste').set('Cookie',csrf.Cookie);
     expect(response.status).toBe(200);
     expect(lastCall('SELECT COUNT(*)::int count')?.[1][1]).toBe('%erste%');
+  });
+
+  it('weist ungültige Filterwerte mit 400 zurück statt einen DB-Fehler zu produzieren',async()=>{
+    for(const query of ['employee_id=not-a-uuid','expires_from=31.12.2026','status=unknown','page=0','days=-1']){
+      const response=await request(app).get(`/api/v1/qualifications/overview?${query}`).set('Cookie',csrf.Cookie);
+      expect(response.status).toBe(400);
+    }
+    expect(calls('SELECT COUNT(*)::int count')).toHaveLength(0);
   });
 
   it('exportiert CSV mit BOM, deutschen Spalten und Audit-Eintrag',async()=>{
@@ -276,23 +288,52 @@ describe('qualification routes: Qualifikationszuordnungen',()=>{
     expect(calls('INSERT INTO employee_qualifications')).toHaveLength(0);
   });
 
-  it('verhindert die Neuanlage einer widerrufenen Qualifikation',async()=>{
+  it('erstellt nach einem Widerruf eine neue Zertifizierung und behält die Historie',async()=>{
     setupAssignment([{id:qualification,status:'revoked',revoked_at:'2026-01-01T00:00:00Z',code:'sachkunde_34a'}]);
     const response=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
-      catalog_id:catalogId,reason:'Erneut anlegen',
+      catalog_id:catalogId,valid_from:day(0),reason:'Erneut zertifiziert',
     });
-    expect(response.status).toBe(409);
-    expect(calls('INSERT INTO employee_qualifications')).toHaveLength(0);
+    expect(response.status).toBe(201);
+    expect(calls('UPDATE employee_qualifications')).toHaveLength(0);
+    expect(calls('INSERT INTO employee_qualifications')).toHaveLength(1);
+    const audit=auditEvents().find(event=>event[2]==='qualification.employee.created');
+    expect(audit?.[5]).toMatchObject({reason:'Erneut zertifiziert',previous:null});
   });
 
   it('aktualisiert eine bereits erfasste Qualifikation statt einen zweiten Datensatz anzulegen',async()=>{
     setupAssignment([{id:qualification,status:'valid',revoked_at:null,code:'sachkunde_34a',valid_from:null,valid_until:null}]);
     const response=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
-      catalog_id:catalogId,reason:'Verlängerung',
+      catalog_id:catalogId,valid_from:day(0),reason:'Verlängerung',
     });
     expect(response.status).toBe(201);
-    expect(String(lastCall('INSERT INTO employee_qualifications')?.[0])).toContain('ON CONFLICT(tenant_id,employee_id,code) DO UPDATE');
+    expect(String(lastCall('FROM employee_qualifications')?.[0])).toContain("status IN ('valid','expired')");
+    expect(calls('INSERT INTO employee_qualifications')).toHaveLength(0);
     expect(auditEvents().some(event=>event[2]==='qualification.employee.updated')).toBe(true);
+  });
+
+  it('weist eine leere Gültig-bis-Eingabe ab und markiert explizite Unbegrenztheit',async()=>{
+    setupAssignment();
+    const invalid=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
+      catalog_id:catalogId,valid_from:day(0),valid_until:'',reason:'Leere Eingabe',
+    });
+    expect(invalid.status).toBe(400);
+    const unlimited=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
+      catalog_id:catalogId,valid_from:day(0),valid_until:null,reason:'Unbefristet',
+    });
+    expect(unlimited.status).toBe(201);
+    const insert=lastCall('INSERT INTO employee_qualifications')!;
+    expect(insert[1][6]).toBeNull();
+    expect(insert[1][7]).toBe('unlimited');
+  });
+
+  it('berechnet die Standardgültigkeit mit Herkunft im Katalog',async()=>{
+    setupAssignment();
+    const validFrom=day(0);
+    const response=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
+      catalog_id:catalogId,valid_from:validFrom,reason:'Ersterfassung',
+    });
+    expect(response.status).toBe(201);
+    expect(lastCall('INSERT INTO employee_qualifications')?.[1][7]).toBe('catalog_default');
   });
 
   it('erlaubt einen freigegebenen Nachweis und zeigt ihn in der Übersicht als gültig',async()=>{
@@ -300,14 +341,14 @@ describe('qualification routes: Qualifikationszuordnungen',()=>{
     on('FROM qualification_catalog WHERE tenant_id=$1 AND id=$2 AND active=true',[{
       id:catalogId,code:'sachkunde_34a',default_validity_days:30,required:true,required_document_type:null,
     }]);
-    on('SELECT id FROM dms_documents WHERE tenant_id=$1 AND id=$2',[{id:documentId}]);
+    on('FROM dms_documents d',[{id:documentId,document_type:null,employee_document_category:'qualification'}]);
     on('INSERT INTO employee_qualifications',[{id:qualification}]);
     on('SELECT site_id FROM employee_object_assignments',[{site_id:site}]);
     const assigned=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
       catalog_id:catalogId,document_id:documentId,reason:'Nachweis verknüpft',
     });
     expect(assigned.status).toBe(201);
-    expect(lastCall('INSERT INTO employee_qualifications')?.[1][7]).toBe(documentId);
+    expect(lastCall('INSERT INTO employee_qualifications')?.[1][8]).toBe(documentId);
     on('SELECT COUNT(*)::int count',[{count:1}]);
     on('SELECT q.id,q.employee_id',[overviewRow({
       valid_until:day(200),document_id:documentId,document_approval_status:'approved',
@@ -315,6 +356,44 @@ describe('qualification routes: Qualifikationszuordnungen',()=>{
     })]);
     const overview=await request(app).get('/api/v1/qualifications/overview').set('Cookie',csrf.Cookie);
     expect(overview.body[0]).toMatchObject({computed_status:'valid',document_status:'gueltig'});
+  });
+
+  it('akzeptiert einen Nachweis, der einem der geforderten Dokumenttypen entspricht',async()=>{
+    on('SELECT id FROM employees WHERE tenant_id=$1 AND id=$2 FOR SHARE',[{id:employee}]);
+    on('FROM qualification_catalog WHERE tenant_id=$1 AND id=$2 AND active=true',[{
+      id:catalogId,code:'sachkunde_34a',default_validity_days:30,required:true,
+      required_document_type:'qualification',required_documents:['Qualifikationsnachweis'],
+    }]);
+    on('FROM dms_documents d',[{id:documentId,document_type:'Qualifikationsnachweis',employee_document_category:'qualification'}]);
+    on('INSERT INTO employee_qualifications',[{id:qualification}]);
+    on('SELECT site_id FROM employee_object_assignments',[{site_id:site}]);
+    const assigned=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
+      catalog_id:catalogId,document_id:documentId,reason:'Passender Dokumenttyp',
+    });
+    expect(assigned.status).toBe(201);
+    const query=lastCall('FROM dms_documents d')!;
+    expect(query[1][3]).toBe('qualification');
+    expect(query[1][4]).toEqual(['Qualifikationsnachweis']);
+    expect(String(query[0])).toContain('OR ($4::text IS NOT NULL AND d.document_type=$4)');
+  });
+
+  it('liefert für den Nachweis eine Download-URL mit konkreter freigegebener Version',async()=>{
+    const versionId='00000000-0000-4000-8000-000000000006';
+    on('SELECT q.document_id,q.employee_id,d.site_id',[{
+      document_id:documentId,employee_id:employee,site_id:site,title:'Nachweis',approval_status:'approved',
+      document_status:'active',version_id:versionId,
+    }]);
+    const response=await request(app).get(`/api/v1/qualifications/assignments/${qualification}/document`).set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.download_url).toBe(`/api/v1/dms/documents/${documentId}/versions/${versionId}/download`);
+    expect(response.body.preview_url).toBe(`/api/v1/dms/documents/${documentId}/versions/${versionId}/preview`);
+    expect(response.body.download_url).not.toContain('latest');
+  });
+
+  it('verweigert den Nachweis-Download ohne dms:read',async()=>{
+    activeUser={...baseUser,permissions:permissions.filter(permission=>permission!=='dms:read')};
+    const response=await request(app).get(`/api/v1/qualifications/assignments/${qualification}/document`).set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(403);
   });
 
   it('zeigt einen nicht freigegebenen Nachweis als awaiting_review',async()=>{
@@ -332,14 +411,14 @@ describe('qualification routes: Qualifikationszuordnungen',()=>{
     on('FROM qualification_catalog WHERE tenant_id=$1 AND id=$2 AND active=true',[{
       id:catalogId,code:'sachkunde_34a',default_validity_days:30,required:true,required_document_type:null,
     }]);
-    on('SELECT id FROM dms_documents WHERE tenant_id=$1 AND id=$2',[]);
+    on('FROM dms_documents d',[]);
     const response=await request(app).post(`/api/v1/employees/${employee}/qualifications`).set(csrf).send({
       catalog_id:catalogId,document_id:documentId,reason:'Fremden Nachweis verknüpfen',
     });
     expect(response.status).toBe(400);
     expect(response.body.error).toContain('anderen Mitarbeiter');
-    const documentQuery=lastCall('SELECT id FROM dms_documents')!;
-    expect(documentQuery[1]).toEqual([tenant,documentId,employee]);
+    const documentQuery=lastCall('FROM dms_documents d')!;
+    expect(documentQuery[1]).toEqual([tenant,documentId,employee,null,[]]);
     expect(calls('INSERT INTO employee_qualifications')).toHaveLength(0);
   });
 
@@ -362,7 +441,7 @@ describe('qualification routes: Qualifikationszuordnungen',()=>{
     });
     expect(response.status).toBe(200);
     const update=lastCall('UPDATE employee_qualifications')!;
-    expect(update[1][6]).toBe(current.valid_until);
+    expect(update[1][7]).toBe(current.valid_until);
     // `catalog` ist keine Tabelle des UPDATE - der Katalogwert muss als Parameter gesetzt werden.
     expect(String(update[0])).not.toContain('code=catalog.code');
   });
@@ -386,7 +465,7 @@ describe('qualification routes: Qualifikationszuordnungen',()=>{
       valid_until:validUntil,reason:'Verlängert',
     });
     expect(response.status).toBe(200);
-    expect(lastCall('UPDATE employee_qualifications')?.[1][6]).toBe(validUntil);
+    expect(lastCall('UPDATE employee_qualifications')?.[1][7]).toBe(validUntil);
   });
 
   it('widerruft eine Qualifikation mit reason und Audit',async()=>{

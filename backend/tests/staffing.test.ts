@@ -72,6 +72,22 @@ describe('shift eligibility endpoint',()=>{
     expect(response.body.employees[0]).toMatchObject({employee_id:employee,status:'ineligible'});
   });
 
+  it('verwendet Berlin-Daten für die Objektzuordnung und lädt Nachweisgültigkeit',async()=>{
+    const defaultImplementation=queryMock.getMockImplementation()!;
+    queryMock.mockImplementation(async(sql:string,...args:unknown[])=>{
+      if(sql.includes('FROM schedule_shifts sh'))return result([{...shiftRow,starts_at:'2026-12-01T23:30:00Z',ends_at:'2026-12-02T00:30:00Z'}]);
+      return defaultImplementation(sql,...args);
+    });
+    const response=await request(app).get(path).set('Cookie','securityops_session=opaque');
+    expect(response.status).toBe(200);
+    const assignmentCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_object_assignments oa'));
+    expect(assignmentCall?.[1]).toEqual([tenant,site,'2026-12-02','2026-12-02']);
+    const qualificationCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM employee_qualifications q'));
+    expect(qualificationCall?.[0]).toContain('d.document_status');
+    expect(qualificationCall?.[0]).toContain('d.valid_from AS document_valid_from');
+    expect(qualificationCall?.[0]).toContain('d.valid_until AS document_valid_until');
+  });
+
   it('withholds eligibility data without qualification read permission',async()=>{
     activeUser={...baseUser,permissions:['scheduling:read','employees:read'],permission_grants:grants.slice(0,2)};
     const response=await request(app).get(path).set('Cookie','securityops_session=opaque');

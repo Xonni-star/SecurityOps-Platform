@@ -3,6 +3,7 @@ import {
   classifyQualification,
   daysUntil,
   evidenceStatusOf,
+  qualificationDayNumber,
   qualificationLocalDate,
   type QualificationStatusInput,
 } from '../src/services/qualification-status.js';
@@ -114,5 +115,40 @@ describe('qualification status: Nachweisstatus aus DMS-Feldern',()=>{
     expect(evidenceStatusOf({...base,evidence_valid_until:'2026-02-28'},now)).toBe('abgelaufen');
     expect(evidenceStatusOf({...base,evidence_valid_from:'2026-03-02'},now)).toBe('noch_nicht_gueltig');
     expect(classify({requiresEvidence:true,evidenceStatus:evidenceStatusOf({...base,evidence_valid_until:'2026-02-28'},now)??undefined})).toMatchObject({status:'expired',issue_code:'expired_evidence'});
+  });
+});
+
+describe('qualification status: malformed dates und Nachweisprüfung',()=>{
+  it('fällt bei unvollständigen oder unmöglichen Datumswerten nicht auf heute zurück',()=>{
+    for(const invalid of ['2026-02-30','2026-13-01','2026-00-10','kein-datum','2026-01-01T99:00:00Z']){
+      expect(qualificationDayNumber(invalid)).toBeNull();
+      expect(daysUntil(invalid,now)).toBeNull();
+    }
+    expect(classify({validUntil:'2026-02-30'})).toMatchObject({status:'invalid',issue_code:'invalid_date'});
+    expect(classify({validFrom:'kein-datum'})).toMatchObject({status:'invalid',issue_code:'invalid_date'});
+    expect(classify({storedStatus:'revoked',validUntil:'2026-02-30'})).toMatchObject({status:'invalid',issue_code:'invalid_date'});
+  });
+
+  it('behandelt ungültige Nachweisdaten und bald prüfpflichtige Nachweise als Prüfbedarf',()=>{
+    const base={document_id:'doc-1',evidence_document_status:'active',evidence_approval_status:'approved',evidence_lifecycle_state:'available'};
+    expect(evidenceStatusOf({...base,evidence_valid_until:'2026-02-30'},now)).toBe('invalid_date');
+    expect(classify({requiresEvidence:true,evidenceStatus:'invalid_date'})).toMatchObject({status:'invalid',issue_code:'invalid_date'});
+    expect(classify({requiresEvidence:true,evidenceStatus:'bald_pruefpflichtig'})).toMatchObject({status:'awaiting_review',issue_code:'unapproved_evidence'});
+    expect(classify({requiresEvidence:true,evidenceStatus:'lauf_bald_ab'})).toMatchObject({status:'valid',issue_code:'none'});
+  });
+
+  it('bleibt an den DST-Grenzen 2026-03-29 und 2026-10-25 auf dem Berliner Kalendertag',()=>{
+    const springStart=new Date('2026-03-28T23:30:00Z'); // Berlin: 2026-03-29 00:30
+    expect(qualificationLocalDate(springStart)).toBe('2026-03-29');
+    expect(daysUntil('2026-03-29',springStart)).toBe(0);
+    expect(classify({validUntil:'2026-03-28',now:springStart}).status).toBe('expired');
+
+    const autumnStart=new Date('2026-10-24T22:30:00Z'); // Berlin: 2026-10-25 00:30
+    const autumnEnd=new Date('2026-10-25T23:30:00Z'); // Berlin: 2026-10-26 00:30
+    expect(qualificationLocalDate(autumnStart)).toBe('2026-10-25');
+    expect(qualificationLocalDate(autumnEnd)).toBe('2026-10-26');
+    expect(daysUntil('2026-10-25',autumnStart)).toBe(0);
+    expect(daysUntil('2026-10-25',autumnEnd)).toBe(-1);
+    expect(classify({validUntil:'2026-10-25',now:autumnEnd}).status).toBe('expired');
   });
 });

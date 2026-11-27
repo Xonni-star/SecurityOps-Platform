@@ -120,7 +120,8 @@ test.afterAll(async()=>{
       const response=await admin.context.delete(`/api/v1/employees/${employeeId}/qualifications/${id}`,{
         headers:admin.headers,data:{reason:cleanupReason},
       });
-      if(![200,204,404].includes(response.status()))console.warn(`Cleanup Qualifikation ${id}: HTTP ${response.status()}`);
+      // 409 ist erwartet, wenn der Datensatz bewusst als Historie widerrufen wurde.
+      if(![200,204,404,409].includes(response.status()))console.warn(`Cleanup Qualifikation ${id}: HTTP ${response.status()}`);
     }
     for(const {id,session} of [...createdCatalog].reverse()){
       const response=await session.context.patch(`/api/v1/qualifications/catalog/${id}`,{
@@ -257,7 +258,7 @@ test('04 Katalogeintrag bearbeiten und deaktivieren',async()=>{
 test('05 Qualifikation mit Standardgültigkeit zuweisen',async({page})=>{
   const {catalog}=await createCatalog(admin,'zuordnung',{default_validity_days:365});
   const row=await assignQualification(catalog);
-  expect(row).toMatchObject({employee_id:employeeId,code:catalog.code,status:'valid',change_reason:`E2E Zuordnung ${catalog.code}`});
+  expect(row).toMatchObject({employee_id:employeeId,code:catalog.code,status:'valid',valid_until_source:'catalog_default',change_reason:`E2E Zuordnung ${catalog.code}`});
   expect(berlinDate(row.valid_from)).toBe(dateIn(0));
   expect(berlinDate(row.valid_until)).toBe(dateIn(365));
 
@@ -275,7 +276,7 @@ test('06 Dokument verknüpfen: Prüfung ausstehend bis DMS-Freigabe',async({page
   const documentTitle=`E2E Qualifikationsnachweis ${runId}`;
   const upload=await author.context.post('/api/v1/dms/documents',{headers:author.headers,data:{
     title:documentTitle,site_id:siteId,employee_id:employeeId,employee_document_category:'qualification',
-    document_type:'e2e_qualifikationsnachweis',description:'Nachweis für die E2E-Qualifikationsverwaltung',
+    document_type:'Qualifikationsnachweis',description:'Nachweis für die E2E-Qualifikationsverwaltung',
     valid_from:dateIn(-1),valid_until:dateIn(365),review_on:null,
     content_base64:Buffer.from('E2E qualification evidence').toString('base64'),
     content_type:'text/plain',client_mutation_id:randomUUID(),
@@ -301,7 +302,26 @@ test('06 Dokument verknüpfen: Prüfung ausstehend bis DMS-Freigabe',async({page
   expect(detail).toMatchObject({computed_status:'valid',status_label:'Gültig',document_status:'gueltig'});
   const download=await operator.context.get(`/api/v1/qualifications/assignments/${row.id}/document`);
   expect(download.status()).toBe(200);
-  expect((await download.json()).download_url).toContain(`/api/v1/dms/documents/${document.id}/versions/latest/download`);
+  const link=(await download.json()) as Record<string,string>;
+  expect(link.download_url).toMatch(new RegExp(`^/api/v1/dms/documents/${document.id}/versions/[0-9a-f-]{36}/download$`));
+  expect(link.download_url).not.toContain('latest');
+  expect(link.preview_url).toBe(link.download_url.replace('/download','/preview'));
+
+  const listed=await operator.context.get('/api/v1/dms/documents',{params:{employee_id:employeeId}});
+  expect(listed.status(),`DMS-Mitarbeiterfilter: HTTP ${listed.status()} ${await listed.text()}`).toBe(200);
+  const listedDocument=(await listed.json() as Record<string,any>[]).find(item=>item.id===document.id);
+  expect(listedDocument).toBeTruthy();
+  const versionId=(listedDocument?.versions??[]).find((item:Record<string,any>)=>item.lifecycle_state==='available')?.id as string|undefined;
+  expect(versionId).toBeTruthy();
+  expect(link.download_url).toBe(`/api/v1/dms/documents/${document.id}/versions/${versionId}/download`);
+
+  const bytes=await operator.context.get(link.download_url);
+  expect(bytes.status(),`Nachweisdownload: HTTP ${bytes.status()} ${await bytes.text()}`).toBe(200);
+  expect(bytes.headers()['content-type']).toContain('text/plain');
+  expect(await bytes.text()).toBe('E2E qualification evidence');
+  const preview=await operator.context.get(link.preview_url!);
+  expect(preview.status(),`Nachweisvorschau: HTTP ${preview.status()} ${await preview.text()}`).toBe(200);
+  expect(preview.headers()['content-disposition']).toContain('inline');
 
   await login(page);
   await page.goto(`/employees/${employeeId}/qualifikationen?document=${document.id}`);
@@ -415,9 +435,17 @@ test('11 Widerruf und Entfernen mit Begründung',async()=>{
   expect((await revoke.json()).status).toBe('revoked');
   expect(await getAssignment(revokedRow.id)).toMatchObject({status_label:'Widerrufen',issue_code:'revoked'});
   const reassign=await admin.context.post(`/api/v1/employees/${employeeId}/qualifications`,{headers:admin.headers,data:{
-    catalog_id:revokedCatalog.id,valid_from:dateIn(0),reason:`E2E Neuzuordnung ${runId}`,
+    catalog_id:revokedCatalog.id,valid_from:dateIn(0),reason:`E2E Neuzertifizierung ${runId}`,
   }});
-  expect(reassign.status(),'Widerrufene Qualifikation darf nicht still neu vergeben werden.').toBe(409);
+  expect(reassign.status(),'Nach einem Widerruf muss eine neue Zertifizierung möglich sein.').toBe(201);
+  const recertified=(await reassign.json()) as Record<string,any>;
+  createdAssignmentIds.push(recertified.id);
+  expect(recertified.id).not.toBe(revokedRow.id);
+  expect(recertified).toMatchObject({status:'valid',valid_until_source:'catalog_default',code:revokedCatalog.code});
+  expect(await getAssignment(revokedRow.id)).toMatchObject({status:'revoked',computed_status:'revoked'});
+  const audit=await auditEvents();
+  expect(audit.some(event=>event.entity_id===recertified.id&&event.event_type==='qualification.employee.created'
+    &&event.details?.reason===`E2E Neuzertifizierung ${runId}`)).toBe(true);
 
   const remove=await admin.context.delete(`/api/v1/employees/${employeeId}/qualifications/${removedRow.id}`,{headers:admin.headers,data:{reason:`E2E Entfernung ${runId}`}});
   expect(remove.status()).toBe(204);
@@ -504,4 +532,42 @@ test('12 Objektanforderung, Einsatzprüfung, Erinnerungen, RBAC und Mandantentre
     const foreignAssignment=await foreign.context.get(`/api/v1/qualifications/assignments/${row.id}`);
     expect(foreignAssignment.status(),'Qualifikationsdetail ist mandantengebunden.').toBe(404);
   });
+});
+
+test('13 Gültigkeits-Herkunft, Tri-State und Filtervalidierung',async({page})=>{
+  const unlimitedCatalog=(await createCatalog(admin,'unbefristet',{default_validity_days:365,required:false,required_document_type:null,required_documents:[]})).catalog;
+  const manualCatalog=(await createCatalog(admin,'manuell',{default_validity_days:365,required:false,required_document_type:null,required_documents:[]})).catalog;
+  const defaultCatalog=(await createCatalog(admin,'standard',{default_validity_days:365,required:false,required_document_type:null,required_documents:[]})).catalog;
+
+  const unlimited=await assignQualification(unlimitedCatalog,{valid_until:null});
+  const manual=await assignQualification(manualCatalog,{valid_until:dateIn(30)});
+  const fromCatalog=await assignQualification(defaultCatalog);
+  expect(unlimited).toMatchObject({valid_until:null,valid_until_source:'unlimited'});
+  expect(manual).toMatchObject({valid_until_source:'manual'});
+  expect(berlinDate(manual.valid_until)).toBe(dateIn(30));
+  expect(fromCatalog).toMatchObject({valid_until_source:'catalog_default'});
+  expect(berlinDate(fromCatalog.valid_until)).toBe(dateIn(365));
+
+  const kept=await admin.context.patch(`/api/v1/employees/${employeeId}/qualifications/${manual.id}`,{headers:admin.headers,data:{
+    notes:`E2E Tri-State Notiz ${runId}`,reason:`E2E Tri-State Änderung ${runId}`,
+  }});
+  expect(kept.status()).toBe(200);
+  expect((await kept.json() as Record<string,any>)).toMatchObject({valid_until_source:'manual'});
+  expect(berlinDate((await kept.json() as Record<string,any>).valid_until)).toBe(dateIn(30));
+
+  const changed=await admin.context.patch(`/api/v1/employees/${employeeId}/qualifications/${fromCatalog.id}`,{headers:admin.headers,data:{
+    valid_until:null,reason:`E2E Unbefristet per Änderung ${runId}`,
+  }});
+  expect(changed.status()).toBe(200);
+  expect(await changed.json()).toMatchObject({valid_until:null,valid_until_source:'unlimited'});
+
+  for(const query of ['employee_id=not-a-uuid','expires_from=31.12.2026','status=unknown','page=0','days=-1']){
+    const response=await operator.context.get(`/api/v1/qualifications/overview?${query}`);
+    expect(response.status(),`Ungültiger Filter ${query} muss 400 liefern.`).toBe(400);
+  }
+
+  await login(page);
+  await page.goto('/qualifications');
+  await expect(page.getByLabel('Mitarbeiter filtern')).toBeVisible();
+  await expect(page.getByRole('table',{name:'Qualifikationsübersicht'})).toBeVisible();
 });

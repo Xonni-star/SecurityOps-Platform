@@ -1,4 +1,4 @@
-import {Router,Request} from 'express';
+import {Router,Request,Response} from 'express';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {query,withTransaction} from '../db/pool.js';
@@ -55,11 +55,30 @@ function safeFilename(title:string,versionNo:number,contentType:string){
   return `${title.replace(/[^a-zA-Z0-9._-]+/g,'_').slice(0,120)||'document'}-v${versionNo}${extension}`;
 }
 
+// Download und Preview teilen sich exakt dieselben Zugriffs-, Freigabe- und
+// Integritätsprüfungen. Ein Preview darf niemals eine ungeprüfte oder
+// nicht freigegebene Version sichtbar machen.
+async function loadDmsVersionForRead(req:Request,res:Response,documentId:string,versionId:string){
+  const row=(await query(`SELECT d.*,v.* FROM dms_documents d JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
+    WHERE d.tenant_id=$1 AND d.id=$2 AND v.id=$3 AND d.document_status='active'`,[req.user!.tenantId,documentId,versionId])).rows[0];
+  if(!row){res.status(404).json({error:'Dokumentversion nicht gefunden'});return null;}
+  if(row.customer_id&&!customerDocumentPermission(req,'customer_documents:read')){res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});return null;}
+  siteAccess(req,row.site_id??null);
+  if(!canDownloadDmsVersion(row.document_status,row.lifecycle_state)){res.status(409).json({error:'Dokumentversion ist nicht verfügbar',state:row.lifecycle_state});return null;}
+  const blob=await dmsStorage.get(row.object_key);
+  if(blob.content.byteLength!==Number(row.size_bytes)||sha256(blob.content)!==row.sha256){res.status(502).json({error:'Integritätsprüfung des Blobs fehlgeschlagen'});return null;}
+  return {row,blob};
+}
+function dmsVersionIds(req:Request){return z.object({documentId:uuid,versionId:uuid}).safeParse(req.params);}
+
 export const dmsRouter=Router();
 dmsRouter.use((req,res,next)=>/^\/dms/.test(req.path)?requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next()):next());
 
 dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
+    const employeeQuery=z.object({employee_id:uuid.optional()}).safeParse(req.query);
+    if(!employeeQuery.success)throw Object.assign(new Error('Ungültiger Mitarbeiter-Filter'),{status:400});
+    const employeeId=employeeQuery.data.employee_id;
     const scope=effectivePermissionScope(normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),'dms:read',{role:req.user!.role,isSystemAdmin:req.user!.isSystemAdmin===true});
     const siteFilter=scope==='site'?' AND d.site_id = ANY($2::uuid[])':'';
     const customerFilter=customerDocumentPermission(req,'customer_documents:read')?'':' AND d.customer_id IS NULL';
@@ -68,11 +87,13 @@ dmsRouter.get('/dms/documents',requirePermission('dms:read',{allowedScopes:['ten
     if(deviceFilter)values.push(req.query.device_id);
     const nfcDeviceFilter=typeof req.query.nfc_device_id==='string'&&uuid.safeParse(req.query.nfc_device_id).success?` AND d.nfc_device_id=$${values.length+1}`:'';
     if(nfcDeviceFilter)values.push(req.query.nfc_device_id);
+    const employeeFilter=employeeId?` AND d.employee_id=$${values.length+1}`:'';
+    if(employeeFilter)values.push(employeeId);
     const rows=(await query(`SELECT d.id,d.site_id,d.device_id,d.nfc_device_id,d.employee_id,d.employee_document_category,d.title,d.description,d.document_status,d.created_at,d.deleted_at,
       d.document_number,d.document_type,d.responsible_employee_id,d.valid_from,d.valid_until,d.review_on,d.approval_status,d.location_id,
       COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'size_bytes',v.size_bytes,'content_type',v.content_type,'sha256',v.sha256,'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') versions
       FROM dms_documents d LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
-      WHERE d.tenant_id=$1${siteFilter}${customerFilter}${deviceFilter}${nfcDeviceFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
+      WHERE d.tenant_id=$1${siteFilter}${customerFilter}${deviceFilter}${nfcDeviceFilter}${employeeFilter} GROUP BY d.id ORDER BY d.created_at DESC`,values)).rows;
     res.json(rows.map(row=>({...row,...classifyDocument(row)})));
   }catch(error){next(error);}
 });
@@ -329,15 +350,28 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
 
 dmsRouter.get('/dms/documents/:documentId/versions/:versionId/download',requirePermission('dms:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
   try{
-    const row=(await query(`SELECT d.*,v.* FROM dms_documents d JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
-      WHERE d.tenant_id=$1 AND d.id=$2 AND v.id=$3 AND d.document_status='active'`,[req.user!.tenantId,req.params.documentId,req.params.versionId])).rows[0];
-    if(!row)return res.status(404).json({error:'Dokumentversion nicht gefunden'});
-    if(row.customer_id&&!customerDocumentPermission(req,'customer_documents:read'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
-    siteAccess(req,row.site_id??null);
-    if(!canDownloadDmsVersion(row.document_status,row.lifecycle_state))return res.status(409).json({error:'Dokumentversion ist nicht verfügbar',state:row.lifecycle_state});
-    const blob=await dmsStorage.get(row.object_key);
-    if(blob.content.byteLength!==Number(row.size_bytes)||sha256(blob.content)!==row.sha256)return res.status(502).json({error:'Integritätsprüfung des Blobs fehlgeschlagen'});
+    // "latest" ist bewusst kein gültiger Versionsbezeichner: nur die
+    // explizit freigegebene, geprüfte Version darf gelesen werden.
+    const ids=dmsVersionIds(req);
+    if(!ids.success)return res.status(400).json({error:'Ungültige Dokument- oder Versions-ID'});
+    const loaded=await loadDmsVersionForRead(req,res,ids.data.documentId,ids.data.versionId);
+    if(!loaded)return;
+    const {row,blob}=loaded;
     res.setHeader('Content-Type',row.content_type);res.setHeader('Content-Length',String(blob.content.byteLength));res.setHeader('Content-Disposition',`attachment; filename="${safeFilename(row.title,row.version_no,row.content_type)}"`);
+    return res.send(blob.content);
+  }catch(error){next(error);}
+});
+
+dmsRouter.get('/dms/documents/:documentId/versions/:versionId/preview',requirePermission('dms:read',{allowedScopes:['tenant','site','system']}),async(req,res,next)=>{
+  try{
+    const ids=dmsVersionIds(req);
+    if(!ids.success)return res.status(400).json({error:'Ungültige Dokument- oder Versions-ID'});
+    const loaded=await loadDmsVersionForRead(req,res,ids.data.documentId,ids.data.versionId);
+    if(!loaded)return;
+    const {row,blob}=loaded;
+    // Identische Prüfungen wie beim Download, nur mit inline-Disposition für
+    // die Wiedergabe im Browser (u. a. Audio/Video). Kein latest-Alias.
+    res.setHeader('Content-Type',row.content_type);res.setHeader('Content-Length',String(blob.content.byteLength));res.setHeader('Content-Disposition',`inline; filename="${safeFilename(row.title,row.version_no,row.content_type)}"`);
     return res.send(blob.content);
   }catch(error){next(error);}
 });

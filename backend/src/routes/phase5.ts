@@ -11,6 +11,8 @@ import {pdfReport} from '../services/pdf.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
+/** Einheitlicher Berliner Kalendertag für alle Gültigkeitsvergleiche. */
+const berlinDate=`(now() AT TIME ZONE 'Europe/Berlin')::date`;
 export const phase5Router=Router();
 phase5Router.use((req,res,next)=>/^\/(reports|admin|timescan|audit|privacy|retention|backups)/.test(req.path)
   ? requireAuth(req,res,()=>['POST','PATCH','PUT','DELETE'].includes(req.method)?requireCsrf(req,res,next):next())
@@ -76,14 +78,32 @@ phase5Router.get('/reports/statistics',requirePermission('reports:read'),async(r
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE employment_status IN ('active','probation'))::integer active,COUNT(*) FILTER(WHERE employment_status IN ('terminated','archived'))::integer inactive FROM employees WHERE tenant_id=$1`,[tenant]),
       query(`SELECT COUNT(*)::integer total,
         COUNT(*) FILTER(WHERE q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL
-          OR (q.valid_until IS NOT NULL AND q.valid_until<(now() AT TIME ZONE 'Europe/Berlin')::date))::integer expired,
+          OR (q.valid_until IS NOT NULL AND q.valid_until<${berlinDate})
+          OR (q.valid_from IS NOT NULL AND q.valid_from>${berlinDate}))::integer expired,
         COUNT(*) FILTER(WHERE q.status='valid' AND q.revoked_at IS NULL
-          AND (q.valid_from IS NULL OR q.valid_from<=(now() AT TIME ZONE 'Europe/Berlin')::date)
+          AND (q.valid_from IS NULL OR q.valid_from<=${berlinDate})
           AND q.valid_until IS NOT NULL
-          AND q.valid_until BETWEEN (now() AT TIME ZONE 'Europe/Berlin')::date
-            AND (now() AT TIME ZONE 'Europe/Berlin')::date+INTERVAL '90 days')::integer expiring,
-        COUNT(*) FILTER(WHERE q.status IN ('revoked','invalid') OR q.revoked_at IS NOT NULL)::integer invalid_revoked
-        FROM employee_qualifications q WHERE q.tenant_id=$1`,[tenant]),
+          AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'
+          AND (NOT (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
+            OR (d.document_status='active' AND d.approval_status='approved' AND dv.lifecycle_state='available'
+              AND (d.valid_from IS NULL OR d.valid_from<=${berlinDate})
+              AND (d.valid_until IS NULL OR d.valid_until>=${berlinDate}))))::integer expiring,
+        COUNT(*) FILTER(WHERE q.status IN ('revoked','invalid') OR q.revoked_at IS NOT NULL)::integer invalid_revoked,
+        COUNT(*) FILTER(WHERE (c.required_document_type IS NOT NULL OR COALESCE(jsonb_array_length(c.required_documents),0)>0)
+          AND (q.document_id IS NULL OR d.document_status<>'active' OR d.approval_status IS DISTINCT FROM 'approved'
+            OR dv.lifecycle_state IS DISTINCT FROM 'available'
+            OR (d.valid_until IS NOT NULL AND d.valid_until<${berlinDate})
+            OR (d.valid_from IS NOT NULL AND d.valid_from>${berlinDate})))::integer evidence_problems
+        FROM employee_qualifications q
+        LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
+          AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
+        LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+        LEFT JOIN LATERAL (
+          SELECT v.lifecycle_state FROM dms_versions v
+          WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+          ORDER BY v.version_no DESC LIMIT 1
+        ) dv ON TRUE
+        WHERE q.tenant_id=$1`,[tenant]),
       query(`SELECT COUNT(*)::integer total,COUNT(*) FILTER(WHERE starts_at<=now() AND ends_at>=now())::integer current FROM employee_absences WHERE tenant_id=$1 AND status IN ('requested','approved')`,[tenant]),
     ]);
     res.json({from,to,alarms:alarms.rows[0],incidents:incidents.rows[0],patrols:patrols.rows[0],work_time:work.rows[0],employees:employees.rows[0],qualifications:qualifications.rows[0],absences:absences.rows[0]});

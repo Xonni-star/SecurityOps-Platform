@@ -1,4 +1,5 @@
 import type {DmsLifecycleState} from './dms-domain.js';
+import {qualificationDayNumber,qualificationLocalDate} from './qualification-status.js';
 
 /**
  * Server-side, single-valued document status classification.
@@ -61,15 +62,13 @@ export type DocumentClassification = {
   is_reviewed: boolean;
 };
 
+/** Gemeinsamer Berliner Kalendertag mit der Qualifikationslogik; keine UTC-Tage. */
 function dayValue(value: string | Date | null | undefined): number | null {
-  if (value === null || value === undefined) return null;
-  const date = value instanceof Date ? value : new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return null;
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  return qualificationDayNumber(value);
 }
 
 function todayValue(now: Date): number {
-  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return qualificationDayNumber(qualificationLocalDate(now)) ?? 0;
 }
 
 export function expiryBucket(validUntil: string | Date | null | undefined, now = new Date()): {bucket: ExpiryBucket; days: number | null} {
@@ -105,7 +104,6 @@ export function classifyDocument(document: ClassifiableDocument, now = new Date(
   const isReviewed = dayValue(document.reviewed_at) !== null;
   const from = dayValue(document.valid_from);
   const startsInFuture = from !== null && from > todayValue(now);
-  const isCurrentlyValid = isApproved && hasAvailableVersion && !startsInFuture && bucket !== 'expired' && document.document_status !== 'deleted';
 
   let computed_status: DocumentStatusCategory;
   if (document.document_status === 'deleted' || document.approval_status === 'rejected' || document.approval_status === 'archived' || !hasAvailableVersion) {
@@ -125,6 +123,9 @@ export function classifyDocument(document: ClassifiableDocument, now = new Date(
   } else {
     computed_status = 'gueltig';
   }
+  // "Bald prüfpflichtig" ist kein freigegebener, uneingeschränkt gültiger
+  // Nachweis: die Qualifikationslogik wertet ihn als awaiting_review.
+  const isCurrentlyValid = ['gueltig', 'lauf_bald_ab'].includes(computed_status);
 
   return {
     computed_status,

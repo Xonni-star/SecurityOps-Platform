@@ -1,8 +1,8 @@
 import {FormEvent,useEffect,useState} from 'react';
-import {useNavigate,useParams,useSearchParams} from 'react-router-dom';
+import {Link,useNavigate,useParams,useSearchParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import type {ApiError} from '../lib/api';
-import {formatDate,formatDateTime,formatNumber} from '../lib/format';
+import {berlinToday,formatDate,formatDateTime,formatNumber} from '../lib/format';
 import {roleLabel,statusLabel} from '../lib/status';
 
 type Employee={
@@ -51,6 +51,45 @@ type Profile={
 };
 type CatalogOption={id:string;code:string;name:string;default_validity_days:number|null;required:boolean;required_document_type:string|null;active:boolean};
 type QualificationForm={catalog_id:string;valid_from:string;valid_until:string;document_id:string;issuing_authority:string;notes:string;reason:string};
+type ValidUntilSource='manual'|'catalog_default'|'unlimited';
+type DmsDocumentOption={
+  id:string;title:string;employee_id?:string|null;document_type?:string|null;
+  approval_status?:string|null;document_status?:string|null;computed_status?:string|null;
+  status_label?:string|null;valid_from?:string|null;valid_until?:string|null;
+  versions?:{id:string;version_no:number;lifecycle_state:string}[];
+};
+
+const validUntilSourceLabels:Record<ValidUntilSource,string>={manual:'Manuell festgelegt',catalog_default:'Aus Katalogstandard',unlimited:'Unbefristet'};
+function validUntilSourceLabel(value:unknown):string{
+  return typeof value==='string'?validUntilSourceLabels[value as ValidUntilSource]??'':'';
+}
+function addDays(date:string,days:number):string{
+  const [year,month,day]=date.split('-').map(Number);
+  if(!year||!month||!day)return '';
+  return new Date(Date.UTC(year,month-1,day)+days*86_400_000).toISOString().slice(0,10);
+}
+function validityPreviewText(validFrom:string,days:number|null|undefined):string{
+  if(typeof days!=='number'||!Number.isInteger(days)){
+    return 'Für diesen Katalog ist keine Standardgültigkeit hinterlegt; ohne Datum bleibt der Nachweis unbefristet.';
+  }
+  const base=validFrom||berlinToday();
+  const preview=addDays(base,days);
+  return preview
+    ?`Vorschau Ablaufdatum: ${formatDate(preview)} (Standardgültigkeit ${formatNumber(days)} Tage ab ${formatDate(base)}).`
+    :'Bitte ein gültiges Datum für „Gültig ab“ angeben, um die Standardgültigkeit vorherzusagen.';
+}
+function dmsDocumentLabel(document:DmsDocumentOption):string{
+  const approval=document.approval_status==='approved'?'Freigegeben'
+    :document.approval_status==='pending_approval'?'Freigabe ausstehend'
+    :document.approval_status==='returned_for_revision'?'Zur Überarbeitung zurückgegeben'
+    :document.approval_status?statusLabel(document.approval_status,'document')
+    :document.status_label??statusLabel(document.document_status??document.computed_status??'','document');
+  const validity=document.valid_until?`gültig bis ${formatDate(document.valid_until)}`
+    :document.valid_from?`ab ${formatDate(document.valid_from)}`:'ohne Gültigkeitsdatum';
+  const version=document.versions?.find(item=>item.lifecycle_state==='available')??document.versions?.[0];
+  const versionText=version?`Fassung ${formatNumber(version.version_no)} · ${version.lifecycle_state}`:'Keine Fassung';
+  return `${document.title} · ${document.document_type||'Ohne Dokumenttyp'} · ${approval} · ${validity} · ${versionText}`;
+}
 
 const tabs=[
   ['uebersicht','Übersicht'],
@@ -78,6 +117,7 @@ export function EmployeeDetail(){
   const [saving,setSaving]=useState(false);
   const [saved,setSaved]=useState(false);
   const [qualificationCatalog,setQualificationCatalog]=useState<CatalogOption[]>([]);
+  const [dmsDocuments,setDmsDocuments]=useState<DmsDocumentOption[]>([]);
   const [qualificationForm,setQualificationForm]=useState<QualificationForm>({catalog_id:'',valid_from:'',valid_until:'',document_id:'',issuing_authority:'',notes:'',reason:''});
   const [editingQualification,setEditingQualification]=useState<string|null>(null);
   const [qualificationAction,setQualificationAction]=useState<{id:string;type:'revoke'|'remove'}|null>(null);
@@ -105,6 +145,15 @@ export function EmployeeDetail(){
     void Promise.resolve(api<CatalogOption[]>('/qualifications/catalog'))
       .then(value=>{if(current)setQualificationCatalog(Array.isArray(value)?value:[]);})
       .catch(()=>{if(current)setQualificationCatalog([]);});
+    return ()=>{current=false;};
+  },[employeeId]);
+
+  useEffect(()=>{
+    if(!hasPermission('dms:read'))return;
+    let current=true;
+    void Promise.resolve(api<DmsDocumentOption[]>('/dms/documents'))
+      .then(value=>{if(current)setDmsDocuments(Array.isArray(value)?value:[]);})
+      .catch(()=>{if(current)setDmsDocuments([]);});
     return ()=>{current=false;};
   },[employeeId]);
 
@@ -189,7 +238,8 @@ export function EmployeeDetail(){
       notes:qualificationForm.notes.trim()||null,
       reason:qualificationForm.reason.trim()};
     if(qualificationForm.valid_until)body.valid_until=qualificationForm.valid_until;
-    if(qualificationForm.document_id&&/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(qualificationForm.document_id))body.document_id=qualificationForm.document_id;
+    if(qualificationForm.document_id)body.document_id=qualificationForm.document_id;
+    else if(editingQualification)body.document_id=null;
     try{
       await api(editingQualification
         ?`/employees/${employeeId}/qualifications/${editingQualification}`
@@ -215,11 +265,10 @@ export function EmployeeDetail(){
     }catch(e){setQualificationError((e as Error).message);}
   };
   const openQualificationEvidence=async(item:any)=>{
+    if(!hasPermission('qualifications:documents:download'))return;
     if(!evidenceReason.trim()){setQualificationError('Bitte eine Begründung für den Nachweiszugriff angeben.');return;}
     setQualificationError('');
-    if(hasPermission('qualifications:documents:read')){
-      try{await api(`/qualifications/assignments/${item.id}/document`);}catch(e){setQualificationError((e as Error).message);return;}
-    }
+    try{await api(`/qualifications/assignments/${item.id}/document`);}catch(e){setQualificationError((e as Error).message);return;}
     const next=new URLSearchParams(searchParams);
     next.set('qualification',item.id);next.set('grund',evidenceReason.trim());
     setSearchParams(next,{replace:true});
@@ -228,6 +277,10 @@ export function EmployeeDetail(){
     if(!hasPermission('qualifications:read'))return <p>Keine Berechtigung für Qualifikationsdaten.</p>;
     const canWrite=hasPermission('qualifications:write');
     const canRevoke=hasPermission('qualifications:revoke');
+    const canDownloadEvidence=hasPermission('qualifications:documents:download');
+    const editingItem=editingQualification?profile.qualifications.find((item:any)=>item.id===editingQualification):undefined;
+    const selectedCatalog=qualificationCatalog.find(entry=>entry.id===qualificationForm.catalog_id);
+    const evidenceDocuments=dmsDocuments.filter(document=>!document.employee_id||document.employee_id===employeeId);
     return <article className="employee-detail-table">
       <h3>Qualifikationen</h3>
       {qualificationError&&<p role="alert" className="error">{qualificationError}</p>}
@@ -238,12 +291,12 @@ export function EmployeeDetail(){
           <td>{item.catalog_name||item.qualification_name||item.code}</td>
           <td>{item.category||'–'}</td>
           <td>{formatDate(item.valid_from)}</td>
-          <td>{item.valid_until?formatDate(item.valid_until):'Unbefristet'}</td>
+          <td>{item.valid_until?formatDate(item.valid_until):'Unbefristet'}{validUntilSourceLabel(item.valid_until_source)?<small>{validUntilSourceLabel(item.valid_until_source)}</small>:null}</td>
           <td><span className={`qualification-status ${item.computed_status??item.status}`}>{qualificationStatus(item)}</span>{item.days_until_expiry!=null?` · ${item.days_until_expiry} Tage`:''}</td>
           <td>{item.document_title||'Kein Nachweis verknüpft'}</td>
           <td>
             {canWrite&&<button type="button" onClick={()=>{setEditingQualification(item.id);setQualificationForm(qualificationFormFor(item));setQualificationError('');}}>Bearbeiten</button>}
-            {hasPermission('qualifications:documents:read')&&<button type="button" onClick={()=>void openQualificationEvidence(item)}>Nachweis öffnen</button>}
+            {canDownloadEvidence&&<button type="button" onClick={()=>void openQualificationEvidence(item)}>Nachweis öffnen</button>}
             {canRevoke&&<button type="button" onClick={()=>{setQualificationAction({id:item.id,type:'revoke'});setQualificationReason('');}}>Widerruf einleiten</button>}
             {canWrite&&<button type="button" onClick={()=>{setQualificationAction({id:item.id,type:'remove'});setQualificationReason('');}}>Entfernen</button>}
           </td>
@@ -255,14 +308,15 @@ export function EmployeeDetail(){
         <button type="submit">{qualificationAction.type==='revoke'?'Widerruf bestätigen':'Entfernung bestätigen'}</button>
         <button type="button" onClick={()=>{setQualificationAction(null);setQualificationReason('');}}>Abbrechen</button>
       </form>}
-      {hasPermission('qualifications:documents:read')&&<label>Begründung für den Nachweiszugriff<input value={evidenceReason} onChange={event=>setEvidenceReason(event.target.value)} placeholder="Grund für das Öffnen des Nachweises"/></label>}
+      {canDownloadEvidence&&<label>Begründung für den Nachweiszugriff<input value={evidenceReason} onChange={event=>setEvidenceReason(event.target.value)} placeholder="Grund für das Öffnen des Nachweises"/></label>}
       {canWrite&&<form className="employee-detail-form" onSubmit={saveQualification} aria-label={editingQualification?'Qualifikation bearbeiten':'Qualifikation zuweisen'}>
         <h4>{editingQualification?'Qualifikation bearbeiten':'Neue Qualifikation zuweisen'}</h4>
         <label>Katalogqualifikation<select required value={qualificationForm.catalog_id} onChange={event=>setQualificationForm({...qualificationForm,catalog_id:event.target.value})}><option value="">Bitte wählen</option>{qualificationCatalog.filter(entry=>entry.active||entry.id===qualificationForm.catalog_id).map(entry=><option key={entry.id} value={entry.id}>{entry.name} ({entry.code})</option>)}</select></label>
         <label>Gültig ab<input type="date" value={qualificationForm.valid_from} onChange={event=>setQualificationForm({...qualificationForm,valid_from:event.target.value})}/></label>
-        <label>Gültig bis<input type="date" value={qualificationForm.valid_until} onChange={event=>setQualificationForm({...qualificationForm,valid_until:event.target.value})}/></label>
-        {(()=>{const selected=qualificationCatalog.find(entry=>entry.id===qualificationForm.catalog_id);return selected?.default_validity_days?<small>Leer lassen, um die Standardgültigkeit von {formatNumber(selected.default_validity_days)} Tagen anzuwenden.</small>:<small>Ohne Ablaufdatum wird die Standardgültigkeit des Katalogs angewendet, sofern hinterlegt.</small>;})()}
-        <label>Nachweisdokument (UUID)<input value={qualificationForm.document_id} onChange={event=>setQualificationForm({...qualificationForm,document_id:event.target.value})}/></label>
+        <label>Gültig bis<input type="date" aria-label="Gültig bis" value={qualificationForm.valid_until} onChange={event=>setQualificationForm({...qualificationForm,valid_until:event.target.value})}/><small>{validityPreviewText(qualificationForm.valid_from,selectedCatalog?.default_validity_days)}</small></label>
+        <label>Nachweisdokument<select value={qualificationForm.document_id} onChange={event=>setQualificationForm({...qualificationForm,document_id:event.target.value})}><option value="">Kein Nachweis verknüpft</option>{evidenceDocuments.map(document=><option key={document.id} value={document.id}>{dmsDocumentLabel(document)}</option>)}</select></label>
+        {editingItem?.document_title&&<small>Aktuell verknüpft: {editingItem.document_title}</small>}
+        <small>Neue Nachweise werden über das <Link to="/dms">Dokumentenmanagement</Link> hochgeladen.</small>
         <label>Ausstellende Stelle<input value={qualificationForm.issuing_authority} onChange={event=>setQualificationForm({...qualificationForm,issuing_authority:event.target.value})}/></label>
         <label>Notizen<textarea value={qualificationForm.notes} onChange={event=>setQualificationForm({...qualificationForm,notes:event.target.value})}/></label>
         <label>Begründung für die Qualifikation<input required value={qualificationForm.reason} onChange={event=>setQualificationForm({...qualificationForm,reason:event.target.value})}/></label>
@@ -277,7 +331,7 @@ export function EmployeeDetail(){
       <span className="object-record-focus-label">Geöffneter Nachweis</span>
       {focusedQualification?<>
         <h3>{focusedQualification.catalog_name||focusedQualification.code||'Qualifikation'}</h3>
-        <p>{focusedQualification.code||'Ohne Katalogkennung'} · {focusedQualification.status_label||statusLabel(focusedQualification.computed_status??focusedQualification.status,'qualification')}{focusedQualification.valid_until?` · gültig bis ${formatDate(focusedQualification.valid_until)}`:' · unbefristet'}</p>
+        <p>{focusedQualification.code||'Ohne Katalogkennung'} · {focusedQualification.status_label||statusLabel(focusedQualification.computed_status??focusedQualification.status,'qualification')}{focusedQualification.valid_until?` · gültig bis ${formatDate(focusedQualification.valid_until)}`:' · unbefristet'}{validUntilSourceLabel(focusedQualification.valid_until_source)?` · Herkunft: ${validUntilSourceLabel(focusedQualification.valid_until_source)}`:''}</p>
       </>:qualificationId?<h3>Verknüpfte Qualifikation nicht mehr verfügbar</h3>:null}
       {documentId&&<p>{focusedDocument?<>Nachweisdokument: <strong>{focusedDocument.title}</strong> · {statusLabel(focusedDocument.document_status,'document')}{focusedDocument.versions?.some((version:any)=>version.lifecycle_state==='available')&&hasPermission('dms:read')&&<button type="button" onClick={()=>void downloadEvidence(focusedDocument,focusedDocument.versions.find((version:any)=>version.lifecycle_state==='available'))}>Nachweis herunterladen</button>}</>:hasPermission('dms:read')?<a href={`/dms?document=${documentId}`}>Nachweis im Dokumentenmanagement prüfen</a>:'Verknüpfter Nachweis ist nicht verfügbar.'}</p>}
     </div>
