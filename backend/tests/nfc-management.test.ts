@@ -31,6 +31,8 @@ const deviceRow={
   employee_id:null,site_id:null,control_point_id:point,notes:'',registered_at:'2026-01-01',updated_at:'2026-01-02',
   control_point_name:'Punkt 1',site_name:'Objekt 1',employee_name:null,control_point_site_id:site,last_used_at:null,
 };
+// Austausch ist nur aus verlorenem oder gesperrtem Status zulässig.
+const replaceableRow={...deviceRow,status:'blocked'};
 
 beforeEach(()=>{
   queryMock.mockReset();
@@ -291,7 +293,7 @@ describe('NFC device management routes',()=>{
   it('registers a replacement, keeps the old history and copies the assignment',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
-      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([deviceRow]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([replaceableRow]);
       if(sql.includes('SELECT id FROM nfc_devices'))return result([]);
       if(sql.includes('INSERT INTO nfc_devices'))return result([{...deviceRow,id:newDevice,identifier:'TAG-002'}]);
       if(sql.includes("status='replaced'"))return result([{...deviceRow,status:'replaced'}]);
@@ -317,7 +319,7 @@ describe('NFC device management routes',()=>{
   it('rejects duplicate replacement identifiers',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
-      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([deviceRow]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([replaceableRow]);
       if(sql.includes('SELECT id FROM nfc_devices'))return result([{id:newDevice}]);
       return result([]);
     });
@@ -446,7 +448,7 @@ describe('NFC device management routes',()=>{
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
       if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
-        return result([values?.[1]===device?deviceRow:existing]);
+        return result([values?.[1]===device?replaceableRow:existing]);
       }
       if(sql.includes("status='replaced'"))return result([{...deviceRow,status:'replaced'}]);
       if(sql.includes("SET status='active'"))return result([{...existing,status:'active',control_point_id:point}]);
@@ -474,7 +476,7 @@ describe('NFC device management routes',()=>{
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
       if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
-        return result([values?.[1]===device?deviceRow:{...deviceRow,id:newDevice,archived_at:'2026-11-26'}]);
+        return result([values?.[1]===device?replaceableRow:{...deviceRow,id:newDevice,archived_at:'2026-11-26'}]);
       }
       return result([]);
     });
@@ -498,6 +500,37 @@ describe('NFC device management routes',()=>{
     expect(response.status).toBe(409);
     expect(response.body.error).toContain(expected);
     expect(calls('INSERT INTO nfc_device_replacements')).toHaveLength(0);
+  });
+
+  it('lehnt den Austausch eines aktiven Geräts ohne Sonderprozess ab',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([deviceRow]);
+      return result([]);
+    });
+    const response=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf)
+      .send({identifier:'TAG-NEU',device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:false});
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('aktives NFC-Gerät');
+    expect(calls('INSERT INTO nfc_device_replacements')).toHaveLength(0);
+    expect(calls("status='replaced'")).toHaveLength(0);
+  });
+
+  it('verhindert die Mehrfachverwendung eines bereits als Ersatz genutzten Geräts',async()=>{
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
+        return result([values?.[1]===device?replaceableRow:{...deviceRow,id:newDevice,identifier:'TAG-002',status:'active',
+          control_point_id:null,site_id:null,employee_id:null}]);
+      }
+      if(sql.includes('SELECT id FROM nfc_device_replacements'))return result([{id:'replacement-1'}]);
+      return result([]);
+    });
+    const response=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf)
+      .send({new_device_id:newDevice,reason:'Defekt',copy_assignment:false});
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('bereits als Ersatzgerät verwendet');
+    expect(calls("status='replaced'")).toHaveLength(0);
   });
 
   it('enforces one active tag per control point on assignment changes',async()=>{
@@ -550,7 +583,7 @@ describe('NFC device management routes',()=>{
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
       if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
-        return result([values?.[1]===device?deviceRow:existing]);
+        return result([values?.[1]===device?replaceableRow:existing]);
       }
       if(sql.includes("SET status='replaced'"))return result([{...deviceRow,status:'replaced'}]);
       if(sql.includes("SET status='active'"))return result([{...existing,status:'active'}]);
@@ -579,7 +612,7 @@ describe('NFC device management routes',()=>{
   it('clears the old assignment even when the user decides not to take it over',async()=>{
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
-      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([values?.[1]===device?deviceRow:{...deviceRow,id:newDevice,identifier:'TAG-002',status:'active',control_point_id:null,site_id:null,employee_id:null}]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE'))return result([values?.[1]===device?replaceableRow:{...deviceRow,id:newDevice,identifier:'TAG-002',status:'active',control_point_id:null,site_id:null,employee_id:null}]);
       if(sql.includes('SELECT id FROM nfc_device_replacements'))return result([]);
       if(sql.includes("status='replaced'"))return result([{...deviceRow,status:'replaced',control_point_id:null}]);
       if(sql.includes("SET status='active'"))return result([{...deviceRow,id:newDevice,identifier:'TAG-002',status:'active',control_point_id:null}]);
@@ -603,7 +636,7 @@ describe('NFC device management routes',()=>{
     queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
       if(sql.includes('FROM sessions'))return result([activeUser]);
       if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
-        return result([values?.[1]===device?deviceRow:blocked]);
+        return result([values?.[1]===device?replaceableRow:blocked]);
       }
       if(sql.includes("SET status='replaced'"))return result([{...deviceRow,status:'replaced'}]);
       if(sql.includes("SET status='active'"))return result([{...blocked,status:'active'}]);

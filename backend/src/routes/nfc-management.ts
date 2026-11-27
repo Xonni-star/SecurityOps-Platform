@@ -541,6 +541,16 @@ nfcManagementRouter.post('/nfc-devices/:id/replace',security,async(req,res,next)
       if(!old)fail(404,'NFC-Gerät nicht gefunden');
       if(old.status==='replaced'||old.replaced_at)fail(409,'NFC-Gerät ist bereits ersetzt');
       assertNotArchived(old);
+      // Ein Austausch ist ausschließlich für verlorene oder gesperrte Geräte
+      // vorgesehen. Für aktive Geräte existiert bewusst kein Sonderprozess:
+      // sie müssen vorher über eine der beiden Statusänderungen in den
+      // Austausch überführt werden. Die Prüfung findet nach FOR UPDATE
+      // innerhalb der Transaktion statt.
+      if(!['lost','blocked'].includes(String(old.status))){
+        fail(409,old.status==='active'
+          ?'Ein aktives NFC-Gerät kann nicht direkt ersetzt werden. Bitte zuerst sperren oder als verloren melden.'
+          :`NFC-Geräte mit Status ${nfcStatusText[String(old.status)]??String(old.status)} können nicht ersetzt werden`);
+      }
 
       const empty={employee_id:null as string|null,site_id:null as string|null,control_point_id:null as string|null};
       let replacement:Row;

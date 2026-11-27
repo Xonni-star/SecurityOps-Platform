@@ -245,7 +245,7 @@ export function NfcAssignmentFields({value,onChange,options}:{
   const selectedPoint=points.find(point=>point.id===value.control_point_id);
   return <div className="object-form-grid">
     <label>Zuordnung
-      <select value={value.assignment_kind} onChange={event=>onChange({...value,assignment_kind:event.target.value as NfcAssignmentKind})}>
+      <select aria-label="Zuordnung" value={value.assignment_kind} onChange={event=>onChange({...value,assignment_kind:event.target.value as NfcAssignmentKind})}>
         <option value="none">{commonText.notAssigned}</option>
         <option value="site">Objekt</option>
         {value.device_type==='tag'&&<option value="control_point">Kontrollpunkt</option>}
@@ -372,20 +372,21 @@ export function NfcRecoverDialog({identifier,assignment,identifierConfirmation,o
 }
 
 export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceType,manufacturer,onManufacturer,
-  mode,onMode,existingDeviceId,onExistingDeviceId,devices,currentAssignment,candidateAssignment,
+  mode,onMode,existingDeviceId,onExistingDeviceId,devices,oldDeviceLabel,candidateAssignment,
   reason,onReason,notes,onNotes,copyAssignment,onCopyAssignment,
   acknowledgeExisting,onAcknowledgeExisting,acknowledgeRestricted,onAcknowledgeRestricted,
-  error,busy,onConfirm,onClose}:{
+  confirmed,onConfirmed,error,busy,onConfirm,onClose}:{
   identifier:string;onIdentifier:(value:string)=>void;deviceType:string;onDeviceType:(value:string)=>void;
   manufacturer:string;onManufacturer:(value:string)=>void;
   mode:'new'|'existing';onMode:(value:'new'|'existing')=>void;
   existingDeviceId:string;onExistingDeviceId:(value:string)=>void;
   devices:NonNullable<NfcOptions['devices']>;
-  currentAssignment:string;candidateAssignment:string;
+  oldDeviceLabel:string;candidateAssignment:string;
   reason:string;onReason:(value:string)=>void;notes:string;onNotes:(value:string)=>void;
   copyAssignment:boolean;onCopyAssignment:(value:boolean)=>void;
   acknowledgeExisting:boolean;onAcknowledgeExisting:(value:boolean)=>void;
   acknowledgeRestricted:boolean;onAcknowledgeRestricted:(value:boolean)=>void;
+  confirmed:boolean;onConfirmed:(value:boolean)=>void;
   error:string;busy:boolean;onConfirm:()=>void;onClose:()=>void;
 }){
   const submit=(event:FormEvent)=>{event.preventDefault();onConfirm();};
@@ -394,10 +395,6 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
   return <NfcDialog title="Ersatzgerät festlegen" onClose={onClose} wide>
     <form className="object-inline-form" onSubmit={submit}>
       <p>Das bisherige Gerät wird als ersetzt markiert. Seine Historie bleibt vollständig erhalten.</p>
-      <div className="object-detail-content">
-        <p><strong>Bisheriges Gerät:</strong> {currentAssignment}</p>
-        <p><strong>Ersatzgerät:</strong> {candidateAssignment}</p>
-      </div>
       <label>Ersatzgerät
         <select aria-label="Ersatzgerät-Art" value={mode} onChange={event=>onMode(event.target.value as 'new'|'existing')}>
           <option value="new">Neues Gerät registrieren</option>
@@ -436,6 +433,20 @@ export function NfcReplaceDialog({identifier,onIdentifier,deviceType,onDeviceTyp
           onChange={event=>onAcknowledgeRestricted(event.target.checked)}/>
         Gesperrten oder verlorenen Status, Kennung und Zuordnung des Ersatzgeräts ausdrücklich freigegeben.
       </label>}
+      <div className="object-detail-content">
+        <h4>Zusammenfassung vor dem Austausch</h4>
+        <p><strong>Altes Gerät (Kennung · Status · bisherige Zuordnung):</strong> {oldDeviceLabel}</p>
+        <p><strong>Ersatzgerät (Kennung · Zuordnung · Status):</strong> {candidateAssignment}</p>
+        <p><strong>Übernahmeentscheidung:</strong> {copyAssignment
+          ?'Die bisherige Zuordnung wird auf das Ersatzgerät übernommen.'
+          :'Die bisherige Zuordnung wird nicht übernommen und nur in der Historie dokumentiert.'}</p>
+        <p><strong>Austauschgrund:</strong> {reason.trim()||'Noch nicht angegeben'}</p>
+        <p><strong>Notizen:</strong> {notes.trim()||'Keine'}</p>
+      </div>
+      <label className="object-check"><input type="checkbox" required checked={confirmed}
+        onChange={event=>onConfirmed(event.target.checked)}/>
+        Ich habe die Zusammenfassung geprüft und bestätige den Austausch ausdrücklich.
+      </label>
       {error&&<p className="object-warning" role="alert">{error}</p>}
       <div className="object-actions">
         <button type="submit" disabled={busy}>{busy?'Wird gespeichert …':'Austausch durchführen'}</button>

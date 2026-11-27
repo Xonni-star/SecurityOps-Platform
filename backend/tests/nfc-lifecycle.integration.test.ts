@@ -103,6 +103,11 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     expect(employeeAssign.status).toBe(200);
     expect(employeeAssign.body.employee_id).toBe(employeeA);
     expect(employeeAssign.body.control_point_id).toBeNull();
+    const siteAssign=await request(app!).post(`/api/v1/nfc-devices/${created.body.id}/assign`).set(headersA)
+      .send({site_id:siteA,reason:'Objekt zuordnen'});
+    expect(siteAssign.status).toBe(200);
+    expect(siteAssign.body.site_id).toBe(siteA);
+    expect(siteAssign.body.employee_id).toBeNull();
     const history=await pool.query('SELECT * FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2',[tenantA,created.body.id]);
     expect(history.rowCount).toBeGreaterThanOrEqual(1);
     const multiple=await request(app!).post(`/api/v1/nfc-devices/${created.body.id}/assign`).set(headersA)
@@ -121,6 +126,9 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     expect((await request(app!).post(`/api/v1/nfc-devices/${id}/recover`).set(headersA)
       .send({found_at:'2026-11-27',identifier_confirmation:created.body.identifier,assignment_confirmed:true,reason:'Gefunden'})).body.status).toBe('blocked');
     expect((await request(app!).post(`/api/v1/nfc-devices/${id}/reactivate`).set(headersA).send({reason:'Geprüft'})).body.status).toBe('active');
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/replace`).set(headersA)
+      .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Direkt',copy_assignment:false})).status).toBe(409);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/block`).set(headersA).send({reason:'Austausch vorbereiten'})).status).toBe(200);
     const replaced=await request(app!).post(`/api/v1/nfc-devices/${id}/replace`).set(headersA)
       .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:true});
     expect(replaced.status).toBe(201);
@@ -143,6 +151,8 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     // Ein aktiver Tag belegt denselben Kontrollpunkt wie der gesperrte Kandidat.
     const occupied=await pool.query(`INSERT INTO nfc_devices(tenant_id,identifier,device_type,manufacturer,status,control_point_id)
       VALUES($1,$2,'tag','Acme','active',$3) RETURNING id`,[tenantA,uid(),controlPointB]);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${oldDevice.body.id}/block`).set(headersA)
+      .send({reason:'Austausch vorbereiten'})).status).toBe(200);
     const before=await pool.query('SELECT status,control_point_id FROM nfc_devices WHERE id=$1',[oldDevice.body.id]);
     const failed=await request(app!).post(`/api/v1/nfc-devices/${oldDevice.body.id}/replace`).set(headersA)
       .send({new_device_id:candidate.body.id,reason:'Defekt',copy_assignment:false,
@@ -256,6 +266,7 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
       .send({employee_id:employeeA,reason:'Umgehung'})).status).toBe(409);
 
     const old=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/block`).set(headersA).send({reason:'Sperren'})).status).toBe(200);
     const replaced=await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/replace`).set(headersA)
       .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:false});
     expect(replaced.status).toBe(201);
@@ -285,6 +296,7 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     await pool.query(`INSERT INTO patrol_scans(tenant_id,route_id,control_point_id,employee_id,scanned_at,nfc_device_id)
       SELECT $1,$2,$3,$4,now() - (g || ' minutes')::interval,$5 FROM generate_series(1,3) g`,
       [tenantA,routeA,point.rows[0].id,employeeA,id]);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${id}/block`).set(headersA).send({reason:'Austausch vorbereiten'})).status).toBe(200);
     const replaced=await request(app!).post(`/api/v1/nfc-devices/${id}/replace`).set(headersA)
       .send({identifier:uid(),device_type:'tag',manufacturer:'Acme',reason:'Defekt',copy_assignment:true});
     expect(replaced.status).toBe(201);
@@ -305,5 +317,44 @@ describePostgres('NFC lifecycle with real tenant-scoped PostgreSQL data',()=>{
     const audit=await pool.query("SELECT details FROM audit_events WHERE tenant_id=$1 AND event_type='nfc_device.replaced' AND entity_id=$2",[tenantA,id]);
     expect(audit.rowCount).toBeGreaterThan(0);
     expect(audit.rows[0].details).toEqual(expect.objectContaining({old_device_id:id,new_device_id:newId,copy_assignment:true}));
+  },60_000);
+
+  it('persists every technical master-data field without changing the assignment',async()=>{
+    const created=await register(uid(),{employee_id:employeeA,model:'MX-10',serial_number:'SN-1'});
+    const id=created.body.id as string;
+    const patched=await request(app!).patch(`/api/v1/nfc-devices/${id}`).set(headersA).send({
+      manufacturer:'Neuer Hersteller',model:'MX-20',serial_number:'SN-2',description:'Technische Beschreibung',
+      notes:'Interne Notiz',reason:'Stammdaten korrigiert',
+    });
+    expect(patched.status).toBe(200);
+    const file=await request(app!).get(`/api/v1/nfc-devices/${id}/file`).set(headersA);
+    expect(file.body.device).toEqual(expect.objectContaining({
+      manufacturer:'Neuer Hersteller',model:'MX-20',serial_number:'SN-2',
+      description:'Technische Beschreibung',notes:'Interne Notiz',employee_id:employeeA,
+    }));
+    const history=await pool.query('SELECT id FROM nfc_device_assignment_history WHERE tenant_id=$1 AND device_id=$2',[tenantA,id]);
+    expect(history.rowCount).toBe(0);
+  },60_000);
+
+  it('rejects archived and already used replacement candidates',async()=>{
+    const old=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/block`).set(headersA).send({reason:'Sperren'})).status).toBe(200);
+    const archived=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${archived.body.id}/archive`).set(headersA)
+      .send({reason:'Außer Betrieb'})).status).toBe(200);
+    expect((await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/replace`).set(headersA)
+      .send({new_device_id:archived.body.id,reason:'Defekt',copy_assignment:false})).status).toBe(409);
+    const candidate=await register(uid());
+    const replaced=await request(app!).post(`/api/v1/nfc-devices/${old.body.id}/replace`).set(headersA)
+      .send({new_device_id:candidate.body.id,reason:'Defekt',copy_assignment:false});
+    expect(replaced.status).toBe(201);
+    const second=await register(uid());
+    expect((await request(app!).post(`/api/v1/nfc-devices/${second.body.id}/block`).set(headersA).send({reason:'Sperren'})).status).toBe(200);
+    const reused=await request(app!).post(`/api/v1/nfc-devices/${second.body.id}/replace`).set(headersA)
+      .send({new_device_id:candidate.body.id,reason:'Nochmal',copy_assignment:false});
+    expect(reused.status).toBe(409);
+    expect(reused.body.error).toContain('bereits als Ersatzgerät verwendet');
+    const state=await pool.query('SELECT status FROM nfc_devices WHERE id=$1',[second.body.id]);
+    expect(state.rows[0].status).toBe('blocked');
   },60_000);
 });
