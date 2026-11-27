@@ -132,9 +132,10 @@ try {
     [ids.objectAssignment,ids.tenant,ids.employee,ids.site],
   );
   await client.query(
-    `INSERT INTO employee_qualifications(id,tenant_id,employee_id,code,valid_from,valid_until,document_id,status,notes,updated_at)
-     VALUES($1,$2,$3,'erste_hilfe',CURRENT_DATE - interval '700 days',CURRENT_DATE + interval '20 days',NULL,'valid','E2E expiring qualification',now())
-     ON CONFLICT (tenant_id, employee_id, code) DO UPDATE SET valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,
+    `INSERT INTO employee_qualifications(id,tenant_id,employee_id,code,valid_from,valid_until,valid_until_source,document_id,status,notes,updated_at)
+     VALUES($1,$2,$3,'erste_hilfe',CURRENT_DATE - interval '700 days',CURRENT_DATE + interval '20 days','manual',NULL,'valid','E2E expiring qualification',now())
+     ON CONFLICT (id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,employee_id=EXCLUDED.employee_id,code=EXCLUDED.code,
+       valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,valid_until_source='manual',
        document_id=NULL,status='valid',notes=EXCLUDED.notes,revoked_at=NULL,updated_at=now()`,
     [ids.qualification, ids.tenant, ids.employee],
   );

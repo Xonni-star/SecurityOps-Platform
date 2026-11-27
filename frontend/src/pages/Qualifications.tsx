@@ -1,11 +1,19 @@
 import {FormEvent,useEffect,useState} from 'react';
+import {Link} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
-import {formatDate,formatDateTime,formatNumber} from '../lib/format';
+import {berlinToday,formatDate,formatDateTime,formatNumber} from '../lib/format';
 import {statusLabel} from '../lib/status';
 import {isUuid} from '../lib/validation';
 import {requiredUuidMessage} from '../lib/text';
 
 type ComputedStatus='valid'|'expiring'|'expired'|'not_yet_valid'|'revoked'|'invalid'|'missing_evidence'|'awaiting_review';
+type ValidUntilSource='manual'|'catalog_default'|'unlimited';
+type DmsDocumentOption={
+  id:string;title:string;employee_id?:string|null;document_type?:string|null;
+  approval_status?:string|null;document_status?:string|null;computed_status?:string|null;
+  status_label?:string|null;valid_from?:string|null;valid_until?:string|null;
+  versions?:{id:string;version_no:number;lifecycle_state:string}[];
+};
 type Catalog={
   id:string;code:string;name:string;description:string|null;category:string|null;
   default_validity_days:number|null;required:boolean;required_document_type:string|null;
@@ -15,6 +23,7 @@ type Row={
   id:string;employee_id:string;employee_name:string;personnel_number:string;
   qualification_name:string;code:string;category:string;site_name:string|null;
   issued_on:string|null;valid_from:string|null;valid_until:string|null;
+  valid_until_source?:ValidUntilSource|null;document_id?:string|null;
   computed_status:ComputedStatus;status_label:string;issue_code:string;
   days_until_expiry:number|null;remaining_validity:string;
   document_title:string|null;document_approval_status:string|null;document_status:string|null;
@@ -58,7 +67,9 @@ const sortOptions:[string,string][]=[
   ['status','Status'],['document','Nachweis'],
 ];
 const catalogCodePattern=/^[a-z0-9][a-z0-9_-]{1,79}$/;
-const today=()=>new Date().toISOString().slice(0,10);
+const validUntilSourceLabels:Record<ValidUntilSource,string>={
+  manual:'Manuell festgelegt',catalog_default:'Aus Katalogstandard',unlimited:'Unbefristet',
+};
 
 function overviewQuery(filters:Filters):string{
   const params=new URLSearchParams();
@@ -80,6 +91,40 @@ function statusText(row:Row|Detail):string{
   return row.status_label||statusLabel(row.computed_status,'qualification');
 }
 
+function validUntilSourceLabel(value:ValidUntilSource|null|undefined):string{
+  return value?validUntilSourceLabels[value]??'':'';
+}
+
+function addDays(date:string,days:number):string{
+  const [year,month,day]=date.split('-').map(Number);
+  if(!year||!month||!day)return '';
+  return new Date(Date.UTC(year,month-1,day)+days*86_400_000).toISOString().slice(0,10);
+}
+
+function validityPreviewText(validFrom:string,days:number|null|undefined):string{
+  if(typeof days!=='number'||!Number.isInteger(days)){
+    return 'Für diesen Katalog ist keine Standardgültigkeit hinterlegt; ohne Datum bleibt der Nachweis unbefristet.';
+  }
+  const base=validFrom||berlinToday();
+  const preview=addDays(base,days);
+  return preview
+    ?`Vorschau Ablaufdatum: ${formatDate(preview)} (Standardgültigkeit ${formatNumber(days)} Tage ab ${formatDate(base)}).`
+    :'Bitte ein gültiges Datum für „Gültig ab“ angeben, um die Standardgültigkeit vorherzusagen.';
+}
+
+function dmsDocumentLabel(document:DmsDocumentOption):string{
+  const approval=document.approval_status==='approved'?'Freigegeben'
+    :document.approval_status==='pending_approval'?'Freigabe ausstehend'
+    :document.approval_status==='returned_for_revision'?'Zur Überarbeitung zurückgegeben'
+    :document.approval_status?statusLabel(document.approval_status,'document')
+    :document.status_label??statusLabel(document.document_status??document.computed_status??'','document');
+  const validity=document.valid_until?`gültig bis ${formatDate(document.valid_until)}`
+    :document.valid_from?`ab ${formatDate(document.valid_from)}`:'ohne Gültigkeitsdatum';
+  const version=document.versions?.find(item=>item.lifecycle_state==='available')??document.versions?.[0];
+  const versionText=version?`Fassung ${formatNumber(version.version_no)} · ${version.lifecycle_state}`:'Keine Fassung';
+  return `${document.title} · ${document.document_type||'Ohne Dokumenttyp'} · ${approval} · ${validity} · ${versionText}`;
+}
+
 export function Qualifications(){
   const [filters,setFilters]=useState<Filters>(initialFilters);
   const [rows,setRows]=useState<Row[]>([]);
@@ -89,6 +134,9 @@ export function Qualifications(){
   const [error,setError]=useState('');
   const [success,setSuccess]=useState('');
   const [analytics,setAnalytics]=useState<Analytics|null>(null);
+  const [analyticsLoading,setAnalyticsLoading]=useState(true);
+  const [analyticsError,setAnalyticsError]=useState('');
+  const [dmsDocuments,setDmsDocuments]=useState<DmsDocumentOption[]>([]);
   const [catalog,setCatalog]=useState<Catalog[]>([]);
   const [categories,setCategories]=useState<string[]>([]);
   const [employees,setEmployees]=useState<EmployeeOption[]>([]);
@@ -108,14 +156,14 @@ export function Qualifications(){
   const [reminderHistory,setReminderHistory]=useState<ReminderHistory[]>([]);
   const [reminderUpdated,setReminderUpdated]=useState<string|null>(null);
   const [reminderError,setReminderError]=useState('');
-  const [assignmentForm,setAssignmentForm]=useState({employeeId:'',code:'',valid_from:today(),valid_until:'',reason:''});
+  const [assignmentForm,setAssignmentForm]=useState({employeeId:'',code:'',valid_from:berlinToday(),valid_until:'',document_id:'',reason:''});
   const read=hasPermission('qualifications:read');
   const write=hasPermission('qualifications:write');
   const catalogWrite=hasPermission('qualifications:catalog:write');
   const canRevoke=hasPermission('qualifications:revoke');
   const canExport=hasPermission('qualifications:export');
-  const canReadDocument=hasPermission('qualifications:documents:read');
   const canDownloadDocument=hasPermission('qualifications:documents:download');
+  const canReadDms=hasPermission('dms:read');
   const remindersWrite=hasPermission('qualifications:reminders:write');
 
   const loadOverview=async()=>{
@@ -153,20 +201,32 @@ export function Qualifications(){
     return ()=>{current=false;};
   },[read,filters]);
 
+  const loadAnalytics=async()=>{
+    if(!read)return;
+    setAnalyticsLoading(true);
+    try{
+      const stats=await api<Analytics>('/qualifications/analytics');
+      setAnalytics(stats?.kpi?stats:null);
+      setAnalyticsError('');
+    }catch(cause){setAnalytics(null);setAnalyticsError((cause as Error).message||'Kennzahlen konnten nicht geladen werden.');}
+    finally{setAnalyticsLoading(false);}
+  };
+
+  useEffect(()=>{void loadAnalytics();},[read]);
+
   useEffect(()=>{
     if(!read)return;
     let current=true;
     void Promise.all([
-      Promise.resolve(api<Analytics>('/qualifications/analytics')).catch(()=>null),
       Promise.resolve(api<Catalog[]>('/qualifications/catalog')).then(value=>Array.isArray(value)?value:[]).catch(()=>[]),
       Promise.resolve(api<string[]>('/qualifications/categories')).then(value=>Array.isArray(value)?value:[]).catch(()=>[]),
       Promise.resolve(api<EmployeeOption[]>('/employees')).then(value=>Array.isArray(value)?value:[]).catch(()=>[]),
       Promise.resolve(api<SiteOption[]>('/sites')).then(value=>Array.isArray(value)?value:[]).catch(()=>[]),
       Promise.resolve(api<ReminderSettings>('/qualifications/reminders')).catch(()=>null),
       Promise.resolve(api<ReminderHistory[]>('/qualifications/reminders/history')).then(value=>Array.isArray(value)?value:[]).catch(()=>[]),
-    ]).then(([stats,catalogRows,categoryRows,employeeRows,siteRows,reminders,history])=>{
+      Promise.resolve(canReadDms?api<DmsDocumentOption[]>('/dms/documents').then(value=>Array.isArray(value)?value:[]).catch(()=>[]):[]),
+    ]).then(([catalogRows,categoryRows,employeeRows,siteRows,reminders,history,documentRows])=>{
       if(!current)return;
-      setAnalytics(stats?.kpi?stats:null);
       setCatalog(catalogRows);
       setCategories(categoryRows);
       setEmployees(employeeRows);
@@ -174,12 +234,15 @@ export function Qualifications(){
       if(reminders?.reminder_days)setReminderDays(reminders.reminder_days.join(','));
       setReminderUpdated(reminders?.updated_at??null);
       setReminderHistory(history);
+      setDmsDocuments(documentRows);
     });
     return ()=>{current=false;};
-  },[read]);
+  },[read,canReadDms]);
 
   const updateFilter=<K extends keyof Filters>(key:K,value:Filters[K])=>setFilters(current=>({...current,[key]:value,page:key==='page'?Number(value):1}));
   const resetFilters=()=>{setFilters(initialFilters);setError('');setSuccess('');};
+  const documentsForEmployee=(employeeId:string)=>dmsDocuments.filter(document=>!document.employee_id||!employeeId||document.employee_id===employeeId);
+  const catalogFor=(catalogId:string|null|undefined,code:string)=>catalog.find(entry=>entry.id===catalogId)??catalog.find(entry=>entry.code===code);
 
   const openDetail=async(row:Row)=>{
     if(!read)return;
@@ -189,7 +252,7 @@ export function Qualifications(){
       setDetail(data??null);
       setEditForm({
         valid_from:(data?.valid_from??'').slice(0,10),valid_until:(data?.valid_until??'').slice(0,10),
-        issuing_authority:data?.issued_authority??'',notes:data?.notes??'',document_id:'',reason:'',
+        issuing_authority:data?.issued_authority??'',notes:data?.notes??'',document_id:data?.document_id??'',reason:'',
       });
     }catch(cause){setDetail(null);setActionError((cause as Error).message);}
     finally{setDetailLoading(false);}
@@ -204,7 +267,8 @@ export function Qualifications(){
         valid_from:editForm.valid_from||null,issuing_authority:editForm.issuing_authority.trim()||null,
         notes:editForm.notes.trim()||null,reason:editForm.reason.trim()};
       if(editForm.valid_until)body.valid_until=editForm.valid_until;
-      if(editForm.document_id&&isUuid(editForm.document_id))body.document_id=editForm.document_id;
+      if(editForm.document_id)body.document_id=editForm.document_id;
+      else if(detail.document_id||detail.document_title)body.document_id=null;
       await api(`/employees/${detail.employee_id}/qualifications/${detail.id}`,{method:'PATCH',body:JSON.stringify(body)});
       await openDetail(detail);await loadOverview();setEditing(false);setActionError('');setSuccess('Die Qualifikation wurde geändert.');
     }catch(cause){setActionError((cause as Error).message);}
@@ -229,7 +293,7 @@ export function Qualifications(){
   };
 
   const openEvidence=async()=>{
-    if(!detail||!canReadDocument)return;
+    if(!detail||!canDownloadDocument)return;
     try{
       const result=await api<{document_id:string;title:string;download_url:string}>(`/qualifications/assignments/${detail.id}/document`);
       setEvidenceUrl(result??null);setActionError('');
@@ -251,7 +315,7 @@ export function Qualifications(){
     if(!canExport)return;
     const link=document.createElement('a');
     link.href=`/api/v1/qualifications/export?${overviewQuery(filters)}`;
-    link.download=`qualifikationen-${today()}.csv`;
+    link.download=`qualifikationen-${berlinToday()}.csv`;
     document.body.appendChild(link);link.click();link.remove();
   };
 
@@ -323,10 +387,10 @@ export function Qualifications(){
     if(!assignmentForm.code){setError('Bitte eine Qualifikation aus dem Katalog auswählen.');return;}
     if(!assignmentForm.reason.trim()){setError('Bitte eine Begründung für die Zuweisung angeben.');return;}
     try{
-      await api(`/employees/${assignmentForm.employeeId}/qualifications`,{method:'POST',body:JSON.stringify({
-        code:assignmentForm.code,valid_from:assignmentForm.valid_from||null,valid_until:assignmentForm.valid_until||null,
-        reason:assignmentForm.reason.trim(),
-      })});
+      const body:Record<string,unknown>={code:assignmentForm.code,valid_from:assignmentForm.valid_from||null,reason:assignmentForm.reason.trim()};
+      if(assignmentForm.valid_until)body.valid_until=assignmentForm.valid_until;
+      if(assignmentForm.document_id)body.document_id=assignmentForm.document_id;
+      await api(`/employees/${assignmentForm.employeeId}/qualifications`,{method:'POST',body:JSON.stringify(body)});
       setAssignmentForm(current=>({...current,reason:''}));setError('');setSuccess('Die Qualifikation wurde erfasst.');
       await loadOverview();
     }catch(cause){setError((cause as Error).message);}
@@ -352,7 +416,19 @@ export function Qualifications(){
           ['Nachweis fehlt',analytics?.kpi?.missing_evidence,'qualification-missing'],
         ] as const).map(([label,value,key])=><article key={key} aria-label={label}><strong>{value===undefined?'–':formatNumber(value)}</strong><span>{label}</span></article>)}
       </div>
-      {!analytics&&<p role="status">Kennzahlen werden geladen …</p>}
+      {analyticsLoading&&<p role="status">Kennzahlen werden geladen …</p>}
+      {analyticsError&&<p role="alert">Kennzahlen konnten nicht geladen werden: {analyticsError} <button type="button" onClick={()=>void loadAnalytics()}>Kennzahlen erneut laden</button></p>}
+      {!analyticsLoading&&!analyticsError&&!analytics&&<p role="status">Keine Kennzahlen verfügbar.</p>}
+      {Array.isArray(analytics?.site_coverage)&&<section aria-label="Objektabdeckung">
+        <h4>Abdeckung nach Objekt</h4>
+        {analytics.site_coverage.length===0?<p role="status">Keine Objektabdeckung erfasst.</p>:<table aria-label="Objektabdeckung">
+          <thead><tr><th>Objekt</th><th>Qualifikation</th><th>Qualifiziert</th><th>Anforderungen</th></tr></thead>
+          <tbody>{analytics.site_coverage.map((entry,index)=><tr key={`${entry.site_id}-${entry.qualification_name}-${index}`}>
+            <td>{entry.site}</td><td>{entry.qualification_name}</td>
+            <td>{formatNumber(entry.qualified)}</td><td>{formatNumber(entry.requirement_count)}</td>
+          </tr>)}</tbody>
+        </table>}
+      </section>}
     </section>
 
     <section aria-label="Qualifikationsübersicht">
@@ -382,7 +458,7 @@ export function Qualifications(){
           <td>{row.employee_name}{row.personnel_number?` (${row.personnel_number})`:''}</td>
           <td>{row.qualification_name||row.code}<small>{row.code}</small></td>
           <td>{row.category}</td><td>{row.site_name||'–'}</td>
-          <td>{row.valid_until?formatDate(row.valid_until):'Unbefristet'}</td>
+          <td>{row.valid_until?formatDate(row.valid_until):'Unbefristet'}{validUntilSourceLabel(row.valid_until_source)?<small>{validUntilSourceLabel(row.valid_until_source)}</small>:null}</td>
           <td>{row.remaining_validity}</td>
           <td><span className={`qualification-status ${row.computed_status}`}>{statusText(row)}</span></td>
           <td><button type="button" onClick={()=>void openDetail(row)} aria-label={`Details zu ${row.qualification_name||row.code} von ${row.employee_name}`}>Details anzeigen</button></td>
@@ -399,12 +475,13 @@ export function Qualifications(){
     {detail&&<section role="dialog" aria-modal="true" aria-label="Qualifikationsdetails" className="qualification-detail">
       <h3>Details: {detail.qualification_name||detail.code} · {detail.employee_name}</h3>
       <p>{statusText(detail)} · {detail.remaining_validity} · Nachweis: {detail.document_title||'Kein Nachweis verknüpft'}</p>
+      <p>Gültig bis: {detail.valid_until?formatDate(detail.valid_until):'Unbefristet'}{validUntilSourceLabel(detail.valid_until_source)?` (Herkunft: ${validUntilSourceLabel(detail.valid_until_source)})`:''}</p>
       {actionError&&<p role="alert">{actionError}</p>}
       <h4>Verlauf</h4>
       {detail.history.length===0?<p role="status">Keine Änderungen protokolliert.</p>:<ul>{detail.history.map((event,index)=><li key={`${event.created_at}-${index}`}>{formatDateTime(event.created_at)} · {event.event_type}</li>)}</ul>}
       <div role="group" aria-label="Qualifikationsaktionen">
         {write&&<button type="button" onClick={()=>{setEditing(value=>!value);setActionError('');}}>Bearbeiten</button>}
-        {canReadDocument&&<button type="button" onClick={()=>void openEvidence()}>Nachweis öffnen</button>}
+        {canDownloadDocument&&<button type="button" onClick={()=>void openEvidence()}>Nachweis öffnen</button>}
         {evidenceUrl&&canDownloadDocument&&<button type="button" onClick={()=>void downloadEvidence()}>Nachweis herunterladen</button>}
         {canRevoke&&<button type="button" onClick={()=>void revoke()}>Widerrufen</button>}
         {write&&<button type="button" onClick={()=>void remove()}>Entfernen</button>}
@@ -415,9 +492,11 @@ export function Qualifications(){
       {editing&&write&&<form onSubmit={saveAssignmentEdit} aria-label="Qualifikation bearbeiten">
         <h4>Qualifikation bearbeiten</h4>
         <label>Gültig ab bearbeiten<input type="date" value={editForm.valid_from} onChange={event=>setEditForm({...editForm,valid_from:event.target.value})}/></label>
-        <label>Gültig bis bearbeiten<input type="date" value={editForm.valid_until} onChange={event=>setEditForm({...editForm,valid_until:event.target.value})}/><small>Leer lassen, um die Standardgültigkeit des Katalogs anzuwenden.</small></label>
+        <label>Gültig bis bearbeiten<input type="date" aria-label="Gültig bis bearbeiten" value={editForm.valid_until} onChange={event=>setEditForm({...editForm,valid_until:event.target.value})}/><small>{validityPreviewText(editForm.valid_from,catalogFor(detail.catalog_id,detail.code)?.default_validity_days)}</small></label>
         <label>Ausstellende Stelle<input value={editForm.issuing_authority} onChange={event=>setEditForm({...editForm,issuing_authority:event.target.value})}/></label>
-        <label>Nachweisdokument (UUID)<input value={editForm.document_id} onChange={event=>setEditForm({...editForm,document_id:event.target.value})}/></label>
+        <label>Nachweisdokument<select value={editForm.document_id} onChange={event=>setEditForm({...editForm,document_id:event.target.value})}><option value="">Kein Nachweis verknüpft</option>{documentsForEmployee(detail.employee_id).map(document=><option key={document.id} value={document.id}>{dmsDocumentLabel(document)}</option>)}</select></label>
+        {detail.document_title&&<small>Aktuell verknüpft: {detail.document_title}</small>}
+        <small>Neue Nachweise werden über das <Link to="/dms">Dokumentenmanagement</Link> hochgeladen.</small>
         <label>Notizen<textarea value={editForm.notes} onChange={event=>setEditForm({...editForm,notes:event.target.value})}/></label>
         <label>Begründung für die Änderung<input required value={editForm.reason} onChange={event=>setEditForm({...editForm,reason:event.target.value})}/></label>
         <button type="submit">Änderung speichern</button>
@@ -481,7 +560,9 @@ export function Qualifications(){
       <label>Mitarbeiter<select value={assignmentForm.employeeId} onChange={event=>setAssignmentForm({...assignmentForm,employeeId:event.target.value})}><option value="">Mitarbeiter auswählen</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label>
       <label>Qualifikation<select required value={assignmentForm.code} onChange={event=>setAssignmentForm({...assignmentForm,code:event.target.value})}><option value="">Bitte wählen</option>{catalog.filter(entry=>entry.active).map(entry=><option key={entry.id} value={entry.code}>{entry.name} ({entry.code})</option>)}</select></label>
       <label>Gültig ab<input type="date" value={assignmentForm.valid_from} onChange={event=>setAssignmentForm({...assignmentForm,valid_from:event.target.value})}/></label>
-      <label>Gültig bis<input type="date" value={assignmentForm.valid_until} onChange={event=>setAssignmentForm({...assignmentForm,valid_until:event.target.value})}/><small>Leer lassen, um die Standardgültigkeit des Katalogs anzuwenden.</small></label>
+      <label>Gültig bis<input type="date" aria-label="Gültig bis" value={assignmentForm.valid_until} onChange={event=>setAssignmentForm({...assignmentForm,valid_until:event.target.value})}/><small>{validityPreviewText(assignmentForm.valid_from,catalogFor(null,assignmentForm.code)?.default_validity_days)}</small></label>
+      <label>Nachweisdokument<select value={assignmentForm.document_id} onChange={event=>setAssignmentForm({...assignmentForm,document_id:event.target.value})}><option value="">Kein Nachweis verknüpft</option>{documentsForEmployee(assignmentForm.employeeId).map(document=><option key={document.id} value={document.id}>{dmsDocumentLabel(document)}</option>)}</select></label>
+      <small>Neue Nachweise werden über das <Link to="/dms">Dokumentenmanagement</Link> hochgeladen.</small>
       <label>Begründung<input required value={assignmentForm.reason} onChange={event=>setAssignmentForm({...assignmentForm,reason:event.target.value})} placeholder="Grund für die Erfassung"/></label>
       <button type="submit">Qualifikation speichern</button>
     </form>}

@@ -72,7 +72,7 @@ describe('strict backend contracts',()=>{
     expect(apiMock).not.toHaveBeenCalledWith(expect.stringContaining('/participants'),expect.objectContaining({method:'POST'}));
   });
 
-  it('sends null for a cleared qualification start date',async()=>{
+  it('omits an empty qualification end date so the catalog default applies',async()=>{
     const employeeId='00000000-0000-4000-8000-000000000003';
     apiMock.mockImplementation(async(path:string)=>{
       if(path==='/qualifications/catalog')return [{id:'q-1',code:'first-aid',name:'Erste Hilfe',default_validity_days:365,active:true}];
@@ -88,6 +88,8 @@ describe('strict backend contracts',()=>{
     fireEvent.change(screen.getByLabelText('Gültig ab'),{target:{value:''}});
     fireEvent.change(screen.getByLabelText('Begründung'),{target:{value:'Nachweis geprüft'}});
     fireEvent.click(screen.getByRole('button',{name:'Qualifikation speichern'}));
-    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/employees/${employeeId}/qualifications`,{method:'POST',body:JSON.stringify({code:'first-aid',valid_from:null,valid_until:null,reason:'Nachweis geprüft'})}));
+    await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/employees/${employeeId}/qualifications`,{method:'POST',body:JSON.stringify({code:'first-aid',valid_from:null,reason:'Nachweis geprüft'})}));
+    const body=JSON.parse(apiMock.mock.calls.find(([path])=>path===`/employees/${employeeId}/qualifications`)?.[1]?.body as string) as Record<string,unknown>;
+    expect('valid_until' in body).toBe(false);
   });
 });

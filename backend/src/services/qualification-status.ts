@@ -59,22 +59,41 @@ export function qualificationLocalDate(now: Date = new Date()): string {
   }).format(now);
 }
 
-function dayNumber(value: string | Date, now: Date): number {
+/**
+ * Tagesindex (UTC-Mittnacht) für einen Kalendertag in Europe/Berlin.
+ * Reine Datumsfelder (PostgreSQL `date`) gelten als Kalendertag, Zeitstempel
+ * werden über die Berliner Zeitzone auf ihren Kalendertag abgebildet.
+ * Ungültige Werte liefern null und fallen niemals auf "heute" zurück.
+ */
+export function qualificationDayNumber(value: string | Date | null | undefined): number | null {
+  if (value === null || value === undefined || value === '') return null;
   if (value instanceof Date) {
-    return dayNumber(qualificationLocalDate(value), now);
+    if (Number.isNaN(value.getTime())) return null;
+    return qualificationDayNumber(qualificationLocalDate(value));
   }
-  const day = String(value).slice(0, 10);
-  const [year, month, date] = day.split('-').map(Number);
-  if (!year || !month || !date) {
-    return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [year, month, date] = text.split('-').map(Number);
+    const day = Date.UTC(year, month - 1, date);
+    const parsed = new Date(day);
+    if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== date) return null;
+    return day;
   }
-  return Date.UTC(year, month - 1, date);
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return qualificationDayNumber(parsed);
+}
+
+function isInvalidDate(value: unknown): boolean {
+  return value !== null && value !== undefined && value !== '' && qualificationDayNumber(value as string | Date) === null;
 }
 
 export function daysUntil(value: string | Date | null | undefined, now: Date = new Date()): number | null {
-  if (value === null || value === undefined || value === '') return null;
-  const today = dayNumber(qualificationLocalDate(now), now);
-  return Math.round((dayNumber(value, now) - today) / 86_400_000);
+  const day = qualificationDayNumber(value);
+  if (day === null) return null;
+  const today = qualificationDayNumber(qualificationLocalDate(now));
+  if (today === null) return null;
+  return Math.round((day - today) / 86_400_000);
 }
 
 function finalResult(
@@ -100,6 +119,11 @@ export function classifyQualification(input: QualificationStatusInput): Qualific
   const days = daysUntil(input.validUntil, now);
   const validFromDays = daysUntil(input.validFrom, now);
 
+  // Malformed Datumswerte sind ein Datenfehler und dürfen nie durch einen
+  // gespeicherten Status verdeckt werden.
+  if (isInvalidDate(input.validFrom) || isInvalidDate(input.validUntil) || input.evidenceStatus === 'invalid_date') {
+    return {...finalResult('invalid', days), issue_code: 'invalid_date'};
+  }
   if (stored === 'revoked' || input.revokedAt) return finalResult('revoked', days);
   if (stored === 'invalid' || input.catalogActive === false) return finalResult('invalid', days);
   if (stored === 'expired' || (days !== null && days < 0)) return finalResult('expired', days);
@@ -110,11 +134,13 @@ export function classifyQualification(input: QualificationStatusInput): Qualific
     if (!evidence || evidence === 'missing' || evidence === 'not_found') {
       return finalResult('missing_evidence', days);
     }
-    if (evidence === 'nicht_freigegeben' || evidence === 'pruefung_ausstehend') {
+    // Auch "bald prüfpflichtig" und unbekannte Nachweiswerte dürfen nie als
+    // freigegebener, gültiger Nachweis durchgewinkt werden.
+    if (evidence !== 'gueltig' && evidence !== 'lauf_bald_ab') {
+      if (evidence === 'abgelaufen' || evidence === 'noch_nicht_gueltig') {
+        return {...finalResult('expired', days), issue_code: 'expired_evidence'};
+      }
       return finalResult('awaiting_review', days);
-    }
-    if (evidence === 'abgelaufen' || evidence === 'noch_nicht_gueltig') {
-      return {...finalResult('expired', days), issue_code: 'expired_evidence'};
     }
   }
 
@@ -133,6 +159,7 @@ export function evidenceStatusOf(row: {
 }, now: Date = new Date()): string | null {
   if (!row.document_id) return 'missing';
   if (!row.evidence_document_status && !row.evidence_lifecycle_state) return 'not_found';
+  if (isInvalidDate(row.evidence_valid_from) || isInvalidDate(row.evidence_valid_until)) return 'invalid_date';
   if (row.evidence_document_status === 'deleted') return 'nicht_freigegeben';
   if (row.evidence_approval_status !== 'approved') {
     return row.evidence_approval_status === 'pending_approval' ? 'pruefung_ausstehend' : 'nicht_freigegeben';

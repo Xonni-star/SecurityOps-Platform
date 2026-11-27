@@ -33,12 +33,15 @@ const document={
 };
 const approved={...document,approval_status:'approved',approved_by:reviewer,approved_at:'2026-01-01T00:00:00Z'};
 const availableVersion={lifecycle_state:'available'};
+const listRow={...approved,versions:[{id:'00000000-0000-4000-8000-0000000000c1',version_no:1,lifecycle_state:'available'}]};
+const employee='00000000-0000-4000-8000-0000000000d1';
 
 beforeEach(()=>{
   queryMock.mockReset();
   activeUser=baseUser;
   queryMock.mockImplementation(async(sql:string)=>{
     if(sql.includes('FROM sessions'))return result([activeUser]);
+    if(sql.includes('FROM dms_documents d LEFT JOIN dms_versions'))return result([listRow]);
     if(sql.includes('FROM dms_documents WHERE'))return result([document]);
     if(sql.includes('FROM dms_versions'))return result([availableVersion]);
     if(sql.includes('UPDATE dms_documents'))return result([approved]);
@@ -100,5 +103,27 @@ describe('DMS approval workflow',()=>{
     expect(response.status).toBe(200);
     const audit=queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO audit_events'));
     expect(audit?.[1]?.[2]).toBe('dms.document.returned_for_revision');
+  });
+
+  it('filters documents by a valid employee_id without changing the response shape',async()=>{
+    activeUser={...baseUser,permission_grants:[{code:'dms:read',scope:'site'}]};
+    const response=await request(app).get('/api/v1/dms/documents').query({employee_id:employee}).set('Cookie',csrf);
+    expect(response.status).toBe(200);
+    expect(response.body[0]).toEqual(expect.objectContaining({
+      title:'Security plan',approval_status:'approved',computed_status:'gueltig',
+    }));
+    expect(response.body[0].versions).toEqual([expect.objectContaining({version_no:1,lifecycle_state:'available'})]);
+    const call=queryMock.mock.calls.find(([sql])=>String(sql).includes('FROM dms_documents d LEFT JOIN dms_versions'));
+    expect(String(call?.[0])).toContain('d.site_id = ANY($2::uuid[])');
+    expect(String(call?.[0])).toContain('d.employee_id=$');
+    expect(call?.[1]).toEqual([tenant,[site],employee]);
+  });
+
+  it('rejects an invalid employee_id filter with 400 before querying the database',async()=>{
+    const response=await request(app).get('/api/v1/dms/documents').query({employee_id:'not-a-uuid'}).set('Cookie',csrf);
+    expect(response.status).toBe(400);
+    const multiple=await request(app).get('/api/v1/dms/documents').query({employee_id:[employee,employee]}).set('Cookie',csrf);
+    expect(multiple.status).toBe(400);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM dms_documents d LEFT JOIN dms_versions'))).toBe(false);
   });
 });

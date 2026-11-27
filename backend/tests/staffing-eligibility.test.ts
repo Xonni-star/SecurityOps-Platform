@@ -52,3 +52,44 @@ describe('server-side shift eligibility',()=>{
     expect(evaluateShiftEligibility({...base,availability:[{weekday:2,starts_time:'12:00',ends_time:'18:00',available:false,valid_from:null,valid_until:null}]}).status).toBe('ineligible');
   });
 });
+
+describe('shift eligibility: Nachweisbewertung und Berliner Schichttage',()=>{
+  const evidenceBase={
+    ...base.qualifications[0],
+    required_document_type:'sachkunde_34a',
+    document_status:'active',
+    document_approval_status:'approved',
+    document_lifecycle_state:'available',
+    document_valid_from:'2025-01-01',
+    document_valid_until:'2027-01-01',
+  };
+  const withEvidence=(patch:Partial<typeof evidenceBase>)=>evaluateShiftEligibility({...base,qualifications:[{...evidenceBase,...patch}]});
+  const reasonCode=(patch:Partial<typeof evidenceBase>)=>withEvidence(patch).reasons[0]?.code;
+
+  it('lässt nur freigegebene, verfügbare und am Schichttag gültige Nachweise zu',()=>{
+    expect(withEvidence({}).status).toBe('eligible');
+    expect(reasonCode({document_id:null})).toBe('qualification_evidence_missing');
+    expect(reasonCode({document_status:'deleted'})).toBe('qualification_evidence_unapproved');
+    expect(reasonCode({document_approval_status:'pending_approval'})).toBe('qualification_evidence_unapproved');
+    expect(reasonCode({document_lifecycle_state:'quarantined'})).toBe('qualification_evidence_unapproved');
+    expect(reasonCode({document_valid_until:'2026-11-30'})).toBe('qualification_expired');
+    expect(reasonCode({document_valid_from:'2026-12-02'})).toBe('qualification_not_yet_valid');
+    expect(reasonCode({document_valid_until:'un gueltig'})).toBe('qualification_invalid');
+  });
+
+  it('prüft den Ablauf einer Nachtschicht gegen den lokalen Starttag',()=>{
+    const nightShift={starts_at:'2026-12-01T22:30:00Z',ends_at:'2026-12-01T23:30:00Z',required_qualification_codes:['sachkunde_34a']};
+    const input={...base,shift:nightShift,qualifications:[{...base.qualifications[0],valid_until:'2026-12-01'}]};
+    expect(evaluateShiftEligibility(input).status).toBe('eligible');
+    expect(evaluateShiftEligibility({...input,qualifications:[{...base.qualifications[0],valid_until:'2026-11-30'}]}).reasons[0]?.code).toBe('qualification_expired');
+  });
+
+  it('teilt ein Verfügbarkeitsfenster über Mitternacht auf beide Berliner Tage auf',()=>{
+    const nightShift={starts_at:'2026-12-01T22:30:00Z',ends_at:'2026-12-01T23:30:00Z',required_qualification_codes:['sachkunde_34a']};
+    const result=evaluateShiftEligibility({...base,shift:nightShift,availability:[{
+      weekday:2,starts_time:'23:00',ends_time:'01:00',available:false,valid_from:null,valid_until:null,
+    }]});
+    expect(result.status).toBe('ineligible');
+    expect(result.reasons.map(reason=>reason.code)).toContain('availability');
+  });
+});

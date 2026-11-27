@@ -127,7 +127,7 @@ function chronicleSummary(event:ChronicleEvent){
   return summaries[summary]??summary;
 }
 function eligibilityReasonLabel(value:string){
-  const labels:Record<string,string>={qualification_revoked:'Qualifikation widerrufen',qualification_expired:'Qualifikation abgelaufen',qualification_invalid:'Qualifikation ungültig',qualification_missing:'Qualifikation fehlt',employment_status:'Beschäftigungsstatus nicht zulässig',employment_status_restricted:'Beschäftigungsstatus muss geprüft werden',site_assignment:'Keine Objektzuordnung für den gesamten Schichtzeitraum',instruction_acknowledgement:'Dienstanweisung nicht in aktueller Fassung bestätigt',absence_approved:'Genehmigte Abwesenheit',absence_requested:'Beantragte Abwesenheit',availability:'Verfügbarkeit schließt den Schichtzeitraum aus',overlapping_shift:'Überschneidung mit einer anderen Schicht'};
+  const labels:Record<string,string>={qualification_revoked:'Qualifikation widerrufen',qualification_expired:'Qualifikation abgelaufen',qualification_invalid:'Qualifikation ungültig',qualification_missing:'Qualifikation fehlt',qualification_not_yet_valid:'Qualifikation noch nicht gültig',qualification_evidence_missing:'Qualifikationsnachweis fehlt',qualification_evidence_unapproved:'Qualifikationsnachweis nicht freigegeben',employment_status:'Beschäftigungsstatus nicht zulässig',employment_status_restricted:'Beschäftigungsstatus muss geprüft werden',site_assignment:'Keine Objektzuordnung für den gesamten Schichtzeitraum',instruction_acknowledgement:'Dienstanweisung nicht in aktueller Fassung bestätigt',absence_approved:'Genehmigte Abwesenheit',absence_requested:'Beantragte Abwesenheit',availability:'Verfügbarkeit schließt den Schichtzeitraum aus',overlapping_shift:'Überschneidung mit einer anderen Schicht'};
   return labels[value]??humanizeCode(value);
 }
 function eligibilityLinkLabel(reason:EligibilityReason){
@@ -139,7 +139,7 @@ function eligibilityLinkLabel(reason:EligibilityReason){
 }
 function qualificationLabel(value:string|null|undefined){
   if(!value)return commonText.notAvailable;
-  const labels:Record<string,string>={first_aid:'Erste Hilfe',security_training:'Sicherheitsunterweisung',access_control:'Zutrittskontrolle',fire_safety:'Brandschutz',patrol:'Kontrollgang',drive:'Fahrer',weapon:'Waffentragen',supervisor:'Schichtleitung',night_shift:'Nachtdienst'};
+  const labels:Record<string,string>={first_aid:'Erste Hilfe',security_training:'Sicherheitsunterweisung',access_control:'Zutrittskontrolle',fire_safety:'Brandschutz',patrol:'Kontrollgang',drive:'Fahrer',weapon:'Waffentragen',supervisor:'Schichtleitung',night_shift:'Nachtdienst',qualification_not_yet_valid:'Qualifikation noch nicht gültig',qualification_evidence_missing:'Qualifikationsnachweis fehlt',qualification_evidence_unapproved:'Qualifikationsnachweis nicht freigegeben'};
   return labels[value]??humanizeCode(value);
 }
 function eligibilityReasonText(reason:EligibilityReason){
@@ -367,6 +367,8 @@ export function Sites(){
   const [cancellingOrderId,setCancellingOrderId]=useState<string|null>(null);
   const [cancellationReason,setCancellationReason]=useState('');
   const [eligibility,setEligibility]=useState<Record<string,ShiftEligibility|null>>({});
+  const [eligibilityErrors,setEligibilityErrors]=useState<Record<string,string>>({});
+  const [eligibilityReload,setEligibilityReload]=useState(0);
   const [eligibilityLoading,setEligibilityLoading]=useState(false);
   const [chronicle,setChronicle]=useState<{site_id:string;events:ChronicleEvent[]}|null>(null);
   const [chronicleCatalog,setChronicleCatalog]=useState<string[]>([]);
@@ -606,9 +608,12 @@ export function Sites(){
   }
   async function deactivateQualificationRequirement(requirement:QualificationRequirement){
     if(!selected)return;
-    if(!qualificationRequirementForm.reason.trim()){setQualificationRequirementsError(commonText.reasonRequired);return;}
+    const enteredReason=qualificationRequirementForm.reason.trim();
+    const promptedReason=enteredReason?'':String(window.prompt('Bitte geben Sie den Grund für die Deaktivierung der Objektanforderung an (mindestens 3 Zeichen).')??'').trim();
+    const reason=enteredReason||promptedReason;
+    if(reason.length<3){setQualificationRequirementsError(commonText.reasonRequired);return;}
     try{
-      await api(`/sites/${selected.site.id}/qualification-requirements/${requirement.id}`,{method:'DELETE',body:JSON.stringify({reason:qualificationRequirementForm.reason.trim()})});
+      await api(`/sites/${selected.site.id}/qualification-requirements/${requirement.id}`,{method:'DELETE',body:JSON.stringify({reason})});
       if(editingQualificationRequirementId===requirement.id)resetQualificationRequirementForm();
       setQualificationRequirementsError('');await refreshContext();setError('');
     }catch(e){setQualificationRequirementsError(withErrorHint(e));}
@@ -707,7 +712,7 @@ export function Sites(){
     const reason=window.prompt('Bitte geben Sie den Grund für das Beenden der Objektzuordnung an (mindestens 3 Zeichen).');
     if(!reason||reason.trim().length<3){setError(commonText.reasonRequired);return;}
     try{
-      await api(`/employees/${assignment.employee_id}/object-assignments/${assignment.id}`,{method:'PATCH',body:JSON.stringify({ends_on:new Date().toISOString().slice(0,10),reason:reason.trim()})});
+      await api(`/employees/${assignment.employee_id}/object-assignments/${assignment.id}`,{method:'PATCH',body:JSON.stringify({ends_on:berlinToday(),reason:reason.trim()})});
       await refreshContext();setError('');
     }catch(e){setError(withErrorHint(e));}
   }
@@ -853,7 +858,7 @@ export function Sites(){
     return ()=>{current=false;};
   },[active,selectedSiteId,maintenanceReadable]);
   useEffect(()=>{
-    setEligibility({});setChronicle(null);setChronicleCatalog([]);setChronicleFilter({type:'',from:'',to:''});
+    setEligibility({});setEligibilityErrors({});setChronicle(null);setChronicleCatalog([]);setChronicleFilter({type:'',from:'',to:''});
   },[selectedSiteId]);
   useEffect(()=>{
     if(!selectedSiteId||!['uebersicht','journal'].includes(active))return;
@@ -867,12 +872,18 @@ export function Sites(){
     void Promise.all(shifts.map(async shift=>{
       try{
         const verdict=await api<ShiftEligibility>(`/sites/${selected.site.id}/shifts/${shift.id}/eligibility`);
-        return [shift.id,verdict&&Array.isArray(verdict.employees)?verdict:null] as const;
-      }catch{return [shift.id,null] as const;}
-    })).then(entries=>{if(current)setEligibility(Object.fromEntries(entries));})
-      .finally(()=>{if(current)setEligibilityLoading(false);});
+        return {id:shift.id,verdict:verdict&&Array.isArray(verdict.employees)?verdict:null,error:''};
+      }catch(error){
+        const status=Number((error as {status?:number})?.status);
+        return {id:shift.id,verdict:null,error:status===401||status===403?'':`Die Einsatzprüfung konnte nicht geladen werden: ${(error as Error).message||'Unbekannter Fehler'}`};
+      }
+    })).then(entries=>{
+      if(!current)return;
+      setEligibility(Object.fromEntries(entries.map(entry=>[entry.id,entry.verdict])));
+      setEligibilityErrors(Object.fromEntries(entries.filter(entry=>Boolean(entry.error)).map(entry=>[entry.id,entry.error])));
+    }).finally(()=>{if(current)setEligibilityLoading(false);});
     return ()=>{current=false;};
-  },[active,selected?.site.id,selected?.shifts]);
+  },[active,selected?.site.id,selected?.shifts,eligibilityReload]);
 
   const now=new Date();
   const today=berlinToday();
@@ -1140,7 +1151,10 @@ export function Sites(){
         </form>}
         <div className="object-shift-eligibility">
           <h4>Verbindliche Einsatzprüfung für diese Schicht</h4>
-          {eligibilityLoading?<p role="status">Einsatzprüfung wird geladen …</p>:eligibility[shift.id]===undefined?<p>Einsatzprüfung nicht verfügbar.</p>:eligibility[shift.id]===null?<p>Keine Berechtigung für die serverseitige Einsatzprüfung.</p>:<>
+          {eligibilityErrors[shift.id]?<p role="alert">{eligibilityErrors[shift.id]} <button type="button" onClick={()=>setEligibilityReload(value=>value+1)}>Erneut versuchen</button></p>
+            :eligibilityLoading?<p role="status">Einsatzprüfung wird geladen …</p>
+            :eligibility[shift.id]===undefined?<p>Einsatzprüfung nicht verfügbar.</p>
+            :eligibility[shift.id]===null?<p>Keine Berechtigung für die serverseitige Einsatzprüfung.</p>:<>
             <p>Benötigte Qualifikationen: {eligibility[shift.id]!.required_qualification_codes.map(code=>qualificationLabel(code)).join(', ')||commonText.none}</p>
             {eligibility[shift.id]!.employees.length===0?<p>Keine dem Objekt zugeordneten Mitarbeitenden im Schichtzeitraum.</p>:<ul>{eligibility[shift.id]!.employees.map(employee=><li key={employee.employee_id}>
               <strong>{employee.employee_name}</strong> · <span className={`eligibility-${employee.status}`}>{eligibilityLabels[employee.status]}</span>

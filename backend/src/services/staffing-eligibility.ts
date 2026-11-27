@@ -1,4 +1,5 @@
 /** Pure, server-side eligibility rules for a concrete shift. No UI state is trusted. */
+import {evidenceStatusOf,qualificationDayNumber} from './qualification-status.js';
 
 export type EligibilityStatus = 'eligible' | 'restricted' | 'ineligible';
 export type EligibilityLink = {type:'employee'|'qualification'|'instruction'|'absence';id:string;label:string};
@@ -7,7 +8,8 @@ export type EligibilityReason = {code:string;message:string;link:EligibilityLink
 export type QualificationRecord = {
   id:string;code:string;status:string;valid_from:string|null;valid_until:string|null;
   revoked_at:string|Date|null;document_id?:string|null;catalog_active?:boolean|null;
-  document_approval_status?:string|null;document_lifecycle_state?:string|null;
+  document_status?:string|null;document_approval_status?:string|null;document_lifecycle_state?:string|null;
+  document_valid_from?:string|Date|null;document_valid_until?:string|Date|null;
   required_document_type?:string|null;required_documents?:string[]|null;
 };
 export type InstructionRecord = {
@@ -33,18 +35,18 @@ export type EligibilityInput = {
 
 const timeZone='Europe/Berlin';
 const weekdayNumbers:Record<string,number>={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6};
+type Interval={day:number;weekday:number;start:number;end:number};
 
 function asDate(value:string|Date):Date{
   return value instanceof Date?value:new Date(value.length<=10?`${value}T00:00:00Z`:value);
 }
-function localDayString(value:string|Date):string{
-  return new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(asDate(value));
+function localDay(value:string|Date):number|null{
+  return qualificationDayNumber(value);
 }
-function day(value:string|Date):number{
-  const [year,month,date]=localDayString(value).split('-').map(Number);
-  return Date.UTC(year,month-1,date);
+function beforeOrEqual(a:string|Date,b:string|Date){
+  const left=localDay(a);const right=localDay(b);
+  return left!==null&&right!==null&&left<=right;
 }
-function beforeOrEqual(a:string|Date,b:string|Date){return day(a)<=day(b);}
 function overlaps(aStart:string,aEnd:string,bStart:string,bEnd:string){
   return new Date(aStart).getTime()<new Date(bEnd).getTime()&&new Date(bStart).getTime()<new Date(aEnd).getTime();
 }
@@ -59,15 +61,70 @@ function timeMinutes(value:string):number{
   const [hours='0',minutes='0']=value.split(':');
   return Number(hours)*60+Number(minutes);
 }
+/** Berliner Tagesabschnitte einer Schicht; Nachtschichten werden am Mitternacht geteilt. */
+function shiftIntervals(startsAt:string,endsAt:string):Interval[]{
+  const start=shiftTime(startsAt);
+  const end=shiftTime(endsAt);
+  const startDay=localDay(startsAt);
+  const endDay=localDay(endsAt);
+  if(startDay===null||endDay===null)return [];
+  const intervals:Interval[]=[];
+  for(let current=startDay;current<=endDay;current+=86_400_000){
+    const weekday=new Date(current).getUTCDay();
+    const from=current===startDay?start.minutes:0;
+    const to=current===endDay?end.minutes:1_440;
+    if(to>from)intervals.push({day:current,weekday,start:from,end:to});
+  }
+  return intervals;
+}
+/** Ein Verfügbarkeitsfenster mit Ende <= Beginn läuft über Mitternacht. */
+function availabilityIntervals(item:AvailabilityRecord):Array<{weekday:number;start:number;end:number}>{
+  const start=timeMinutes(item.starts_time);
+  const end=timeMinutes(item.ends_time);
+  if(end>start)return [{weekday:item.weekday,start,end}];
+  if(end===start)return [];
+  return [{weekday:item.weekday,start,end:1_440},{weekday:(item.weekday+1)%7,start:0,end}];
+}
 function evidenceRequired(item:QualificationRecord):boolean{
   return Boolean(item.required_document_type)||Boolean(item.required_documents?.length);
 }
-function evidenceProblem(item:QualificationRecord):'missing'|'unapproved'|null{
+type EvidenceProblem='missing'|'unapproved'|'expired'|'not_yet_valid'|'invalid_date'|null;
+function evidenceProblem(item:QualificationRecord,now:Date):EvidenceProblem{
   if(!evidenceRequired(item))return null;
-  if(!item.document_id)return 'missing';
-  if(item.document_approval_status!=='approved')return 'unapproved';
-  if(item.document_lifecycle_state&&item.document_lifecycle_state!=='available')return 'unapproved';
-  return null;
+  const status=evidenceStatusOf({
+    document_id:item.document_id,
+    evidence_document_status:item.document_status??null,
+    evidence_approval_status:item.document_approval_status??null,
+    evidence_lifecycle_state:item.document_lifecycle_state??null,
+    evidence_valid_from:item.document_valid_from??null,
+    evidence_valid_until:item.document_valid_until??null,
+  },now);
+  if(!status||status==='gueltig'||status==='lauf_bald_ab')return null;
+  if(status==='missing'||status==='not_found')return 'missing';
+  if(status==='abgelaufen')return 'expired';
+  if(status==='noch_nicht_gueltig')return 'not_yet_valid';
+  if(status==='invalid_date')return 'invalid_date';
+  return 'unapproved';
+}
+/** Nachweise gelten bis zum Ablauf des lokalen Schichtstarts, auch bei Nachtschichten. */
+function relevantDay(startsAt:string,endsAt:string):number|null{
+  const start=localDay(startsAt);
+  const end=localDay(endsAt);
+  if(start===null||end===null)return null;
+  return end>start?start:end;
+}
+function invalidQualificationDate(item:QualificationRecord):boolean{
+  return (item.valid_from!==null&&localDay(item.valid_from)===null)
+    ||(item.valid_until!==null&&localDay(item.valid_until)===null);
+}
+function coversShift(item:QualificationRecord,startsAt:string,endsAt:string):boolean{
+  if(invalidQualificationDate(item))return false;
+  const start=localDay(startsAt);
+  const relevant=relevantDay(startsAt,endsAt);
+  if(start===null||relevant===null)return false;
+  if(item.valid_from&&localDay(item.valid_from)!>start)return false;
+  if(item.valid_until&&localDay(item.valid_until)!<relevant)return false;
+  return true;
 }
 function qualificationLink(code:string,item:QualificationRecord):EligibilityLink{
   return item.document_id
@@ -77,12 +134,14 @@ function qualificationLink(code:string,item:QualificationRecord):EligibilityLink
 
 function qualificationReason(input:EligibilityInput,code:string):EligibilityReason|null{
   const {starts_at,ends_at}=input.shift;
+  const evidenceDay=relevantDay(starts_at,ends_at)??localDay(starts_at);
+  // 12:00 UTC liegt in Berlin immer am selben Kalendertag. Nachweise werden
+  // daher gegen den Schichttag geprüft, nicht gegen das aktuelle Datum.
+  const evidenceNow=evidenceDay===null?new Date():new Date(evidenceDay+43_200_000);
   const candidates=input.qualifications.filter(item=>item.code===code);
   const usable=candidates.find(item=>{
-    if(item.status!=='valid'||item.revoked_at||item.catalog_active===false)return false;
-    if(item.valid_from&&!beforeOrEqual(item.valid_from,starts_at))return false;
-    if(item.valid_until&&!beforeOrEqual(ends_at,item.valid_until))return false;
-    return evidenceProblem(item)===null;
+    if(!['valid','expiring'].includes(item.status)||item.revoked_at||item.catalog_active===false)return false;
+    return coversShift(item,starts_at,ends_at)&&evidenceProblem(item,evidenceNow)===null;
   });
   if(usable)return null;
   const latest=[...candidates].sort((a,b)=>String(b.valid_until??'').localeCompare(String(a.valid_until??'')))[0];
@@ -90,23 +149,28 @@ function qualificationReason(input:EligibilityInput,code:string):EligibilityReas
     code:'qualification_revoked',message:`Qualifikationsnachweis ${code} ist widerrufen`,
     link:qualificationLink(code,latest),
   };
-  if(latest?.status==='expired'||(latest?.valid_until&&day(latest.valid_until)<day(ends_at)))return {
+  const relevant=relevantDay(starts_at,ends_at);
+  const startDay=localDay(starts_at);
+  const validFromDay=latest?.valid_from?localDay(latest.valid_from):null;
+  const evidence=latest?evidenceProblem(latest,evidenceNow):null;
+  if(latest?.status==='expired'||evidence==='expired'
+    ||(latest?.valid_until&&relevant!==null&&localDay(latest.valid_until)!<relevant))return {
     code:'qualification_expired',message:`Qualifikationsnachweis ${code} ist zum Einsatzzeitpunkt abgelaufen`,
     link:qualificationLink(code,latest),
   };
-  if(latest?.status==='invalid'||latest?.catalog_active===false)return {
+  if(latest?.status==='invalid'||latest?.catalog_active===false||evidence==='invalid_date')return {
     code:'qualification_invalid',message:`Qualifikationsnachweis ${code} ist ungültig`,
     link:{type:'qualification',id:latest.id,label:`Qualifikation ${code}`},
   };
-  if(latest?.valid_from&&!beforeOrEqual(latest.valid_from,starts_at))return {
+  if((validFromDay!==null&&startDay!==null&&validFromDay>startDay)||evidence==='not_yet_valid')return {
     code:'qualification_not_yet_valid',message:`Qualifikationsnachweis ${code} ist zum Einsatzzeitpunkt noch nicht gültig`,
     link:qualificationLink(code,latest),
   };
-  if(latest&&evidenceProblem(latest)==='missing')return {
+  if(latest&&evidence==='missing')return {
     code:'qualification_evidence_missing',message:`Zur Qualifikation ${code} fehlt der verknüpfte Nachweis`,
     link:{type:'qualification',id:latest.id,label:`Qualifikation ${code}`},
   };
-  if(latest&&evidenceProblem(latest)==='unapproved')return {
+  if(latest&&evidence==='unapproved')return {
     code:'qualification_evidence_unapproved',message:`Der Nachweis für Qualifikation ${code} ist nicht freigegeben`,
     link:qualificationLink(code,latest),
   };
@@ -127,8 +191,11 @@ export function evaluateShiftEligibility(input:EligibilityInput):{
   else if(employee.employment_status==='probation'||employee.employment_status===null)reasons.push({
     code:'employment_status_restricted',message:'Beschäftigungsstatus erfordert Prüfung',link:{type:'employee',id:employee.id,label:employee.name},
   });
+  const assignmentEndsOn=employee.assignment?.ends_on??null;
+  const assignmentEnd=assignmentEndsOn===null?null:localDay(assignmentEndsOn);
+  const shiftEndDay=localDay(shift.ends_at);
   if(!employee.assignment||!beforeOrEqual(employee.assignment.starts_on,shift.starts_at)
-    ||(employee.assignment.ends_on&&day(employee.assignment.ends_on)<day(shift.ends_at)))reasons.push({
+    ||(assignmentEndsOn!==null&&(assignmentEnd===null||shiftEndDay===null||assignmentEnd<shiftEndDay)))reasons.push({
     code:'site_assignment',message:'Keine Objektzuordnung für den gesamten Schichtzeitraum',link:{type:'employee',id:employee.id,label:employee.name},
   });
   const matched:string[]=[];const missing:string[]=[];
@@ -154,12 +221,19 @@ export function evaluateShiftEligibility(input:EligibilityInput):{
       link:{type:'absence',id:absence.id,label:'Abwesenheit'},
     });
   }
-  const shiftStart=shiftTime(shift.starts_at);
-  const shiftEnd=shiftTime(shift.ends_at);
-  if(input.availability.some(item=>!item.available&&item.weekday===shiftStart.weekday
-    &&(!item.valid_from||beforeOrEqual(item.valid_from,shift.starts_at))
-    &&(!item.valid_until||beforeOrEqual(shift.ends_at,item.valid_until))
-    &&timeMinutes(item.starts_time)<shiftEnd.minutes&&shiftStart.minutes<timeMinutes(item.ends_time)))reasons.push({
+  const intervals=shiftIntervals(shift.starts_at,shift.ends_at);
+  const availabilityBlocked=input.availability.some(item=>{
+    if(item.available)return false;
+    const validityFrom=item.valid_from?localDay(item.valid_from):null;
+    const validityUntil=item.valid_until?localDay(item.valid_until):null;
+    if(item.valid_from&&validityFrom===null)return false;
+    if(item.valid_until&&validityUntil===null)return false;
+    return availabilityIntervals(item).some(window=>intervals.some(interval=>
+      interval.weekday===window.weekday&&window.start<interval.end&&interval.start<window.end
+      &&(validityFrom===null||validityFrom<=interval.day)
+      &&(validityUntil===null||validityUntil>=interval.day)));
+  });
+  if(availabilityBlocked)reasons.push({
     code:'availability',message:'Verfügbarkeit schließt den Schichtzeitraum aus',link:null,
   });
   if(input.overlapping_shift)reasons.push({code:'overlapping_shift',message:'Überschneidung mit einer anderen zugewiesenen Schicht',link:null});

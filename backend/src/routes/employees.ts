@@ -102,10 +102,12 @@ const absenceSchema=z.object({
 export const employeesRouter=Router();
 employeesRouter.use('/employees',requireAuth);
 
+/** Einheitlicher Berliner Kalendertag für alle Gültigkeitsvergleiche. */
+const berlinDate=`(now() AT TIME ZONE 'Europe/Berlin')::date`;
 // Zentrale Gültigkeitsregeln für die kompakten Mitarbeiteransichten. Die
 // vollständige Klassifikation liegt in services/qualification-status.ts.
-const qualificationProblem=`q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL OR (q.valid_until IS NOT NULL AND q.valid_until<CURRENT_DATE) OR (q.valid_from IS NOT NULL AND q.valid_from>CURRENT_DATE)`;
-const qualificationCurrentlyValid=`q.status='valid' AND q.revoked_at IS NULL AND (q.valid_from IS NULL OR q.valid_from<=CURRENT_DATE) AND (q.valid_until IS NULL OR q.valid_until>=CURRENT_DATE)`;
+const qualificationProblem=`q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL OR (q.valid_until IS NOT NULL AND q.valid_until<${berlinDate}) OR (q.valid_from IS NOT NULL AND q.valid_from>${berlinDate})`;
+const qualificationCurrentlyValid=`q.status='valid' AND q.revoked_at IS NULL AND (q.valid_from IS NULL OR q.valid_from<=${berlinDate}) AND (q.valid_until IS NULL OR q.valid_until>=${berlinDate})`;
 
 employeesRouter.get('/employees/overview',requirePermission('employees:read'),async(req,res,next)=>{
   try{
@@ -116,7 +118,7 @@ employeesRouter.get('/employees/overview',requirePermission('employees:read'),as
           FROM employee_object_assignments oa
           JOIN sites s ON s.tenant_id=oa.tenant_id AND s.id=oa.site_id
           WHERE oa.tenant_id=e.tenant_id AND oa.employee_id=e.id
-            AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+            AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
           ORDER BY oa.primary_assignment DESC,oa.starts_on DESC LIMIT 1
         ),'') AS current_object,
         CASE
@@ -128,7 +130,7 @@ employeesRouter.get('/employees/overview',requirePermission('employees:read'),as
             SELECT 1 FROM employee_qualifications q
             WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id
               AND ${qualificationCurrentlyValid} AND q.valid_until IS NOT NULL
-              AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'
+              AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'
           ) THEN 'läuft bald ab'
           WHEN EXISTS (
             SELECT 1 FROM employee_qualifications q
@@ -160,9 +162,9 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employee_qualifications q
          WHERE q.tenant_id=$1 AND q.status='valid' AND q.revoked_at IS NULL
-           AND (q.valid_from IS NULL OR q.valid_from<=CURRENT_DATE)
+           AND (q.valid_from IS NULL OR q.valid_from<=${berlinDate})
            AND q.valid_until IS NOT NULL
-           AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'`,[tenant]),
+           AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employee_qualifications q
          WHERE q.tenant_id=$1 AND (${qualificationProblem})`,[tenant]),
@@ -181,7 +183,7 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
          WHERE tenant_id=$1 AND status='approved' AND absence_type='sick' AND starts_at<=now() AND ends_at>=now()`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(DISTINCT employee_id)::int count FROM employee_object_assignments
-         WHERE tenant_id=$1 AND (ends_on IS NULL OR ends_on >= CURRENT_DATE)`,[tenant]),
+         WHERE tenant_id=$1 AND starts_on<=${berlinDate} AND (ends_on IS NULL OR ends_on >= ${berlinDate})`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employee_contracts
          WHERE tenant_id=$1 AND status='active'`,[tenant]),
@@ -189,10 +191,24 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
         `SELECT COUNT(*)::int count FROM qualification_catalog c
          JOIN employees e ON e.tenant_id=c.tenant_id
          WHERE c.tenant_id=$1 AND c.required=true AND c.active=true
+           AND e.employment_status IN ('active','probation')
            AND NOT EXISTS (
              SELECT 1 FROM employee_qualifications q
-             WHERE q.tenant_id=c.tenant_id AND q.employee_id=e.id AND q.code=c.code
+             LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
+             LEFT JOIN LATERAL (
+               SELECT v.lifecycle_state FROM dms_versions v
+               WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+                ORDER BY v.version_no DESC LIMIT 1
+             ) dv ON TRUE
+             WHERE q.tenant_id=c.tenant_id AND q.employee_id=e.id
+               AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
                AND ${qualificationCurrentlyValid}
+               AND (
+                 (c.required_document_type IS NULL AND COALESCE(jsonb_array_length(c.required_documents),0)=0)
+                 OR (d.document_status='active' AND d.approval_status='approved' AND dv.lifecycle_state='available'
+                   AND (d.valid_from IS NULL OR d.valid_from<=${berlinDate})
+                   AND (d.valid_until IS NULL OR d.valid_until>=${berlinDate}))
+               )
            )`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employees e
@@ -204,7 +220,7 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
         `SELECT e.name employee,q.code,COALESCE(q.valid_until::text,'') valid_until
          FROM employee_qualifications q JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
          WHERE q.tenant_id=$1 AND ${qualificationCurrentlyValid} AND q.valid_until IS NOT NULL
-         AND q.valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '90 days'
+         AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'
          ORDER BY q.valid_until,e.name LIMIT 10`,
         [tenant],
       ),
@@ -232,7 +248,7 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
            AND NOT EXISTS (
              SELECT 1 FROM employee_object_assignments oa
              WHERE oa.tenant_id=e.tenant_id AND oa.employee_id=e.id
-               AND (oa.ends_on IS NULL OR oa.ends_on>=CURRENT_DATE)
+               AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
            )`,[tenant]),
     ]);
     res.json({
@@ -280,7 +296,8 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
              LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
              LEFT JOIN LATERAL (
                SELECT v.lifecycle_state FROM dms_versions v
-                WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id ORDER BY v.version_no DESC LIMIT 1
+                WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
+                ORDER BY v.version_no DESC LIMIT 1
              ) dv ON TRUE
              WHERE q.tenant_id=$1 AND q.employee_id=$2 ORDER BY q.valid_until NULLS LAST`,[req.user!.tenantId,id]),
       query('SELECT * FROM employee_absences WHERE tenant_id=$1 AND employee_id=$2 ORDER BY starts_at DESC',[req.user!.tenantId,id]),
@@ -466,7 +483,7 @@ employeesRouter.patch('/employees/:id/object-assignments/:assignmentId',requireC
     }
     const row=(await query(
       `UPDATE employee_object_assignments SET ends_on=$4,primary_assignment=false,updated_at=now()
-       WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND (ends_on IS NULL OR ends_on>=CURRENT_DATE)
+       WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND (ends_on IS NULL OR ends_on>=${berlinDate})
        RETURNING *`,
       [user.tenantId,assignmentId,employeeId,body.ends_on],
     )).rows[0];
