@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import {beforeEach,describe,expect,it,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {MemoryRouter,Route,Routes} from 'react-router-dom';
 
 const apiMock=vi.hoisted(()=>vi.fn());
@@ -89,6 +89,48 @@ function renderFile(){
   return render(<MemoryRouter initialEntries={[`/nfc-devices/${deviceId}`]}><Routes>
     <Route path="/nfc-devices/:deviceId" element={<NfcDeviceFile/>}/>
   </Routes></MemoryRouter>);
+}
+
+const candidateA='00000000-0000-4000-8000-000000000041';
+const candidateB='00000000-0000-4000-8000-000000000042';
+const assignedBlockedA={id:candidateA,identifier:'TAG-A',device_type:'tag',manufacturer:'Acme',status:'blocked',
+  employee_id:employeeId,employee_name:'Ava Worker'};
+const assignedBlockedB={id:candidateB,identifier:'TAG-B',device_type:'tag',manufacturer:'Acme',status:'blocked',
+  employee_id:employeeId,employee_name:'Ava Worker'};
+
+function mockReplaceApi(devices:typeof options.devices=options.devices){
+  apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+    if(path.startsWith('/nfc-devices/overview'))return overview;
+    if(path.startsWith('/nfc-devices/inventory'))return {...inventory,rows:[{...device,status:'lost'}]};
+    if(path==='/nfc-devices/filter-options')return {...options,devices};
+    if(init?.method==='POST')return device;
+    if(path.startsWith(`/nfc-devices/${deviceId}/scan-history`))return scans;
+    return {};
+  });
+}
+
+async function openReplaceDialog(){
+  renderOverview();
+  fireEvent.click(await screen.findByRole('button',{name:'Ersatz'}));
+  return await screen.findByRole('dialog');
+}
+
+function selectExistingCandidate(dialog:HTMLElement,id:string){
+  fireEvent.change(screen.getByLabelText('Ersatzgerät-Art'),{target:{value:'existing'}});
+  fireEvent.change(dialog.querySelector('select[aria-label="Ersatzgerät"]') as HTMLSelectElement,{target:{value:id}});
+}
+
+function requiredChecks(dialog:HTMLElement):HTMLInputElement[]{
+  return Array.from(dialog.querySelectorAll('input[type="checkbox"][required]')) as HTMLInputElement[];
+}
+
+function checkRequired(dialog:HTMLElement){
+  for(const check of requiredChecks(dialog))if(!check.checked)fireEvent.click(check);
+}
+
+function replaceBody():Record<string,unknown>|undefined{
+  const call=apiMock.mock.calls.find(([path,init])=>String(path).endsWith('/replace')&&init?.method==='POST');
+  return call?JSON.parse(String(call[1]?.body)):undefined;
 }
 
 beforeEach(()=>{
@@ -272,6 +314,110 @@ describe('NFC-Geräteverwaltung',()=>{
     await waitFor(()=>expect(apiMock).toHaveBeenCalledWith(`/nfc-devices/${deviceId}/replace`,expect.objectContaining({method:'POST'})));
     const body=JSON.parse(String(apiMock.mock.calls.find(([path])=>String(path).endsWith('/replace'))?.[1]?.body));
     expect(body).toEqual(expect.objectContaining({acknowledge_existing_assignment:true,acknowledge_restricted:true,copy_assignment:false}));
+  });
+
+  it('Szenario A: setzt Bestätigungen beim Wechsel von Ersatzgerät A auf B zurück',async()=>{
+    mockReplaceApi([assignedBlockedA,assignedBlockedB]);
+    const dialog=await openReplaceDialog();
+    selectExistingCandidate(dialog,candidateA);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt A'}});
+    checkRequired(dialog);
+    expect(requiredChecks(dialog).every(check=>check.checked)).toBe(true);
+
+    selectExistingCandidate(dialog,candidateB);
+    expect(requiredChecks(dialog).every(check=>!check.checked)).toBe(true);
+    expect(screen.getByText(/TAG-B · Ava Worker · Gesperrt/)).toBeTruthy();
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    expect(replaceBody()).toBeUndefined();
+    expect(screen.getByText(/Zusammenfassung hat sich geändert/)).toBeTruthy();
+
+    // Ein Wechsel zurück darf die alte Bestätigung nicht wiederherstellen.
+    selectExistingCandidate(dialog,candidateA);
+    expect(requiredChecks(dialog).every(check=>!check.checked)).toBe(true);
+    selectExistingCandidate(dialog,candidateB);
+    checkRequired(dialog);
+    fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
+    await waitFor(()=>expect(replaceBody()).toBeDefined());
+    expect(replaceBody()).toEqual(expect.objectContaining({
+      new_device_id:candidateB,acknowledged_device_id:candidateB,reason:'Defekt A',
+      acknowledge_existing_assignment:true,acknowledge_restricted:true,
+    }));
+  });
+
+  it('Szenario B: macht die Bestätigung beim Wechsel auf ein neues Gerät ungültig',async()=>{
+    mockReplaceApi([assignedBlockedA]);
+    const dialog=await openReplaceDialog();
+    selectExistingCandidate(dialog,candidateA);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt'}});
+    checkRequired(dialog);
+    expect(requiredChecks(dialog).every(check=>check.checked)).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('Ersatzgerät-Art'),{target:{value:'new'}});
+    expect(requiredChecks(dialog).every(check=>!check.checked)).toBe(true);
+    expect(screen.getByText(/Neu nach Austausch aktiv/)).toBeTruthy();
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    expect(replaceBody()).toBeUndefined();
+    fireEvent.change(screen.getByLabelText(/NFC-Kennung des Ersatzgeräts/),{target:{value:'TAG-NEU'}});
+    fireEvent.change(within(dialog).getByLabelText(/Hersteller/),{target:{value:'Acme'}});
+    checkRequired(dialog);
+    fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
+    await waitFor(()=>expect(replaceBody()).toBeDefined());
+    expect(replaceBody()).toEqual(expect.objectContaining({
+      identifier:'TAG-NEU',manufacturer:'Acme',reason:'Defekt',copy_assignment:false,
+    }));
+    expect(replaceBody()?.new_device_id).toBeUndefined();
+  });
+
+  it('Szenario C: setzt Bestätigung und Zuordnungsfreigabe bei geänderter Übernahme zurück',async()=>{
+    mockReplaceApi([assignedBlockedA]);
+    const dialog=await openReplaceDialog();
+    selectExistingCandidate(dialog,candidateA);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt'}});
+    fireEvent.click(screen.getByLabelText(/Zuordnung übernehmen/));
+    checkRequired(dialog);
+    expect(screen.getByText(/Die bisherige Zuordnung wird auf das Ersatzgerät übernommen/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText(/Zuordnung übernehmen/));
+    expect((screen.getByLabelText(/bestätige den Austausch/) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText(/Bestehende Zuordnung des Ersatzgeräts/) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText(/nicht übernommen und nur in der Historie/)).toBeTruthy();
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    expect(replaceBody()).toBeUndefined();
+    checkRequired(dialog);
+    fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
+    await waitFor(()=>expect(replaceBody()).toBeDefined());
+    expect(replaceBody()).toEqual(expect.objectContaining({
+      new_device_id:candidateA,copy_assignment:false,acknowledge_existing_assignment:true,
+    }));
+  });
+
+  it('Szenario D: ungültige Bestätigung nach Änderung des Austauschgrunds',async()=>{
+    mockReplaceApi([assignedBlockedA]);
+    const dialog=await openReplaceDialog();
+    selectExistingCandidate(dialog,candidateA);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt'}});
+    checkRequired(dialog);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Verschleiß'}});
+    expect((screen.getByLabelText(/bestätige den Austausch/) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText(/Verschleiß/)).toBeTruthy();
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    expect(replaceBody()).toBeUndefined();
+    checkRequired(dialog);
+    fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
+    await waitFor(()=>expect(replaceBody()?.reason).toBe('Verschleiß'));
+  });
+
+  it('Szenario E: blockiert eine sofortige Ausführung nach geänderter Notiz',async()=>{
+    mockReplaceApi([assignedBlockedA]);
+    const dialog=await openReplaceDialog();
+    selectExistingCandidate(dialog,candidateA);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Defekt'}});
+    checkRequired(dialog);
+    fireEvent.change(screen.getByLabelText(/Notizen/),{target:{value:'Neue information'}});
+    expect((screen.getByLabelText(/bestätige den Austausch/) as HTMLInputElement).checked).toBe(false);
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    expect(replaceBody()).toBeUndefined();
+    expect(screen.getByText(/Zusammenfassung hat sich geändert/)).toBeTruthy();
   });
 
   it('archiviert ein Gerät über den begründeten Workflow',async()=>{
@@ -476,6 +622,32 @@ describe('NFC-Geräteakte',()=>{
     await screen.findByRole('heading',{name:'TAG-001'});
     expect(screen.queryByRole('button',{name:'Ersatzgerät festlegen'})).toBeNull();
     expect(screen.queryByRole('button',{name:'Reaktivieren'})).toBeNull();
+  });
+
+  it('Geräteakte: setzt Bestätigungen beim Ersatzgerätewechsel zurück und sendet erst nach erneuter Prüfung',async()=>{
+    apiMock.mockImplementation(async(path:string,init?:RequestInit)=>{
+      if(path===`/nfc-devices/${deviceId}/file`)return {...fileData,device:{...device,status:'lost'}};
+      if(path==='/nfc-devices/filter-options')return {...options,devices:[assignedBlockedA,assignedBlockedB]};
+      if(init?.method==='POST')return device;
+      return {};
+    });
+    renderFile();
+    fireEvent.click(await screen.findByRole('button',{name:'Ersatzgerät festlegen'}));
+    const dialog=await screen.findByRole('dialog');
+    selectExistingCandidate(dialog,candidateA);
+    fireEvent.change(screen.getByLabelText(/Austauschgrund/),{target:{value:'Verlust'}});
+    checkRequired(dialog);
+    expect(requiredChecks(dialog).every(check=>check.checked)).toBe(true);
+
+    selectExistingCandidate(dialog,candidateB);
+    expect(requiredChecks(dialog).every(check=>!check.checked)).toBe(true);
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement);
+    expect(replaceBody()).toBeUndefined();
+    checkRequired(dialog);
+    fireEvent.click(screen.getByRole('button',{name:'Austausch durchführen'}));
+    await waitFor(()=>expect(replaceBody()).toEqual(expect.objectContaining({
+      new_device_id:candidateB,acknowledged_device_id:candidateB,reason:'Verlust',
+    })));
   });
 
   it('verhindert Zuordnungsänderungen an gesperrten Geräten auch über die Stammdaten',async()=>{

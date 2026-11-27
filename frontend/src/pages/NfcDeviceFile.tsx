@@ -4,11 +4,12 @@ import {api,csrf,hasPermission} from '../lib/api';
 import {formatDate,formatDateTime} from '../lib/format';
 import {auditEventLabel,commonText,historyDetailText} from '../lib/text';
 import {
-  emptyNfcForm,nfcAssignmentDetail,nfcAssignmentLabel,nfcCanBlock,nfcCanReactivate,nfcCanRecover,nfcCanReplace,
+  emptyNfcForm,emptyNfcReplaceForm,nfcAssignmentDetail,nfcAssignmentLabel,nfcCanBlock,nfcCanReactivate,nfcCanRecover,nfcCanReplace,
   nfcFormFromDevice,nfcIsAssignable,nfcMasterDataPayloadFromForm,nfcMessage,
-  nfcScanAuthenticationLabel,nfcScanOutcome,nfcStatusClass,nfcStatusLabel,nfcStatusText,nfcTypeLabel,NfcDialog,NfcFormFields,NfcReasonDialog,
-  NfcAssignmentFields,NfcRecoverDialog,NfcReplaceDialog,NfcTimeline,validateNfcForm,
-  type NfcDocument,type NfcFileData,type NfcForm,type NfcOptions,type NfcScanRecord,
+  nfcReplaceIsConfirmed,nfcReplacePayload,nfcReplaceSnapshot,nfcReplaceSummary,nfcScanAuthenticationLabel,nfcScanOutcome,
+  nfcStatusClass,nfcStatusText,nfcTypeLabel,updateNfcReplaceForm,validateNfcForm,validateNfcReplace,
+  NfcDialog,NfcFormFields,NfcReasonDialog,NfcAssignmentFields,NfcRecoverDialog,NfcReplaceDialog,NfcTimeline,
+  type NfcDocument,type NfcFileData,type NfcForm,type NfcOptions,type NfcReplaceForm,type NfcScanRecord,
 } from './nfcParts';
 
 type Section='uebersicht'|'stammdaten'|'zuordnung'|'scans'|'verlauf'|'dokumente';
@@ -51,8 +52,8 @@ export function NfcDeviceFile(){
   const [dialog,setDialog]=useState<'edit'|'block'|'lost'|'replace'|'reactivate'|'recover'|'archive'|null>(null);
   const [reason,setReason]=useState('');
   const [lostDate,setLostDate]=useState(today);
-  const [replacement,setReplacement]=useState({identifier:'',device_type:'tag',manufacturer:'',mode:'new' as 'new'|'existing',
-    existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
+  const [replacement,setReplacement]=useState<NfcReplaceForm>(emptyNfcReplaceForm());
+  const [replaceConfirmation,setReplaceConfirmation]=useState<string|null>(null);
   const [recover,setRecover]=useState({found_at:today,identifier_confirmation:'',reason:''});
   const [scanFilters,setScanFilters]=useState<ScanFilters>(emptyScanFilters);
   const [scanPage,setScanPage]=useState(1);
@@ -65,7 +66,6 @@ export function NfcDeviceFile(){
   const [downloadError,setDownloadError]=useState('');
   const [busy,setBusy]=useState(false);
   const [dirty,setDirty]=useState(false);
-  const [replaceConfirmed,setReplaceConfirmed]=useState(false);
 
   const load=async()=>{
     if(!deviceId)return;
@@ -169,10 +169,8 @@ export function NfcDeviceFile(){
     if(!discardChanges('Nicht gespeicherte Änderungen verwerfen und den Vorgang starten?'))return;
     setError('');setSuccess('');setDialogError('');setDownloadError('');setReason('');setLostDate(today);setDialog(kind);
     discardLocalEdits();
-    setReplacement({identifier:'',device_type:device.device_type,manufacturer:device.manufacturer,mode:'new',
-      existing_device_id:'',reason:'',notes:'',copy_assignment:false,acknowledge_existing:false,acknowledge_restricted:false});
+    setReplacement(emptyNfcReplaceForm(device));setReplaceConfirmation(null);
     setRecover({found_at:today,identifier_confirmation:'',reason:''});
-    setReplaceConfirmed(false);
   };
 
   const saveMaster=()=>{
@@ -197,25 +195,14 @@ export function NfcDeviceFile(){
   };
 
   const candidate=(options.devices??[]).find(item=>item.id===replacement.existing_device_id);
-  const candidateAssignment=replacement.mode==='new'
-    ?[replacement.identifier.trim()||'Noch keine Kennung',commonText.notAssigned,'Neu nach Austausch aktiv'].join(' · ')
-    :candidate
-      ?[candidate.identifier,nfcAssignmentLabel(candidate),nfcStatusLabel(candidate.status)].join(' · ')
-      :'Noch kein Ersatzgerät ausgewählt';
-  const replacementPayload=()=>{
-    const payload:Record<string,unknown>={
-      reason:replacement.reason.trim(),notes:replacement.notes.trim(),copy_assignment:replacement.copy_assignment,
-    };
-    if(replacement.mode==='existing'){
-      payload.new_device_id=replacement.existing_device_id;
-      if(candidate?.employee_id||candidate?.site_id||candidate?.control_point_id)payload.acknowledge_existing_assignment=true;
-      if(candidate&&['lost','blocked'].includes(candidate.status))payload.acknowledge_restricted=true;
-    }else{
-      payload.identifier=replacement.identifier.trim();
-      payload.device_type=replacement.device_type;
-      payload.manufacturer=replacement.manufacturer.trim();
-    }
-    return payload;
+  const replacementSummary=nfcReplaceSummary(replacement,device,candidate);
+  const replacementSnapshot=nfcReplaceSnapshot(replacement,replacementSummary);
+  const replaceConfirmed=nfcReplaceIsConfirmed(replacement,replacementSummary,replaceConfirmation);
+  // Zentraler Weg: jede fachliche Änderung entzieht der bisherigen
+  // Bestätigung sofort die Gültigkeit.
+  const changeReplacement=(patch:Partial<NfcReplaceForm>)=>{
+    setReplacement(current=>updateNfcReplaceForm(current,patch));
+    setReplaceConfirmation(null);
   };
 
   const changeScanFilter=(key:keyof ScanFilters,value:string)=>{
@@ -461,34 +448,31 @@ export function NfcDeviceFile(){
       onClose={()=>setDialog(null)}/>}
 
     {dialog==='replace'&&<NfcReplaceDialog
-      identifier={replacement.identifier} onIdentifier={value=>setReplacement(current=>({...current,identifier:value}))}
-      deviceType={replacement.device_type} onDeviceType={value=>setReplacement(current=>({...current,device_type:value}))}
-      manufacturer={replacement.manufacturer} onManufacturer={value=>setReplacement(current=>({...current,manufacturer:value}))}
-      mode={replacement.mode} onMode={value=>setReplacement(current=>({...current,mode:value}))}
+      identifier={replacement.identifier} onIdentifier={value=>changeReplacement({identifier:value})}
+      deviceType={replacement.device_type} onDeviceType={value=>changeReplacement({device_type:value})}
+      manufacturer={replacement.manufacturer} onManufacturer={value=>changeReplacement({manufacturer:value})}
+      mode={replacement.mode} onMode={value=>changeReplacement({mode:value})}
       existingDeviceId={replacement.existing_device_id}
-      onExistingDeviceId={value=>setReplacement(current=>({...current,existing_device_id:value}))}
+      onExistingDeviceId={value=>changeReplacement({existing_device_id:value})}
       devices={(options.devices??[]).filter(item=>item.id!==device.id)}
-      oldDeviceLabel={[device.identifier,nfcStatusText(device),nfcAssignmentLabel(device)].join(' · ')}
-      candidateAssignment={candidateAssignment}
-      reason={replacement.reason} onReason={value=>setReplacement(current=>({...current,reason:value}))}
-      notes={replacement.notes} onNotes={value=>setReplacement(current=>({...current,notes:value}))}
-      copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>setReplacement(current=>({...current,copy_assignment:value}))}
+      summary={replacementSummary}
+      reason={replacement.reason} onReason={value=>changeReplacement({reason:value})}
+      notes={replacement.notes} onNotes={value=>changeReplacement({notes:value})}
+      copyAssignment={replacement.copy_assignment} onCopyAssignment={value=>changeReplacement({copy_assignment:value})}
       acknowledgeExisting={replacement.acknowledge_existing}
-      onAcknowledgeExisting={value=>setReplacement(current=>({...current,acknowledge_existing:value}))}
+      onAcknowledgeExisting={value=>changeReplacement({acknowledge_existing:value})}
       acknowledgeRestricted={replacement.acknowledge_restricted}
-      onAcknowledgeRestricted={value=>setReplacement(current=>({...current,acknowledge_restricted:value}))}
-      confirmed={replaceConfirmed} onConfirmed={setReplaceConfirmed}
+      onAcknowledgeRestricted={value=>changeReplacement({acknowledge_restricted:value})}
+      confirmed={replaceConfirmed}
+      onConfirmed={value=>setReplaceConfirmation(value?replacementSnapshot:null)}
       error={dialogError} busy={busy}
       onConfirm={()=>{
-        if(!replaceConfirmed){setDialogError('Bitte bestätigen Sie die Zusammenfassung des Austauschs.');return;}
-        if(replacement.reason.trim().length<3){setDialogError(commonText.reasonRequired);return;}
-        if(replacement.mode==='new'&&(!replacement.identifier.trim()||!replacement.manufacturer.trim())){
-          setDialogError('Bitte Kennung und Hersteller des Ersatzgeräts angeben.');return;
+        if(!nfcReplaceIsConfirmed(replacement,replacementSummary,replaceConfirmation)){
+          setDialogError('Die Zusammenfassung hat sich geändert. Bitte erneut prüfen und bestätigen.');return;
         }
-        if(replacement.mode==='existing'&&!replacement.existing_device_id){
-          setDialogError('Bitte ein vorhandenes Ersatzgerät auswählen.');return;
-        }
-        runStatus('replace',replacementPayload(),'Austausch wurde dokumentiert.');
+        const validation=validateNfcReplace(replacement,candidate);
+        if(validation){setDialogError(validation);return;}
+        runStatus('replace',nfcReplacePayload(replacement,candidate),'Austausch wurde dokumentiert.');
       }} onClose={()=>setDialog(null)}/>}
   </section>;
 }

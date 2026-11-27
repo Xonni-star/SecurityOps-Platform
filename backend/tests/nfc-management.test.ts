@@ -598,7 +598,8 @@ describe('NFC device management routes',()=>{
     expect(calls("SET status='replaced'")).toHaveLength(0);
 
     const withAck=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
-      new_device_id:newDevice,reason:'Defekt',copy_assignment:false,acknowledge_existing_assignment:true,
+      new_device_id:newDevice,acknowledged_device_id:newDevice,reason:'Defekt',copy_assignment:false,
+      acknowledge_existing_assignment:true,
     });
     expect(withAck.status).toBe(201);
     expect(withAck.body.device.id).toBe(newDevice);
@@ -649,11 +650,70 @@ describe('NFC device management routes',()=>{
     expect(withoutClearance.status).toBe(409);
     expect(withoutClearance.body.error).toContain('gesperrt oder verloren');
     const cleared=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
-      new_device_id:newDevice,reason:'Defekt',copy_assignment:false,acknowledge_restricted:true,
+      new_device_id:newDevice,acknowledged_device_id:newDevice,reason:'Defekt',copy_assignment:false,
+      acknowledge_restricted:true,
     });
     expect(cleared.status).toBe(201);
     expect(cleared.body.device.status).toBe('active');
     expect(auditCall('nfc_device.replaced')?.[1]?.[5]).toEqual(expect.objectContaining({acknowledge_restricted:true}));
+  });
+
+  it('binds confirmations to the submitted replacement device and rejects manipulated calls',async()=>{
+    const otherDevice='00000000-0000-4000-8000-000000000099';
+    const candidate={...deviceRow,id:newDevice,identifier:'TAG-002',status:'active',employee_id:employee,
+      control_point_id:null,site_id:null};
+    queryMock.mockImplementation(async(sql:string,values?:unknown[])=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('SELECT * FROM nfc_devices')&&sql.includes('FOR UPDATE')){
+        if(values?.[1]===otherDevice)return result([]);
+        return result([values?.[1]===device?replaceableRow:candidate]);
+      }
+      if(sql.includes("status='replaced'"))return result([{...deviceRow,status:'replaced'}]);
+      if(sql.includes("SET status='active'"))return result([{...candidate,status:'active'}]);
+      if(sql.includes('INSERT INTO audit_events'))return result([{id:'audit-1'}]);
+      return result([]);
+    });
+
+    const withoutAck=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:newDevice,acknowledged_device_id:newDevice,reason:'Defekt',copy_assignment:false,
+    });
+    expect(withoutAck.status).toBe(409);
+    expect(withoutAck.body.error).toContain('bereits zugeordnet');
+
+    const invalidAck=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:newDevice,acknowledged_device_id:newDevice,reason:'Defekt',copy_assignment:false,
+      acknowledge_existing_assignment:'bestätigt',
+    });
+    expect(invalidAck.status).toBe(400);
+
+    const missingScope=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:newDevice,reason:'Defekt',copy_assignment:false,acknowledge_existing_assignment:true,
+    });
+    expect(missingScope.status).toBe(400);
+    expect(missingScope.body.error).toContain('zugeordnet sein');
+
+    const staleScope=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:newDevice,acknowledged_device_id:otherDevice,reason:'Defekt',copy_assignment:false,
+      acknowledge_existing_assignment:true,
+    });
+    expect(staleScope.status).toBe(409);
+    expect(staleScope.body.error).toContain('anderes Ersatzgerät');
+
+    const wrongCandidate=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:otherDevice,acknowledged_device_id:otherDevice,reason:'Defekt',copy_assignment:false,
+      acknowledge_existing_assignment:true,
+    });
+    expect(wrongCandidate.status).toBe(404);
+
+    const valid=await request(app).post(`/api/v1/nfc-devices/${device}/replace`).set(csrf).send({
+      new_device_id:newDevice,acknowledged_device_id:newDevice,reason:'Defekt',copy_assignment:false,
+      acknowledge_existing_assignment:true,
+    });
+    expect(valid.status).toBe(201);
+    expect(calls("status='replaced'")).toHaveLength(1);
+    expect(auditCall('nfc_device.replaced')?.[1]?.[5]).toEqual(expect.objectContaining({
+      new_device_id:newDevice,acknowledged_device_id:newDevice,acknowledge_existing_assignment:true,
+    }));
   });
 
   it('keeps the audit actor for lifecycle events in the device file',async()=>{
