@@ -9,6 +9,8 @@ export function errorHandler(err:Error,_req:Request,res:Response,_next:NextFunct
   }
   const status=(err as Error&{status?:number}).status;
   const expose=(err as Error&{expose?:boolean}).expose===true;
+  const reasonCode=(err as Error&{reason_code?:string}).reason_code;
+  const reasonDetails=(err as Error&{details?:Record<string,unknown>}).details;
   // Explizit freigegebene 5xx-Fehler (z. B. ein nicht erreichbarer
   // Virenscanner) erhalten eine verständliche deutsche Meldung, ohne dass
   // interne Fehlerdetails oder Zugangsdaten nach außen gelangen.
@@ -17,5 +19,7 @@ export function errorHandler(err:Error,_req:Request,res:Response,_next:NextFunct
   res.status(clientError?status:500).json({
     error:clientError?(err.message||'Ungültige Anfrage'):'Interner Serverfehler',
     ...(fields?{fields}:{}),
+    ...(clientError&&reasonCode?{reason_code:reasonCode}:{}),
+    ...(clientError&&reasonDetails?{details:reasonDetails}:{}),
   });
 }

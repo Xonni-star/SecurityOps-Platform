@@ -22,6 +22,19 @@ describe('server-side shift eligibility',()=>{
     expect(result.reasons.find(reason=>reason.code==='employment_status')?.link).toEqual({type:'employee',id:base.employee.id,label:'Mia Guard'});
   });
 
+  it('blocks future hires and employees leaving before the shift ends without duplicate warnings',()=>{
+    const futureHire=evaluateShiftEligibility({...base,employee:{...base.employee,hire_date:'2026-12-05'}});
+    expect(futureHire.status).toBe('ineligible');
+    expect(futureHire.reasons.map(reason=>reason.code)).toContain('employment_not_started');
+    const earlyLeave=evaluateShiftEligibility({...base,employee:{...base.employee,termination_date:'2026-11-30'}});
+    expect(earlyLeave.status).toBe('ineligible');
+    expect(earlyLeave.reasons.map(reason=>reason.code)).toContain('employment_ended');
+    const terminated=evaluateShiftEligibility({...base,employee:{...base.employee,employment_status:'terminated',termination_date:'2026-11-30'}});
+    expect(terminated.reasons.filter(reason=>reason.code.startsWith('employment_'))).toHaveLength(1);
+    const withinEmployment=evaluateShiftEligibility({...base,employee:{...base.employee,hire_date:'2026-01-01',termination_date:'2026-12-31'}});
+    expect(withinEmployment.status).toBe('eligible');
+  });
+
   it('rejects revoked and expired evidence at the time of deployment and links the document',()=>{
     const revoked=evaluateShiftEligibility({...base,qualifications:[{...base.qualifications[0],status:'revoked',revoked_at:'2026-11-01T00:00:00Z'}]});
     expect(revoked.status).toBe('ineligible');

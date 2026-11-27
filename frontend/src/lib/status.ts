@@ -105,6 +105,11 @@ const general: Record<string, string> = {
   'gültig': 'Gültig',
   'läuft bald ab': 'Läuft bald ab',
   'abgelaufen': 'Abgelaufen',
+  'widerrufen': 'Widerrufen',
+  'ungültig': 'Ungültig',
+  'nachweis fehlt': 'Nachweis fehlt',
+  'prüfung ausstehend': 'Prüfung ausstehend',
+  'noch nicht gültig': 'Noch nicht gültig',
   'keine Daten': 'Keine Daten',
 };
 

@@ -62,6 +62,9 @@ async function loadDmsVersionForRead(req:Request,res:Response,documentId:string,
   const row=(await query(`SELECT d.*,v.* FROM dms_documents d JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
     WHERE d.tenant_id=$1 AND d.id=$2 AND v.id=$3 AND d.document_status='active'`,[req.user!.tenantId,documentId,versionId])).rows[0];
   if(!row){res.status(404).json({error:'Dokumentversion nicht gefunden'});return null;}
+  // Freigabe ist dokumentweit verbindlich: eine gescannte, aber nicht
+  // freigegebene Version darf auch mit dms:read nicht gelesen werden.
+  if(row.approval_status!=='approved'){res.status(409).json({error:'Dokument ist nicht freigegeben',state:row.approval_status});return null;}
   if(row.customer_id&&!customerDocumentPermission(req,'customer_documents:read')){res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});return null;}
   siteAccess(req,row.site_id??null);
   if(!canDownloadDmsVersion(row.document_status,row.lifecycle_state)){res.status(409).json({error:'Dokumentversion ist nicht verfügbar',state:row.lifecycle_state});return null;}
@@ -280,7 +283,7 @@ dmsRouter.post('/dms/documents/:documentId/approve',requirePermission('dms:write
     if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
     if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Hochladende dürfen eigene Dokumente nicht freigeben'});
     if(document.document_status!=='active'||!['draft','pending_approval','rejected'].includes(document.approval_status))return res.status(409).json({error:'Dokument befindet sich nicht in einem freigabefähigen Status'});
-    const latest=(await query(`SELECT * FROM dms_versions WHERE tenant_id=$1 AND document_id=$2 ORDER BY version_no DESC LIMIT 1`,[req.user!.tenantId,documentId])).rows[0];
+    const latest=(await query(`SELECT * FROM dms_versions WHERE tenant_id=$1 AND document_id=$2 AND lifecycle_state='available' ORDER BY version_no DESC LIMIT 1`,[req.user!.tenantId,documentId])).rows[0];
     if(latest?.lifecycle_state!=='available')return res.status(409).json({error:'Für die Freigabe ist keine freigegebene Dokumentversion verfügbar'});
     const row=(await query(`UPDATE dms_documents SET approval_status='approved',approved_by=$3,approved_at=now(),reviewed_at=now(),rejection_reason=NULL,updated_at=now()
       WHERE tenant_id=$1 AND id=$2 AND approval_status<>'approved' RETURNING *`,[req.user!.tenantId,documentId,req.user!.id])).rows[0];
@@ -298,6 +301,7 @@ dmsRouter.post('/dms/documents/:documentId/return-for-revision',requirePermissio
     const document=(await query('SELECT * FROM dms_documents WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,documentId])).rows[0];
     if(!document)return res.status(404).json({error:'Dokument nicht gefunden'});
     siteAccess(req,document.site_id??null,'dms:write');
+    if(document.customer_id&&!customerDocumentPermission(req,'customer_documents:write'))return res.status(403).json({error:'Unzureichende Berechtigungen für Kundendokumente'});
     if(document.created_by===req.user!.id&&req.user!.isSystemAdmin!==true)return res.status(403).json({error:'Hochladende dürfen über eigene Dokumente nicht entscheiden'});
     if(document.document_status!=='active'||!['pending_approval','approved'].includes(document.approval_status))return res.status(409).json({error:'Dokument kann nicht zur Überarbeitung zurückgegeben werden'});
     const row=(await query(`UPDATE dms_documents SET approval_status='rejected',approval_feedback=$3,rejection_reason=$3,reviewed_at=now(),approved_by=NULL,approved_at=NULL,updated_at=now()
@@ -316,14 +320,27 @@ dmsRouter.post('/dms/documents/:documentId/versions',requirePermission('dms:writ
     const body=z.object({content_base64:z.string(),content_type:z.string().trim().min(1).max(160),retention_until:z.string().datetime({offset:true}).nullable().optional(),client_mutation_id:uuid}).strict().parse(req.body);
     const content=decodeContent(body.content_base64);validateDmsUpload(content,body.content_type,env.DMS_MAX_BYTES,allowedTypes);
     const versionId=randomUUID();const objectKey=`${req.user!.tenantId}/${document.id}/${versionId}`;await dmsStorage.put(objectKey,content,body.content_type);
+    let approvalInvalidated=false;
     try{
       await withTransaction(async tx=>{
         await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`${req.user!.tenantId}:${document.id}`]);
         const current=(await tx.query<{current:number|null}>('SELECT MAX(version_no) AS current FROM dms_versions WHERE tenant_id=$1 AND document_id=$2',[req.user!.tenantId,document.id])).rows[0]?.current;
-        return (await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
+        const version=(await tx.query(`INSERT INTO dms_versions(id,tenant_id,document_id,version_no,object_key,size_bytes,content_type,sha256,lifecycle_state,uploaded_by,uploaded_session_id,uploaded_device_id,retention_until)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,'quarantined',$9,$10,(SELECT device_id FROM sessions WHERE id=$10),$11) RETURNING *`,
           [versionId,req.user!.tenantId,document.id,nextDmsVersion(current??undefined),objectKey,content.byteLength,body.content_type,sha256(content),req.user!.id,session(req),body.retention_until??null])).rows[0];
+        // Neue Inhalte dürfen nicht unter dem alten Freigabestempel veröffentlicht
+        // werden: die Freigabe wird mit dem Anlegen der Version in derselben
+        // Transaktion entzogen und muss erneut durch den Workflow erfolgen.
+        const invalidated=(await tx.query(`UPDATE dms_documents
+          SET approval_status='pending_approval',approved_by=NULL,approved_at=NULL,reviewed_at=NULL,
+              approval_feedback=NULL,rejection_reason=NULL,updated_at=now()
+          WHERE tenant_id=$1 AND id=$2 AND approval_status='approved' RETURNING id`,
+          [req.user!.tenantId,document.id])).rows[0];
+        approvalInvalidated=Boolean(invalidated);
+        return version;
       });
+      if(approvalInvalidated)await recordAudit(req.user!.tenantId,req.user!.id,'dms.document.approval_invalidated','dms_document',document.id,
+        {reason:'new_version_uploaded',version_id:versionId});
       await query(`UPDATE dms_versions SET lifecycle_state='scanning' WHERE tenant_id=$1 AND id=$2`,[req.user!.tenantId,versionId]);
       let scan;
       try{scan=await dmsScanner.scan(content);}catch(error){

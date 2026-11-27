@@ -35,7 +35,7 @@ const baseUser={
   is_system_admin:false,session_id:sessionId,csrf_token:'csrf-value',
   expires_at:'2099-01-01',device_id:'00000000-0000-4000-8000-0000000000ee',
 };
-const document={id:documentId,tenant_id:tenant,site_id:site,title:'Testdokument',document_status:'active'};
+const document={id:documentId,tenant_id:tenant,site_id:site,title:'Testdokument',document_status:'active',approval_status:'approved'};
 const cleanContent='SecurityOps Testdokument';
 let activeUser:Record<string,unknown>;
 let downloadRow:Record<string,unknown>;
@@ -88,6 +88,7 @@ beforeEach(()=>{
     if(sql.includes('INSERT INTO dms_versions'))return result([version],1);
     if(sql.includes("UPDATE dms_versions SET lifecycle_state='available'"))return result([version],1);
     if(sql.includes('UPDATE dms_versions'))return result([],1);
+    if(sql.includes("SET approval_status='pending_approval'"))return result([{id:documentId}],1);
     if(sql.includes('INSERT INTO audit_events'))return result([],1);
     if(sql.includes('FROM dms_documents d JOIN dms_versions v'))return result([downloadRow],1);
     if(sql.includes('FROM dms_documents WHERE'))return result([document],1);
@@ -187,6 +188,26 @@ describe('DMS upload security and provider failures',()=>{
     expect(response.status).toBe(500);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO dms_documents'))).toBe(false);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO audit_events'))).toBe(false);
+  });
+
+  it.each(['draft','pending_approval','rejected'])('refuses to download an available but unapproved document (%s)',async(approvalStatus)=>{
+    downloadRow={...downloadRow,approval_status:approvalStatus};
+    const response=await request(app)
+      .get(`/api/v1/dms/documents/${documentId}/versions/00000000-0000-4000-8000-0000000000c1/download`)
+      .set('Cookie',csrf);
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('nicht freigegeben');
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it('invalidates an existing approval when a new version is uploaded',async()=>{
+    const response=await postVersion(versionBody());
+    expect([200,201]).toContain(response.status);
+    const invalidation=queryMock.mock.calls.find(([sql])=>String(sql).includes("SET approval_status='pending_approval'"));
+    expect(invalidation?.[0]).toContain('approved_by=NULL');
+    expect(invalidation?.[0]).toContain("approval_status='approved'");
+    const audit=queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO audit_events'));
+    expect(audit?.[1]?.[2]).toBe('dms.document.approval_invalidated');
   });
 
   it('does not allow downloading a version that is not released',async()=>{

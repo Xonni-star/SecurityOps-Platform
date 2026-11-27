@@ -36,9 +36,10 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
     const startsAt=iso(shift.starts_at);
     const endsAt=iso(shift.ends_at);
     const employees=(await query<{
-      id:string;name:string;employment_status:string|null;starts_on:string;ends_on:string|null;
+      id:string;name:string;employment_status:string|null;hire_date:string|null;termination_date:string|null;
+      starts_on:string;ends_on:string|null;
     }>(
-      `SELECT DISTINCT ON (e.id) e.id,e.name,e.employment_status,oa.starts_on,oa.ends_on
+      `SELECT DISTINCT ON (e.id) e.id,e.name,e.employment_status,e.hire_date,e.termination_date,oa.starts_on,oa.ends_on
        FROM employee_object_assignments oa
        JOIN employees e ON e.tenant_id=oa.tenant_id AND e.id=oa.employee_id
        WHERE oa.tenant_id=$1 AND oa.site_id=$2 AND oa.starts_on<=$3::date
@@ -112,6 +113,7 @@ staffingRouter.get('/sites/:id/shifts/:shiftId/eligibility',requireAuth,requireP
     const verdicts=employees.map(employee=>{
       const input:EligibilityInput={
         employee:{id:employee.id,name:employee.name,employment_status:employee.employment_status,
+          hire_date:employee.hire_date,termination_date:employee.termination_date,
           assignment:{starts_on:employee.starts_on,ends_on:employee.ends_on}},
         shift:{starts_at:startsAt,ends_at:endsAt,required_qualification_codes:requiredCodes},
         qualifications:qualificationRows.filter(row=>row.employee_id===employee.id).map(row=>({

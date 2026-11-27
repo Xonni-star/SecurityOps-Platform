@@ -66,6 +66,32 @@ describe('dienstplanung authorization and isolation',()=>{
     expect(response.status).toBe(403);
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO schedule_assignments'))).toBe(false);
   });
+  it('rejects a direct assignment of an employee without the required qualification',async()=>{
+    const future='2099-12-01T08:00:00Z';
+    queryMock.mockImplementation(async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes('FROM sessions'))return result([session]);
+      if(text.includes('INSERT INTO sync_receipts'))return result([{id:'receipt-id'}]);
+      if(text.includes('SELECT sh.*'))return result([{id:'shift-id',site_id:session.site_ids[0],starts_at:future,ends_at:'2099-12-01T16:00:00Z',period_id:'period-1',period_status:'published',required_qualification_codes:['sachkunde_34a']}]);
+      if(text.includes('SELECT id FROM employees'))return result([{id:'00000000-0000-4000-8000-000000000061'}]);
+      if(text.includes('SELECT id,name,employment_status,hire_date,termination_date'))return result([{
+        id:'00000000-0000-4000-8000-000000000061',name:'Ohne Qualifikation',employment_status:'active',hire_date:null,termination_date:null,
+      }]);
+      if(text.includes('SELECT starts_on,ends_on FROM employee_object_assignments'))return result([{starts_on:'2026-01-01',ends_on:null}]);
+      if(text.includes('SELECT c.code FROM site_qualification_requirements'))return result([{code:'sachkunde_34a'}]);
+      if(text.includes('SELECT r.parameters'))return result([{parameters:{}}]);
+      return result([]);
+    });
+    const response=await request(app).post('/api/v1/scheduling/shifts/00000000-0000-4000-8000-000000000060/assignments').set(csrf).send({
+      employee_id:'00000000-0000-4000-8000-000000000061',
+      client_mutation_id:'00000000-0000-4000-8000-000000000062',
+    });
+    expect(response.status).toBe(409);
+    expect(response.body.reason_code).toBe('qualification_missing');
+    expect(response.body.error).toContain('Erforderliche Qualifikation');
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO schedule_assignments'))).toBe(false);
+  });
+
   it('filters conflict findings by the granted sites',async()=>{
     queryMock.mockImplementation(async(sql:string)=>sql.includes('FROM sessions')?result([session]):result([]));
     const response=await request(app).get('/api/v1/scheduling/conflicts').set('Cookie',csrf.Cookie);

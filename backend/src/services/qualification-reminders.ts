@@ -94,6 +94,9 @@ async function processTenant(tenantId:string,today:string,now:Date):Promise<numb
        COALESCE(c.name,q.code) name,q.valid_until,(q.valid_until-$1::date)::integer days_left
       FROM employee_qualifications q
       JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
+        AND e.employment_status IN ('active','probation')
+        AND (e.hire_date IS NULL OR e.hire_date<=$1::date)
+        AND (e.termination_date IS NULL OR e.termination_date>=$1::date)
       LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
         AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
       JOIN qualification_reminder_settings s ON s.tenant_id=q.tenant_id
@@ -124,6 +127,9 @@ async function processTenant(tenantId:string,today:string,now:Date):Promise<numb
       JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND c.required=true AND c.active=true
         AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
       JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
+        AND e.employment_status IN ('active','probation')
+        AND (e.hire_date IS NULL OR e.hire_date<=$1::date)
+        AND (e.termination_date IS NULL OR e.termination_date>=$1::date)
       WHERE q.tenant_id=$2
         AND (q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL
              OR (q.valid_until IS NOT NULL AND q.valid_until<$1::date))`,
@@ -148,6 +154,8 @@ async function processTenant(tenantId:string,today:string,now:Date):Promise<numb
       FROM employees e
       JOIN qualification_catalog c ON c.tenant_id=e.tenant_id AND c.required=true AND c.active=true
       WHERE e.tenant_id=$1 AND e.employment_status IN ('active','probation')
+        AND (e.hire_date IS NULL OR e.hire_date<=$1::date)
+        AND (e.termination_date IS NULL OR e.termination_date>=$1::date)
         AND NOT EXISTS (
           SELECT 1 FROM employee_qualifications q
            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND q.code=c.code

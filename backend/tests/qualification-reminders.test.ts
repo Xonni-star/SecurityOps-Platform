@@ -152,7 +152,7 @@ describe('qualification reminders: Qualifikationserinnerungen',()=>{
   });
 
   it('erzeugt qualification.missing_required mit Katalog als Entität',async()=>{
-    on("e.employment_status IN ('active','probation')",[{
+    on('NULL::date valid_until,0 days_left',[{
       tenant_id:tenant,qualification_id:null,employee_id:employee,employee_name:'Mia Guard',
       catalog_id:catalog,code:'erste_hilfe',name:'Erste Hilfe',valid_until:null,days_left:0,
     }]);

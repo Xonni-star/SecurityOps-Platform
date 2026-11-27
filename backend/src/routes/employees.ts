@@ -4,6 +4,8 @@ import {query,withTransaction} from '../db/pool.js';
 import {requireAuth,requireCsrf,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
 import {classifyQualification,daysUntil,evidenceStatusOf} from '../services/qualification-status.js';
+import {qualificationStatesCte,qualificationTodaySql} from '../services/qualification-status-sql.js';
+import {reevaluatePlannedAssignments} from '../services/staffing-verdict.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
@@ -103,44 +105,50 @@ export const employeesRouter=Router();
 employeesRouter.use('/employees',requireAuth);
 
 /** Einheitlicher Berliner Kalendertag für alle Gültigkeitsvergleiche. */
-const berlinDate=`(now() AT TIME ZONE 'Europe/Berlin')::date`;
-// Zentrale Gültigkeitsregeln für die kompakten Mitarbeiteransichten. Die
-// vollständige Klassifikation liegt in services/qualification-status.ts.
-const qualificationProblem=`q.status IN ('expired','revoked','invalid') OR q.revoked_at IS NOT NULL OR (q.valid_until IS NOT NULL AND q.valid_until<${berlinDate}) OR (q.valid_from IS NOT NULL AND q.valid_from>${berlinDate})`;
-const qualificationCurrentlyValid=`q.status='valid' AND q.revoked_at IS NULL AND (q.valid_from IS NULL OR q.valid_from<=${berlinDate}) AND (q.valid_until IS NULL OR q.valid_until>=${berlinDate})`;
+const berlinDate=qualificationTodaySql;
+/**
+ * Kompakte Mitarbeiteransicht auf Basis der zentralen Qualifikationsklassifikation.
+ * Bei mehreren Zuordnungen gilt das fachlich schwerwiegendste Problem, nicht der
+ * erste gefundene Datensatz.
+ */
+const qualificationStatusCase=(alias='t')=>`CASE
+  WHEN 'revoked'=ANY(${alias}.qualification_issue_codes) THEN 'widerrufen'
+  WHEN 'invalid'=ANY(${alias}.qualification_issue_codes) THEN 'ungültig'
+  WHEN 'expired'=ANY(${alias}.qualification_issue_codes) THEN 'abgelaufen'
+  WHEN 'missing_evidence'=ANY(${alias}.qualification_issue_codes) THEN 'nachweis fehlt'
+  WHEN 'awaiting_review'=ANY(${alias}.qualification_issue_codes) THEN 'prüfung ausstehend'
+  WHEN 'not_yet_valid'=ANY(${alias}.qualification_issue_codes) THEN 'noch nicht gültig'
+  WHEN 'expiring'=ANY(${alias}.qualification_issue_codes) THEN 'läuft bald ab'
+  WHEN 'valid'=ANY(${alias}.qualification_issue_codes) THEN 'gültig'
+  ELSE 'keine Daten' END`;
+
+employeesRouter.get('/employees',requirePermission('employees:read'),async(req,res,next)=>{
+  try{
+    const rows=(await query('SELECT * FROM employees WHERE tenant_id=$1 ORDER BY name',[req.user!.tenantId])).rows;
+    res.json(rows);
+  }catch(error){next(error);}
+});
 
 employeesRouter.get('/employees/overview',requirePermission('employees:read'),async(req,res,next)=>{
   try{
     const rows=(await query(
-      `SELECT e.*,
-        COALESCE((
-          SELECT s.name
-          FROM employee_object_assignments oa
-          JOIN sites s ON s.tenant_id=oa.tenant_id AND s.id=oa.site_id
-          WHERE oa.tenant_id=e.tenant_id AND oa.employee_id=e.id
-            AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
-          ORDER BY oa.primary_assignment DESC,oa.starts_on DESC LIMIT 1
-        ),'') AS current_object,
-        CASE
-          WHEN EXISTS (
-            SELECT 1 FROM employee_qualifications q
-            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND (${qualificationProblem})
-          ) THEN 'abgelaufen'
-          WHEN EXISTS (
-            SELECT 1 FROM employee_qualifications q
-            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id
-              AND ${qualificationCurrentlyValid} AND q.valid_until IS NOT NULL
-              AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'
-          ) THEN 'läuft bald ab'
-          WHEN EXISTS (
-            SELECT 1 FROM employee_qualifications q
-            WHERE q.tenant_id=e.tenant_id AND q.employee_id=e.id AND ${qualificationCurrentlyValid}
-          ) THEN 'gültig'
-          ELSE 'keine Daten'
-        END AS qualification_status
-       FROM employees e
-       WHERE e.tenant_id=$1
-       ORDER BY e.name`,
+      `${qualificationStatesCte()}
+       SELECT t.*,${qualificationStatusCase('t')} AS qualification_status
+       FROM (
+         SELECT e.*,
+           COALESCE((
+             SELECT s.name
+             FROM employee_object_assignments oa
+             JOIN sites s ON s.tenant_id=oa.tenant_id AND s.id=oa.site_id
+             WHERE oa.tenant_id=e.tenant_id AND oa.employee_id=e.id
+               AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
+             ORDER BY oa.primary_assignment DESC,oa.starts_on DESC LIMIT 1
+           ),'') AS current_object,
+           COALESCE((
+             SELECT array_agg(DISTINCT s.computed_status) FROM states s WHERE s.employee_id=e.id
+           ),'{}'::text[]) AS qualification_issue_codes
+         FROM employees e WHERE e.tenant_id=$1
+       ) t ORDER BY t.name`,
       [req.user!.tenantId],
     )).rows;
     res.json(rows);
@@ -150,7 +158,7 @@ employeesRouter.get('/employees/overview',requirePermission('employees:read'),as
 employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),async(req,res,next)=>{
   try{
     const tenant=req.user!.tenantId;
-    const [employees,expiring,expired,shifts,openAbsences,vacationAbsences,sickAbsences,assignments,contracts,missingQualifications,missingDocuments,expiringRows,missingDocumentRows,pendingTasks,withoutObject]=await Promise.all([
+    const [employees,statusCounts,shifts,openAbsences,vacationAbsences,sickAbsences,assignments,contracts,missingQualifications,missingDocuments,expiringRows,missingDocumentRows,pendingTasks,withoutObject]=await Promise.all([
       query<{total:number;active:number;inactive:number;on_leave:number;sick:number;terminated:number}>(
         `SELECT COUNT(*)::int total,
           COUNT(*) FILTER(WHERE employment_status IN ('active','probation'))::int active,
@@ -159,15 +167,9 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
           COUNT(*) FILTER(WHERE employment_status='leave')::int sick,
           COUNT(*) FILTER(WHERE employment_status='terminated')::int terminated
          FROM employees WHERE tenant_id=$1`,[tenant]),
-      query<{count:number}>(
-        `SELECT COUNT(*)::int count FROM employee_qualifications q
-         WHERE q.tenant_id=$1 AND q.status='valid' AND q.revoked_at IS NULL
-           AND (q.valid_from IS NULL OR q.valid_from<=${berlinDate})
-           AND q.valid_until IS NOT NULL
-           AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'`,[tenant]),
-      query<{count:number}>(
-        `SELECT COUNT(*)::int count FROM employee_qualifications q
-         WHERE q.tenant_id=$1 AND (${qualificationProblem})`,[tenant]),
+      query<{computed_status:string;count:number}>(
+        `${qualificationStatesCte()}
+         SELECT computed_status,COUNT(*)::int count FROM states GROUP BY computed_status`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(DISTINCT a.employee_id)::int count FROM schedule_assignments a
          JOIN schedule_shifts s ON s.tenant_id=a.tenant_id AND s.id=a.shift_id
@@ -188,27 +190,16 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
         `SELECT COUNT(*)::int count FROM employee_contracts
          WHERE tenant_id=$1 AND status='active'`,[tenant]),
       query<{count:number}>(
-        `SELECT COUNT(*)::int count FROM qualification_catalog c
+        `${qualificationStatesCte()}
+         SELECT COUNT(*)::int count FROM qualification_catalog c
          JOIN employees e ON e.tenant_id=c.tenant_id
          WHERE c.tenant_id=$1 AND c.required=true AND c.active=true
            AND e.employment_status IN ('active','probation')
            AND NOT EXISTS (
-             SELECT 1 FROM employee_qualifications q
-             LEFT JOIN dms_documents d ON d.tenant_id=q.tenant_id AND d.id=q.document_id
-             LEFT JOIN LATERAL (
-               SELECT v.lifecycle_state FROM dms_versions v
-               WHERE v.tenant_id=d.tenant_id AND v.document_id=d.id AND v.lifecycle_state='available'
-                ORDER BY v.version_no DESC LIMIT 1
-             ) dv ON TRUE
-             WHERE q.tenant_id=c.tenant_id AND q.employee_id=e.id
-               AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
-               AND ${qualificationCurrentlyValid}
-               AND (
-                 (c.required_document_type IS NULL AND COALESCE(jsonb_array_length(c.required_documents),0)=0)
-                 OR (d.document_status='active' AND d.approval_status='approved' AND dv.lifecycle_state='available'
-                   AND (d.valid_from IS NULL OR d.valid_from<=${berlinDate})
-                   AND (d.valid_until IS NULL OR d.valid_until>=${berlinDate}))
-               )
+             SELECT 1 FROM states s
+             WHERE s.employee_id=e.id
+               AND (c.id=s.catalog_id OR (s.catalog_id IS NULL AND c.code=s.code))
+               AND s.computed_status='valid'
            )`,[tenant]),
       query<{count:number}>(
         `SELECT COUNT(*)::int count FROM employees e
@@ -217,11 +208,11 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
            WHERE d.tenant_id=e.tenant_id AND d.employee_id=e.id
          )`,[tenant]),
       query<{employee:string;code:string;valid_until:string}>(
-        `SELECT e.name employee,q.code,COALESCE(q.valid_until::text,'') valid_until
-         FROM employee_qualifications q JOIN employees e ON e.tenant_id=q.tenant_id AND e.id=q.employee_id
-         WHERE q.tenant_id=$1 AND ${qualificationCurrentlyValid} AND q.valid_until IS NOT NULL
-         AND q.valid_until BETWEEN ${berlinDate} AND ${berlinDate}+INTERVAL '90 days'
-         ORDER BY q.valid_until,e.name LIMIT 10`,
+        `${qualificationStatesCte()}
+         SELECT e.name employee,s.code,COALESCE(s.valid_until::text,'') valid_until
+         FROM states s JOIN employees e ON e.tenant_id=$1 AND e.id=s.employee_id
+         WHERE s.computed_status='expiring' AND s.valid_until IS NOT NULL
+         ORDER BY s.valid_until,e.name LIMIT 10`,
         [tenant],
       ),
       query<{employee:string;title:string}>(
@@ -251,14 +242,15 @@ employeesRouter.get('/employees/dashboard',requirePermission('employees:read'),a
                AND oa.starts_on<=${berlinDate} AND (oa.ends_on IS NULL OR oa.ends_on>=${berlinDate})
            )`,[tenant]),
     ]);
+    const statusCount=(status:string)=>statusCounts.rows.find(row=>row.computed_status===status)?.count??0;
     res.json({
       employees:{
         ...employees.rows[0],
         on_leave:vacationAbsences.rows[0].count,
         sick:sickAbsences.rows[0].count,
       },
-      qualifications_expiring_90_days:expiring.rows[0].count,
-      qualifications_expired:expired.rows[0].count,
+      qualifications_expiring_90_days:statusCount('expiring'),
+      qualifications_expired:statusCount('expired'),
       upcoming_shift_assignments:shifts.rows[0].count,
       open_absences:openAbsences.rows[0].count,
       sick_employees:sickAbsences.rows[0].count,
@@ -284,12 +276,20 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       [req.user!.tenantId,id],
     )).rows[0];
     if(!employee)return res.status(404).json({error:'Mitarbeiter nicht gefunden'});
+    const authContext={
+      userId:req.user!.id,tenantId:req.user!.tenantId,role:req.user!.role,
+      isSystemAdmin:req.user!.isSystemAdmin===true,siteIds:req.user!.siteIds??[],
+      grants:normalizePermissionGrants(req.user!.permissionGrants,req.user!.permissions),
+    };
+    const dmsScope=effectivePermissionScope(authContext.grants,'dms:read',authContext);
+    const mayReadDms=(siteId:string|null|undefined,ownerId:string|null|undefined)=>
+      dmsScope!==null&&canAccessResource(authContext,dmsScope,{tenantId:authContext.tenantId,siteId,ownerId});
     const [contracts,qualifications,absences,objectAssignments,workTime,documents,availability]=await Promise.all([
       query('SELECT * FROM employee_contracts WHERE tenant_id=$1 AND employee_id=$2 ORDER BY starts_on DESC',[req.user!.tenantId,id]),
       query(`SELECT q.*,c.name AS catalog_name,c.category,c.active AS catalog_active,c.required_document_type,c.required_documents,
-             d.title AS document_title,d.approval_status AS document_approval_status,
+             d.title AS document_title,d.document_status,d.approval_status AS document_approval_status,
              d.valid_from AS document_valid_from,d.valid_until AS document_valid_until,
-             dv.lifecycle_state AS document_lifecycle_state
+             d.site_id AS document_site_id,d.created_by AS document_owner_id,dv.lifecycle_state AS document_lifecycle_state
              FROM employee_qualifications q
              LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id
                AND (c.id=q.catalog_id OR (q.catalog_id IS NULL AND c.code=q.code))
@@ -307,7 +307,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       query(`SELECT id,provider,external_id,started_at,ended_at,minutes,status,created_at,updated_at
              FROM work_time_entries WHERE tenant_id=$1 AND employee_id=$2
              ORDER BY started_at DESC LIMIT 100`,[req.user!.tenantId,id]),
-      query(`SELECT d.id,d.title,d.description,d.employee_document_category,d.document_status,d.created_at,
+      query(`SELECT d.id,d.title,d.description,d.employee_document_category,d.document_status,d.created_at,d.site_id,d.created_by,
              COALESCE(json_agg(json_build_object('id',v.id,'version_no',v.version_no,'lifecycle_state',v.lifecycle_state,'created_at',v.created_at,'retention_until',v.retention_until) ORDER BY v.version_no DESC) FILTER (WHERE v.id IS NOT NULL),'[]') AS versions
              FROM dms_documents d
              LEFT JOIN dms_versions v ON v.tenant_id=d.tenant_id AND v.document_id=d.id
@@ -319,7 +319,7 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       const requiredDocuments=Array.isArray(row.required_documents)?row.required_documents as unknown[]:[];
       const evidence=evidenceStatusOf({
         document_id:row.document_id,
-        evidence_document_status:row.document_status??row.document_approval_status,
+        evidence_document_status:row.document_status,
         evidence_approval_status:row.document_approval_status,
         evidence_lifecycle_state:row.document_lifecycle_state,
         evidence_valid_from:row.document_valid_from,
@@ -334,8 +334,17 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
         evidenceStatus:evidence??undefined,
         requiresEvidence:Boolean(row.required_document_type)||requiredDocuments.length>0,
       });
-      return {...row,computed_status:classification.status,status_label:classification.label,
-        days_until_expiry:daysUntil(row.valid_until),document_status:evidence};
+      const maySeeEvidence=mayReadDms(row.document_site_id as string|null|undefined,row.document_owner_id as string|null|undefined);
+      const evidenceFields=maySeeEvidence?{
+        document_title:row.document_title,document_status:evidence,
+        document_approval_status:row.document_approval_status,document_valid_from:row.document_valid_from,
+        document_valid_until:row.document_valid_until,document_lifecycle_state:row.document_lifecycle_state,
+      }:{document_title:null,document_status:null,document_approval_status:null,
+        document_valid_from:null,document_valid_until:null,document_lifecycle_state:null};
+      return {...row,...evidenceFields,document_site_id:maySeeEvidence?row.document_site_id:null,
+        document_owner_id:maySeeEvidence?row.document_owner_id:null,
+        computed_status:classification.status,status_label:classification.label,
+        days_until_expiry:daysUntil(row.valid_until)};
     });
     res.json({
       employee,
@@ -344,10 +353,46 @@ employeesRouter.get('/employees/:id/profile',requirePermission('employees:read')
       absences:absences.rows,
       object_assignments:objectAssignments.rows,
       work_time:workTime.rows,
-      documents:documents.rows,
+      documents:documents.rows
+        .filter(row=>mayReadDms(row.site_id as string|null|undefined,row.created_by as string|null|undefined))
+        .map(({site_id:_siteId,created_by:_ownerId,...row})=>row),
       availability:availability.rows,
     });
   }catch(error){if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültige Mitarbeiter-ID'});next(error);}
+});
+
+employeesRouter.post('/employees',requireCsrf,requirePermission('employees:write',{allowedScopes:['system','tenant']}),async(req,res,next)=>{
+  try{
+    const body=profileSchema.parse(req.body);
+    if(body.hire_date&&body.termination_date&&body.termination_date<body.hire_date)
+      return res.status(400).json({error:'Ungültiges Mitarbeiterprofil',fields:{termination_date:'Der Austritt darf nicht vor dem Eintritt liegen.'}});
+    const row=await withTransaction(async client=>{
+      if(body.user_id){
+        const account=(await client.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.user_id])).rows[0];
+        if(!account)throw Object.assign(new Error('Konto nicht im Mandanten gefunden'),{status:400});
+      }
+      const created=(await client.query(
+        `INSERT INTO employees(tenant_id,name,email,title,employee_number,first_name,last_name,phone,mobile,
+          address,date_of_birth,hire_date,termination_date,employment_status,employment_type,department,position,
+          work_location,weekly_hours,user_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+        [req.user!.tenantId,body.name,body.email,body.title??null,body.employee_number??null,body.first_name??null,
+         body.last_name??null,body.phone??null,body.mobile??null,body.address??null,body.date_of_birth??null,
+         body.hire_date??null,body.termination_date??null,body.employment_status,body.employment_type,
+         body.department??null,body.position??null,body.work_location??null,body.weekly_hours??null,body.user_id??null],
+      )).rows[0];
+      await client.query(`INSERT INTO employee_history(tenant_id,employee_id,event_type,actor_user_id,details)
+        VALUES($1,$2,'profile.created',$3,$4)`,[req.user!.tenantId,created.id,req.user!.id,{reason:body.reason,current:created}]);
+      await recordAudit(req.user!.tenantId,req.user!.id,'employee.profile.created','employee',created.id,{reason:body.reason},client);
+      return created;
+    });
+    res.status(201).json(row);
+  }catch(error){
+    if(error instanceof z.ZodError)return res.status(400).json({error:'Ungültiges Mitarbeiterprofil',fields:validationFields(error)});
+    const status=(error as Error&{status?:number}).status;
+    if(status)return res.status(status).json({error:(error as Error).message});
+    next(error);
+  }
 });
 
 employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('employees:write'),async(req,res,next)=>{
@@ -357,7 +402,7 @@ employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('em
     if(body.hire_date&&body.termination_date&&body.termination_date<body.hire_date)
       return res.status(400).json({error:'Ungültiges Mitarbeiterprofil',fields:{termination_date:'Der Austritt darf nicht vor dem Eintritt liegen.'}});
     await withTransaction(async client=>{
-      const current=(await client.query('SELECT id,name,email FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];
+      const current=(await client.query('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];
       if(!current)throw Object.assign(new Error('Mitarbeiter nicht gefunden'),{status:404});
       if(body.user_id){
         const account=(await client.query('SELECT id FROM users WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,body.user_id])).rows[0];
@@ -377,9 +422,15 @@ employeesRouter.patch('/employees/:id/profile',requireCsrf,requirePermission('em
       await client.query(
         `INSERT INTO employee_history(tenant_id,employee_id,event_type,actor_user_id,details)
          VALUES($1,$2,'profile.updated',$3,$4)`,
-        [req.user!.tenantId,id,req.user!.id,{reason:body.reason}],
+        [req.user!.tenantId,id,req.user!.id,{reason:body.reason,previous:current,current:row}],
       );
       await recordAudit(req.user!.tenantId,req.user!.id,'employee.profile.updated','employee',id,{reason:body.reason},client);
+      const storedDay=(value:unknown)=>value instanceof Date?value.toISOString().slice(0,10):String(value??'');
+      const employmentChanged=body.employment_status!==current.employment_status
+        ||storedDay(body.termination_date)!==storedDay(current.termination_date)
+        ||storedDay(body.hire_date)!==storedDay(current.hire_date);
+      if(employmentChanged)await reevaluatePlannedAssignments(client,req.user!.tenantId,req.user!.id,
+        'employee.profile.updated',{employee_ids:[id]});
       return row;
     });
     const updated=(await query('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2',[req.user!.tenantId,id])).rows[0];

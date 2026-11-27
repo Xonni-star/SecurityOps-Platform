@@ -71,7 +71,7 @@ function updateHandler(updateValues:(values:unknown[])=>void,overrides:Record<st
       return result([{...baseEmployee,...overrides}]);
     }
     if(sql.includes('SELECT * FROM employees'))return result([{...baseEmployee,...overrides}]);
-    if(sql.includes('SELECT id,name,email FROM employees'))return result([baseEmployee]);
+    if(sql.includes('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2'))return result([baseEmployee]);
     if(sql.includes('INSERT INTO employee_history'))return result([{id:'history-1'}],1);
     if(sql.includes('INSERT INTO audit_events'))return result([{id:'audit-1'}],1);
     return undefined;
@@ -124,6 +124,19 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
     expect(response.status).toBe(200);
     for(const index of [6,8,14,17])expect(values[index]).toBeNull();
     expect(values[4]).toBe('Ava');
+  });
+
+  it('writes before and after values into employee history',async()=>{
+    let reads=0;
+    const updater=updateHandler(()=>{},{first_name:'Lena'});
+    const {call}=install({handler:(sql,values)=>{
+      if(sql.includes('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2'))return result([reads++===0?baseEmployee:{...baseEmployee,first_name:'Lena'}]);
+      return updater(sql,values);
+    }});
+    const response=await request(app).patch(`/api/v1/employees/${employeeId}/profile`).set(csrf).send(payload({first_name:'Lena',reason:'Namensänderung'}));
+    expect(response.status).toBe(200);
+    const history=call('INSERT INTO employee_history');
+    expect(history?.[1]?.[3]).toMatchObject({reason:'Namensänderung',previous:{first_name:'Ava'},current:{first_name:'Lena'}});
   });
 
   it('reloads the updated row from the database after saving',async()=>{
@@ -179,7 +192,7 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
   it('rejects a user account from another tenant',async()=>{
     const {call}=install({handler:(sql)=>{
       if(sql.includes('FROM sessions'))return result([session(['employees:read','employees:write'])]);
-      if(sql.includes('SELECT id,name,email FROM employees'))return result([baseEmployee]);
+      if(sql.includes('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2'))return result([baseEmployee]);
       if(sql.includes('SELECT id FROM users'))return result([]);
       return undefined;
     }});
@@ -191,7 +204,7 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
 
   it('rolls back business data, history and audit together when the transaction fails',async()=>{
     install({handler:(sql)=>{
-      if(sql.includes('SELECT id,name,email FROM employees'))return result([baseEmployee]);
+      if(sql.includes('SELECT * FROM employees WHERE tenant_id=$1 AND id=$2'))return result([baseEmployee]);
       if(sql.includes('UPDATE employees SET'))return result([baseEmployee]);
       if(sql.includes('INSERT INTO employee_history'))return result([{id:'history-1'}],1);
       if(sql.includes('INSERT INTO audit_events'))throw new Error('audit unavailable');
@@ -201,5 +214,19 @@ describe('employee master data PATCH /employees/:id/profile',()=>{
     expect(response.status).toBe(500);
     expect(rollbackMock).toHaveBeenCalledTimes(1);
     expect(commitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('employee profile DMS metadata',()=>{
+  it('hides DMS document and evidence metadata without dms:read',async()=>{
+    install({permissions:['employees:read'],handler:(sql)=>{
+      if(sql.includes('FROM employees e LEFT JOIN users'))return result([baseEmployee]);
+      if(sql.includes('FROM dms_documents d'))return result([{id:'doc-1',title:'Geheim',site_id:'site-1',created_by:userId,versions:[]}]);
+      return result([{document_id:'doc-1',document_title:'Geheim',document_site_id:'site-1',document_owner_id:userId,document_status:'approved'}]);
+    }});
+    const response=await request(app).get(`/api/v1/employees/${employeeId}/profile`).set(csrf);
+    expect(response.status).toBe(200);
+    expect(response.body.documents).toEqual([]);
+    expect(response.body.qualifications[0]).toMatchObject({document_title:null,document_status:null,document_site_id:null});
   });
 });
