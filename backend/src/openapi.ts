@@ -22,6 +22,19 @@ const keyListParameters=[
 ];
 const pagedKeyResponse={'200':{description:'Seitierte Schlüsselliste; Gesamtzahlen in X-Total-Count, X-Page, X-Page-Size und X-Page-Count'},'400':{description:'Ungültige Filter'},'401':{description:'Nicht angemeldet'},'403':{description:'Berechtigung keys:read fehlt'}};
 const keyMutationResponses={'200':{description:'Änderung angewendet und protokolliert'},'400':{description:'Ungültige Eingabe'},'401':{description:'Nicht angemeldet'},'403':{description:'Berechtigung oder CSRF-Token fehlt'},'404':{description:'Schlüssel nicht gefunden'},'409':{description:'Ungültiger Statuswechsel, doppelte Mutation oder gleichzeitige Ausgabe'}};
+const reportingFilterParameters=[
+  {name:'from',in:'query',schema:{type:'string',pattern:'^\\d{4}-\\d{2}-\\d{2}$'},description:'Kalendertag in Europe/Berlin (Standard: 30 Tage vor heute)'},
+  {name:'to',in:'query',schema:{type:'string',pattern:'^\\d{4}-\\d{2}-\\d{2}$'},description:'Kalendertag in Europe/Berlin'},
+  {name:'site_id',in:'query',schema:{type:'string',format:'uuid'}},
+  {name:'customer_id',in:'query',schema:{type:'string',format:'uuid'}},
+  {name:'employee_id',in:'query',schema:{type:'string',format:'uuid'}},
+  {name:'q',in:'query',schema:{type:'string',maxLength:160},description:'Suche in Bezeichnung, Status und Details'},
+  {name:'sort',in:'query',schema:{type:'string',enum:['occurred_at','label','status']}},
+  {name:'order',in:'query',schema:{type:'string',enum:['asc','desc']}},
+  {name:'page',in:'query',schema:{type:'integer',minimum:1}},
+  {name:'page_size',in:'query',schema:{type:'integer',minimum:1,maximum:500}},
+];
+const reportingModuleParameter={name:'module',in:'query',required:true,schema:{type:'string',enum:['schedule','qualifications','documents','retention','keys','handover','maintenance','incidents','alarms','customers','worktime','measures','audit']},description:'Fachmodul A–M des Reporting-Zentrums'};
 export const openapi={
   openapi:'3.0.3',info:{title:'SecurityOps Platform API',version:'1.0.0'},servers:[{url:'/api/v1'}],
   paths:{
@@ -118,7 +131,11 @@ export const openapi={
     '/einsatz/reports':{get:{summary:'Einsatzauswertung ausschließlich aus echten Vorfalls-, Alarm-, Eskalations- und Maßnahmendaten',security:[{sessionCookie:[]}],parameters:[{name:'from',in:'query',schema:{type:'string'}},{name:'to',in:'query',schema:{type:'string'}},{name:'site_id',in:'query',schema:{type:'string',format:'uuid'}},{name:'incident_type',in:'query',schema:{type:'string'}},{name:'format',in:'query',schema:{type:'string',enum:['json','csv']}}],responses:{'200':{description:'Kennzahlen als JSON oder CSV'}}}},
     '/nsl/dashboard':{get:{summary:'Konsolidiertes NSL-Dashboard mit Alarmen, Vorfällen, Positionen und Kontrollgängen',security:[{sessionCookie:[]}]}},
     '/nsl/alarms/{id}':{get:{summary:'Alarmdetails mit Audit-Historie',security:[{sessionCookie:[]}]}},
-    '/reports/alarms':{get:{summary:'Alarmbericht als CSV oder PDF exportieren',security:[{sessionCookie:[]}]}},
+    '/reports/center/modules':{get:{summary:'Modulkatalog A–M des Reporting-Zentrums mit Filterfähigkeiten und Quelltabellen abrufen',security:[{sessionCookie:[]}],responses:{'200':{description:'Module und Zeitzone Europe/Berlin'},'403':{description:'Berechtigung reports:read fehlt'}}}},
+    '/reports/center/overview':{get:{summary:'Live-Kennzahlen aller Reporting-Module aus den vorhandenen Fachdaten abrufen',description:'Keine zweite Datenbank, keine Views und keine Between-Werte: alle Zähler entstehen im einzigen Pool und werden nach RBAC-/Objekt-Scope gefiltert.',security:[{sessionCookie:[]}],parameters:reportingFilterParameters,responses:{'200':{description:'Modulübersicht mit echten Gesamtzahlen'},'400':{description:'Ungültiger Filter'},'403':{description:'Berechtigung reports:read fehlt'}}}},
+    '/reports/center/modules/{slug}':{get:{summary:'Gefilterte, sortierte und seitenweise Detaildaten eines Reporting-Moduls abrufen',security:[{sessionCookie:[]}],parameters:[{name:'slug',in:'path',required:true,schema:{type:'string'}},...reportingFilterParameters],responses:{'200':{description:'Seitierte Moduldaten mit Gesamtzahl und Seitenanzahl'},'400':{description:'Unbekanntes Modul oder ungültiger Filter'},'403':{description:'Berechtigung reports:read fehlt'}}}},
+    '/reports/center/export':{get:{summary:'Gefilterten Modulbericht als CSV, PDF oder XLSX exportieren und protokollieren',description:'Bis zu 5.000 Zeilen pro Export; Überschreitungen werden über X-Report-Truncated und im Audit-Ereignis markiert.',security:[{sessionCookie:[]}],parameters:[reportingModuleParameter,{name:'format',in:'query',schema:{type:'string',enum:['csv','pdf','xlsx']}},...reportingFilterParameters],responses:{'200':{description:'Dateidownload mit X-Report-Row-Count und X-Report-Truncated'},'400':{description:'Ungültiges Modul, Format oder Filter'},'403':{description:'Berechtigung reports:read fehlt'}}}},
+    '/reports/alarms':{get:{summary:'Alarmbericht als CSV oder PDF exportieren',description:'Zentrale Reporting-Route mit Zeitraum-, Objekt- und Mitarbeiterfiltern; auditiert über den kanonischen Exportpfad.',security:[{sessionCookie:[]}],parameters:[{name:'format',in:'query',schema:{type:'string',enum:['csv','pdf','json']}},{name:'from',in:'query',schema:{type:'string'}},{name:'to',in:'query',schema:{type:'string'}},{name:'site_id',in:'query',schema:{type:'string',format:'uuid'}},{name:'employee_id',in:'query',schema:{type:'string',format:'uuid'}}],responses:{'200':{description:'CSV-, PDF- oder JSON-Export'},'400':{description:'Ungültiger Filter'},'403':{description:'Berechtigung reports:read fehlt'}}}},
     '/handovers':crudPath('handovers'),'/handovers/{id}/acknowledge':{post:{summary:'Schichtübergabe bestätigen',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/messages':crudPath('messages'),'/messages/{id}/read':{post:{summary:'Direktnachricht als gelesen markieren',security:[{sessionCookie:[],csrfToken:[]}] }},
     '/notifications':{get:{summary:'Benachrichtigungen in der Anwendung auflisten',security:[{sessionCookie:[]}] }},

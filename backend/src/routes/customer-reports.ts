@@ -3,6 +3,7 @@ import {z} from 'zod';
 import {query} from '../db/pool.js';
 import {requireAuth,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
+import {pdfReportLines} from '../services/pdf.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
@@ -53,23 +54,12 @@ function csv(rows:Row[]){
   return [headers.join(','),...rows.map(row=>headers.map(key=>`"${String(row[key]??'').replaceAll('"','""')}"`).join(','))].join('\n');
 }
 function pdf(kind:string,rows:Row[]){
-  const text=`SecurityOps Kunden-Nachweise - ${kind}\nDIN-77200-Dokumentationsprofil; keine rechtliche oder Zertifizierungsaussage.\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`.replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
-  const output=`%PDF-1.4
-1 0 obj<< /Type /Catalog /Pages 2 0 R>>endobj
-2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1>>endobj
-3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R>>>>>>endobj
-4 0 obj<< /Length ${text.length+35}>>stream
-BT /F1 9 Tf 36 756 Td (${text}) Tj ET
-endstream endobj
-5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica>>endobj
-xref
-0 6
-0000000000 65535 f
-trailer<< /Size 6 /Root 1 0 R>>
-startxref
-0
-%%EOF`;
-  return Buffer.from(output);
+  return pdfReportLines([
+    `SecurityOps Kunden-Nachweise – ${kind}`,
+    'DIN-77200-Dokumentationsprofil; keine rechtliche oder Zertifizierungsaussage.',
+    '',
+    ...rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')),
+  ]);
 }
 
 export const customerReportsRouter=Router();
