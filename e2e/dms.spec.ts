@@ -1,8 +1,8 @@
 import {randomUUID} from 'node:crypto';
-import {expect,test,type APIRequestContext} from '@playwright/test';
+import {expect,test} from '@playwright/test';
 import {
   adminEmail,adminPassword,createIsolatedSite,decommissionSite,email,errorJson,
-  expectStatus,fixture,loginApi,loginUi,password,readJson,viewerEmail,
+  expectStatus,loginApi,loginUi,password,readJson,viewerEmail,
   type Session,
 } from './helpers/operative-e2e';
 

@@ -10,7 +10,7 @@ import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} fr
 import {runIdempotentMutation,setIdempotentMutationResponse} from '../services/offline-sync.js';
 import {env} from '../config/env.js';
 import {canDownloadDmsVersion,nextDmsVersion,retentionDue,scanLifecycle,validateDmsUpload} from '../services/dms-domain.js';
-import {classifyDocument,documentStatusCounts,expiryBucket} from '../services/dms-document-status.js';
+import {classifyDocument,documentStatusCounts} from '../services/dms-document-status.js';
 
 const uuid=z.string().uuid();
 const allowedTypes=new Set(env.DMS_ALLOWED_CONTENT_TYPES.split(',').map(value=>value.trim()).filter(Boolean));

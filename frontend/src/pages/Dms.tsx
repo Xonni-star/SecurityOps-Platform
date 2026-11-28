@@ -2,7 +2,6 @@ import {ChangeEvent,FormEvent,useEffect,useMemo,useRef,useState} from 'react';
 import {useSearchParams} from 'react-router-dom';
 import {api,csrf,hasPermission} from '../lib/api';
 import {formatDate,formatDateTime,formatNumber} from '../lib/format';
-import {statusLabel} from '../lib/status';
 import {isUuid} from '../lib/validation';
 import {requiredUuidMessage} from '../lib/text';
 import {uuid} from '../lib/uuid';

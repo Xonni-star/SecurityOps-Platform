@@ -6,6 +6,8 @@ Der Dokumentenbereich wurde auf `feature/dms-professionalisierung` (Basis: `orig
 
 Die Arbeit umfasst Backend, Datenbank, Frontend, Automatisierungstests, E2E-Tests und eine browsergestützte Abnahme mit Admin-, Operator- und Viewer-Rolle auf Desktop und Tablet. Alle Änderungen sind lokal umgesetzt und verifiziert; es wurden keine Produktionsdaten verändert und keine Produktionsmigration ausgeführt.
 
+Review-Pull-Request: [#69 – DMS-Professionalisierung abschließen](https://github.com/Xonni-star/SecurityOps-Platform/pull/69) (`feature/dms-professionalisierung` → `master`). Ein direkter Merge in `master` erfolgt nicht.
+
 ## 2. Umsetzung
 
 ### 2.1 Backend und Datenbank
