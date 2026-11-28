@@ -2,8 +2,16 @@
 // templates hard-coded an invalid xref offset and used a JS string length for
 // /Length, which broke exports containing umlauts. Build the objects once and
 // derive every byte offset from the final buffer.
-export function pdfReport(text:string){
-  const content=`BT /F1 9 Tf 36 756 Td (${text}) Tj ET`;
+function escapeText(value:string){
+  return value.replaceAll('\\','\\\\').replaceAll('(','\\(').replaceAll(')','\\)');
+}
+
+/** Mehrzeiliger PDF-Text mit korrekt maskierten Klammern und Backslashes. */
+export function pdfReportLines(lines:string[]){
+  const body=lines.slice(0,90).map((line,index)=>
+    index===0?`(${escapeText(line)}) Tj`:`0 -13 Td (${escapeText(line)}) Tj`
+  ).join('\n');
+  const content=`BT /F1 9 Tf 36 756 Td 13 TL\n${body}\nET`;
   const objects=[
     '<< /Type /Catalog /Pages 2 0 R>>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1>>',
@@ -22,4 +30,8 @@ export function pdfReport(text:string){
   for(const offset of offsets)pdf+=`${String(offset).padStart(10,'0')} 00000 n \n`;
   pdf+=`trailer\n<< /Size ${objects.length+1} /Root 1 0 R>>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   return Buffer.from(pdf,'utf8');
+}
+
+export function pdfReport(text:string){
+  return pdfReportLines([text]);
 }
