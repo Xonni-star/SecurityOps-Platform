@@ -41,10 +41,10 @@ beforeEach(()=>{
   activeUser=baseUser;
   queryMock.mockImplementation(async(sql:string)=>{
     if(sql.includes('FROM sessions'))return result([activeUser]);
+    if(sql.includes('UPDATE dms_documents'))return result([approved]);
     if(sql.includes('FROM dms_documents d LEFT JOIN dms_versions'))return result([listRow]);
     if(sql.includes('FROM dms_documents WHERE'))return result([document]);
     if(sql.includes('FROM dms_versions'))return result([availableVersion]);
-    if(sql.includes('UPDATE dms_documents'))return result([approved]);
     return result([]);
   });
 });

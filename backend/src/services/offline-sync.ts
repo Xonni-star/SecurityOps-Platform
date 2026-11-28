@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type pg from 'pg';
 
 export type SyncConflictStrategy='USE_LOCAL'|'USE_SERVER'|'RECORD_AS_EXCEPTION';
-export type SyncMutationAction='alarms.panic'|'patrol.scan'|'watchbook.entry'|'scheduling.period'|'scheduling.shift'|'scheduling.assignment'|'scheduling.rule_profile'|'dms.document'|'keys.create'|'keys.issue'|'keys.return'|'keys.lost'|'keys.deactivate'|'keys.update'|'keys.block'|'keys.reactivate'|'keys.loss.report'|'keys.loss.update'|'keys.qr.issue'|'keys.inventory.check'|'keys.bundle.create'|'keys.bundle.item'|'keys.bundle.item_removed'|'keys.bundle.issue'|'keys.bundle.return'|'keys.bundle.deactivate'|'handover.create'|'handover.participant'|'handover.confirm'|'handover.revoke'|'handover.correct'|'maintenance.order.create';
+export type SyncMutationAction='alarms.panic'|'patrol.scan'|'watchbook.entry'|'scheduling.period'|'scheduling.shift'|'scheduling.assignment'|'scheduling.rule_profile'|'dms.document'|'dms.document.version'|'keys.create'|'keys.issue'|'keys.return'|'keys.lost'|'keys.deactivate'|'keys.update'|'keys.block'|'keys.reactivate'|'keys.loss.report'|'keys.loss.update'|'keys.qr.issue'|'keys.inventory.check'|'keys.bundle.create'|'keys.bundle.item'|'keys.bundle.item_removed'|'keys.bundle.issue'|'keys.bundle.return'|'keys.bundle.deactivate'|'handover.create'|'handover.participant'|'handover.confirm'|'handover.revoke'|'handover.correct'|'maintenance.order.create';
 
 export interface SyncMutationInput {
   tenantId:string;
@@ -77,6 +77,21 @@ export async function runIdempotentMutation<T>(
     [input.tenantId,input.mutationId,input.action,JSON.stringify(response)],
   );
   return {response,replayed:false};
+}
+
+/** Nachgelagerte Verarbeitung (z. B. Virenscan) kann die endgültige Antwort
+ *  einer bereits abortgeschützten Mutation erst später festlegen. Damit eine
+ *  Wiederholung nicht einen veralteten Zwischenzustand zurückgibt. */
+export async function setIdempotentMutationResponse<T>(
+  client:pg.PoolClient,
+  input:Pick<SyncMutationInput,'tenantId'|'userId'|'mutationId'|'action'>,
+  response:T,
+):Promise<void>{
+  await client.query(
+    `UPDATE sync_receipts SET response=$4
+     WHERE tenant_id=$1 AND mutation_id=$2 AND action=$3 AND status='completed'`,
+    [input.tenantId,input.mutationId,input.action,JSON.stringify(response)],
+  );
 }
 
 export function parseSyncConflictStrategy(value:unknown):SyncConflictStrategy{
