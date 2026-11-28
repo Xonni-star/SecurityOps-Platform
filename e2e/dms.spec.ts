@@ -153,16 +153,34 @@ test('Dokumente zuverlässig hochladen, freigeben, versionieren und löschen',as
 
 test('DMS-Oberfläche zeigt Kennzahlen, Filter und Freigaben ohne Browserfehler',async ({page})=>{
   const errors:string[]=[];
+  const uiTitle=`E2E DMS Oberfläche ${runId}`;
+  let uiDocumentId:string|undefined;
   page.on('pageerror',error=>errors.push(error.message));
   page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
-  await loginUi(page,email,password);
-  await page.goto('/dms');
-  await expect(page.getByRole('heading',{name:'Dokumentenmanagement'})).toBeVisible();
-  await expect(page.getByRole('button',{name:'Nach Gesamt filtern'})).toBeVisible();
-  await expect(page.getByRole('table',{name:'Gefilterte Dokumente'})).toBeVisible();
-  await expect(page.getByRole('heading',{name:'Offene Freigaben'})).toBeVisible();
-  await page.getByLabel('Freigabestatus').selectOption('approved');
-  await page.getByRole('button',{name:'Filter anwenden'}).click();
-  await expect(page.getByLabel('Freigabestatus')).toHaveValue('approved');
-  expect(errors,`Browserfehler auf der DMS-Seite: ${errors.join(' | ')}`).toEqual([]);
+  try{
+    // Die Oberfläche wird bewusst gegen ein eigenes Dokument geprüft. In einer
+    // frischen Isolationsumgebung gibt es sonst keine Tabelle mit Zeilen.
+    const created=await post(operator,'/api/v1/dms/documents',await uploadBody({
+      title:uiTitle,document_number:`E2E-DMS-UI-${runId}`,
+    }),201);
+    uiDocumentId=String(created.document.id);
+    await loginUi(page,email,password);
+    await page.goto('/dms');
+    await expect(page.getByRole('heading',{name:'Dokumentenmanagement'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Nach Gesamt filtern'})).toBeVisible();
+    await expect(page.getByRole('table',{name:'Gefilterte Dokumente'})).toBeVisible();
+    await expect(page.getByRole('table',{name:'Gefilterte Dokumente'})).toContainText(uiTitle);
+    await expect(page.getByRole('heading',{name:'Offene Freigaben'})).toBeVisible();
+    await page.getByLabel('Freigabestatus').selectOption('approved');
+    await page.getByRole('button',{name:'Filter anwenden'}).click();
+    await expect(page.getByLabel('Freigabestatus')).toHaveValue('approved');
+    expect(errors,`Browserfehler auf der DMS-Seite: ${errors.join(' | ')}`).toEqual([]);
+  }finally{
+    if(uiDocumentId&&admin){
+      const cleanup=await admin.context.delete(`/api/v1/dms/documents/${uiDocumentId}`,{
+        headers:admin.headers,data:{reason:`E2E ${runId} Oberfläche aufgeräumt`},
+      });
+      if(![200,404,409].includes(cleanup.status()))console.warn(`Cleanup DMS-UI-Dokument: HTTP ${cleanup.status()}`);
+    }
+  }
 });
