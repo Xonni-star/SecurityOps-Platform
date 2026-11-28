@@ -4,6 +4,7 @@ import {query} from '../db/pool.js';
 import {requireAuth,requirePermission} from '../middleware/auth.js';
 import {recordAudit} from '../services/audit.js';
 import {pdfReportLines} from '../services/pdf.js';
+import {customerReportDayRange} from '../services/customer-report-domain.js';
 import {canAccessResource,effectivePermissionScope,normalizePermissionGrants} from '../types/authorization.js';
 
 const uuid=z.string().uuid();
@@ -57,10 +58,25 @@ function pdf(kind:string,rows:Row[]){
   return pdfReportLines([
     `SecurityOps Kunden-Nachweise – ${kind}`,
     'DIN-77200-Dokumentationsprofil; keine rechtliche oder Zertifizierungsaussage.',
+    `Nachweise: ${rows.length}`,
     '',
     ...rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')),
   ]);
 }
+/** Das Kundenportal liefert ausschließlich freigegebene Schnappschüsse. */
+async function releasedPortalRows(req:Request,kind:string,from:Date,to:Date,customerId?:string,siteId?:string){
+  const range=customerReportDayRange({from:from.toISOString().slice(0,10),to:to.toISOString().slice(0,10)});
+  const result=await query<{id:string;rows:Row[]}>(
+    `SELECT id,rows FROM customer_report_releases WHERE tenant_id=$1 AND status='approved' AND kind=$2
+     AND ($3::uuid IS NULL OR customer_id=$3)
+     AND (filters->>'from' IS NULL OR filters->>'from' <= $4)
+     AND (filters->>'to' IS NULL OR filters->>'to' >= $5)
+     AND ($6::uuid IS NULL OR filters->>'site_id'=$6::text OR filters->>'site_id' IS NULL)
+     ORDER BY approved_at DESC LIMIT 1`,
+    [req.user!.tenantId,kind,customerId??null,range.toDay,range.fromDay,siteId??null]);
+  const release=result.rows[0];
+  if(!release)throw Object.assign(new Error('Für diesen Zeitraum liegt kein freigegebener Kundenbericht vor'),{status:404});
+  return {id:release.id,rows:(Array.isArray(release.rows)?release.rows:[]).filter(row=>!siteId||row.site_id===siteId)};}
 
 export const customerReportsRouter=Router();
 customerReportsRouter.use((req,res,next)=>/^\/(customer-reports|customer-portal)/.test(req.path)?requireAuth(req,res,next):next());
@@ -88,9 +104,9 @@ async function reportRequest(req:Request,res:any,next:any,portal=false){
       if(siteId&&!permitted.has(siteId))throw Object.assign(new Error('Kein Zugriff auf Objekt'),{status:403});
       if(customerId&&siteIds.length===0)throw Object.assign(new Error('Keine zugänglichen Kundenstandorte'),{status:403});
     }
-    const rawRows=await rowsFor(req,kind,from,to,siteId,siteIds);
-    const rows=portal?rawRows.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!['content','description','author_email'].includes(key)))):rawRows;
-    await recordAudit(req.user!.tenantId,req.user!.id,portal?'customer.portal.viewed':'customer.report.exported',portal?'customer_portal':'customer_report',undefined,{kind,site_id:siteId??null,customer_id:customerId??null,from:from.toISOString(),to:to.toISOString(),count:rows.length,format:portal?'json':req.query.format==='pdf'?'pdf':'csv',documentation_profile:'DIN-77200'});
+    const released=portal?await releasedPortalRows(req,kind,from,to,customerId,siteId):null;
+    const rows=released?released.rows:await rowsFor(req,kind,from,to,siteId,siteIds);
+    await recordAudit(req.user!.tenantId,req.user!.id,portal?'customer.portal.viewed':'customer.report.exported',portal?'customer_portal':'customer_report',released?.id,{kind,release_id:released?.id??null,site_id:siteId??null,customer_id:customerId??null,from:from.toISOString(),to:to.toISOString(),count:rows.length,format:portal?'json':req.query.format==='pdf'?'pdf':'csv',documentation_profile:'DIN-77200'});
     if(portal)return res.json({kind,documentation_profile:'DIN-77200-Dokumentationsprofil; keine rechtliche oder Zertifizierungsaussage.',from,to,rows});
     if(req.query.format==='pdf')return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-nachweise.pdf"`).send(pdf(kind,rows));
     return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-nachweise.csv"`).send(csv(rows));

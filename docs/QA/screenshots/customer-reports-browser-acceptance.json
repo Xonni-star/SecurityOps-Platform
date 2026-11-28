@@ -1,0 +1,82 @@
+{
+  "bereich": "Kundenberichte",
+  "branch": "feature/kundenberichte-professionalisierung",
+  "basis": "origin/master @ daa3456",
+  "datum": "2026-11-28",
+  "umgebung": {
+    "backend": "http://127.0.0.1:3000",
+    "frontend": "http://localhost:5173",
+    "datenbank": "lokale Isolations-PostgreSQL (keine Produktionsdaten)",
+    "mandant": "00000000-0000-4000-8000-000000000101",
+    "objekt": "00000000-0000-4000-8000-000000000103",
+    "zeitzone": "Europe/Berlin"
+  },
+  "rollen": [
+    {"email": "reporting-e2e@example.invalid", "rolle": "Operator/Autor", "rechte": ["customer_reports:read", "customer_reports:write"]},
+    {"email": "reporting-admin@example.invalid", "rolle": "Administrator/Freigabe", "rechte": ["customer_reports:read", "customer_reports:approve", "customer_reports:export"]},
+    {"email": "e2e-viewer@example.invalid", "rolle": "Viewer/Kundenportal", "rechte": ["customer_portal:read", "customer_reports:read"], "export": false}
+  ],
+  "abnahme": [
+    {
+      "schritt": "Vorschau echter Fachdaten als Autor",
+      "viewport": "Desktop 1440x900",
+      "ergebnis": "HTTP 200; 1 Einsatz im gewählten Zeitraum; Projektion ausschließlich mit category, id, label, metric, occurred_at, site_id, site_name, status; vertrauliche Einsatznotiz nicht enthalten",
+      "screenshot": "customer-reports-operator-desktop-preview.png"
+    },
+    {
+      "schritt": "Entwurf mit gespeicherter Datenbasis",
+      "viewport": "Desktop 1440x900",
+      "ergebnis": "HTTP 201; Status draft; row_count=1; SHA-256-Fingerprint a5f5b88317fb3b33…; Freigabe steht aus",
+      "screenshot": "customer-reports-operator-desktop-preview.png"
+    },
+    {
+      "schritt": "Einreichung und Vier-Augen-Freigabe",
+      "viewport": "Desktop 1440x900",
+      "ergebnis": "Autor Einreichung → in_review; Selbstfreigabe HTTP 403; Administrator Freigabe → approved; Audit customer_report.approved",
+      "screenshots": ["customer-reports-admin-desktop-releases.png", "customer-reports-admin-desktop-approval.png"]
+    },
+    {
+      "schritt": "Export freigegebener Schnappschüsse",
+      "viewport": "API",
+      "ergebnis": "CSV 221 Bytes, PDF 941 Bytes, XLSX 4743 Bytes; jeweils HTTP 200 und x-report-row-count=1; Export mit customer_portal:read HTTP 403",
+      "screenshot": null
+    },
+    {
+      "schritt": "Kundenportal schreibgeschützt",
+      "viewport": "Desktop 1440x900",
+      "ergebnis": "read_only=true, export_allowed=false; ausschließlich freigegebene eigene Berichte; keine Exportbuttons; vertrauliche Notiz nicht enthalten",
+      "screenshots": ["customer-reports-viewer-desktop-portal.png", "customer-reports-viewer-portal-e2e.png", "customer-reports-viewer-portal-detail-e2e.png"]
+    },
+    {
+      "schritt": "Freigabe- und Exportansicht auf Tablet",
+      "viewport": "Tablet 768x1024",
+      "ergebnis": "Alle drei Bereiche sichtbar; Details dialog mit Datenbasis, Fingerprint und CSV/PDF/XLSX-Export; kein horizontaler Überlauf",
+      "screenshot": "customer-reports-admin-tablet-release-e2e.png"
+    },
+    {
+      "schritt": "Widerruf",
+      "viewport": "API",
+      "ergebnis": "Administrator Widerruf HTTP 200 → revoked; Kundenportal-Detail danach HTTP 404",
+      "screenshot": null
+    },
+    {
+      "schritt": "Desktop-Abschlussansicht nach Freigabe/Widerruf",
+      "viewport": "Desktop 1440x900",
+      "ergebnis": "Deutsche Oberfläche, Bereiche und Berichtszeile sichtbar",
+      "screenshot": "customer-reports-admin-desktop-releases-e2e.png"
+    }
+  ],
+  "automatisierte_pruefungen": {
+    "backend": "npm test -w backend -- --runInBand: 61 Suites / 597 Tests grün (10 Suites / 62 Tests übersprungen)",
+    "frontend": "npm test -w frontend: 17 Dateien / 187 Tests grün",
+    "e2e": "E2E_FIXTURE=isolated npx playwright test e2e/customer-reports.spec.ts: 1/1 grün",
+    "typecheck": "npm run typecheck -w frontend: grün",
+    "lint": "npm run lint: grün",
+    "build": "npm run build: grün (Backend tsc + Frontend tsc/vite)"
+  },
+  "einschraenkungen": [
+    "npm run migrate -w backend scheitert lokal an einer bereits in der Migrationstabelle fehlenden DMS-Migration; die Tabelle customer_report_releases wurde für die Isolations-DB manuell mit dem exakten DDL aus 069 angelegt.",
+    "Kein Produktionszugriff, keine Produktionsmigration und kein Produktionsdatenabgleich ohne ausdrückliche Freigabe.",
+    "Externe Benachrichtigungs- und Notrufkanäle sind nicht konfiguriert und wurden nicht getestet."
+  ]
+}

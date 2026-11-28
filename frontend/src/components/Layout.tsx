@@ -38,7 +38,7 @@ const pageMeta:Record<string,PageMeta>={
 };
 
 const permissionAliases:Record<string,string[]>={
-  '/customer-reports':['customer_reports:export','customer_portal:read'],
+  '/customer-reports':['customer_reports:read','customer_reports:write','customer_reports:approve','customer_reports:export','customer_portal:read'],
   '/operative-leitstelle':['nsl:read','operations_measures:read'],
   '/einsatz':['incidents:read','alarms:read','operations_measures:read'],
 };
@@ -47,7 +47,7 @@ const groups:{label:string;items:Item[]}[]=[
   {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/operative-leitstelle','Operative Leitstelle','nsl:read','⌖'],['/einsatz','Einsatzmanagement','incidents:read','◈'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
   {label:'Betrieb',items:[['/mobile','Mobile Einsatz-App','alarms:write'],['/watchbook','Wachbuch','watchbook:read'],['/scheduling','Dienstplanung','scheduling:read'],['/handovers','Schichtübergaben','handover:read'],['/messages','Nachrichten','messages:read']]},
   {label:'Verwaltung',items:[['/employees','Mitarbeiter','employees:read'],['/customers','Kunden','customers:read'],['/sites','Objekte','sites:read'],['/devices','Geräte','devices:read'],['/keys','Schlüssel','keys:read'],['/nfc-devices','NFC-Geräte','nfc_devices:read'],['/qualifications','Qualifikationen','employees:read']]},
-  {label:'Dokumente & Auswertungen',items:[['/dms','Dokumente','dms:read'],['/reports','Auswertungen','reports:read'],['/customer-reports','Kundenberichte','customer_reports:export']]},
+  {label:'Dokumente & Auswertungen',items:[['/dms','Dokumente','dms:read'],['/reports','Auswertungen','reports:read'],['/customer-reports','Kundenberichte','customer_reports:read']]},
   {label:'System',items:[['/notifications','Benachrichtigungen','notifications:read'],['/telemetry','Sensoren','telemetry:read'],['/alarm-forwarding','Alarmweiterleitung','alarm_forwarding:read'],['/account-security','Kontosicherheit','account_security:read'],['/admin','Administration','audit:read']]},
 ];
 

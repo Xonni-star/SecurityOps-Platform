@@ -239,7 +239,7 @@ export function CustomerDetail(){
     <nav className="employee-tabs" aria-label="Kundenbereiche">{tabs.map(([key,label])=><button type="button" key={key} className={active===key?'active':''} onClick={()=>navigate(`/customers/${customer.id}/${key}`)}>{label}</button>)}</nav>
     <div className="employee-detail-content">
       {active==='uebersicht'&&<>
-        {(hasPermission('customer_reports:export')||hasPermission('customer_portal:read'))&&<p><button type="button" onClick={()=>navigate(`/customer-reports?customer_id=${customer.id}`)}>Kundenberichte & Nachweise öffnen</button></p>}
+        {(hasPermission('customer_reports:read')||hasPermission('customer_reports:write')||hasPermission('customer_reports:approve')||hasPermission('customer_reports:export')||hasPermission('customer_portal:read'))&&<p><button type="button" onClick={()=>navigate(`/customer-reports?customer_id=${customer.id}`)}>Kundenberichte & Nachweise öffnen</button></p>}
         <div className="employee-detail-kpis">
           {canSee('sites')&&<article><strong>{formatNumber(profile.sites.length)}</strong><span>Objekte</span></article>}
           {canSee('contracts')&&<article><strong>{formatNumber(profile.contracts.filter(item=>item.status==='active').length)}</strong><span>Aktive Verträge</span></article>}
