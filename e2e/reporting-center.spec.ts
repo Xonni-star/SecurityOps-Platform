@@ -25,8 +25,8 @@ test.describe('Reporting-Zentrum',()=>{
     await expect(page.getByRole('heading',{name:'Reporting-Zentrum'})).toBeVisible();
     await expect(page.getByRole('heading',{name:'Zentraler Filter'})).toBeVisible();
     await expect(page.getByRole('heading',{name:'Module A–M'})).toBeVisible();
-    await expect(page.getByText('Schicht- und Dienstplanung')).toBeVisible();
-    await expect(page.getByText('Audit und Exporte')).toBeVisible();
+    await expect(page.getByRole('heading',{name:'A Schicht- und Dienstplanung'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'M Audit und Exporte'})).toBeVisible();
     await expect(page.getByRole('button',{name:'XLSX exportieren'})).toBeVisible();
 
     await page.getByLabel('Von').fill('2026-11-01');
