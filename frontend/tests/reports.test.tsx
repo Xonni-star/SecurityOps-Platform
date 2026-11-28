@@ -58,7 +58,7 @@ describe('Reporting-Zentrum',()=>{
     fireEvent.click(screen.getByRole('button',{name:'Filter anwenden'}));
     await vi.waitFor(()=>{
       const calls=apiMock.mock.calls.filter(([path])=>String(path).startsWith('/reports/center/overview?'));
-      const call=calls.at(-1);
+      const call=calls[calls.length-1];
       expect(String(call?.[0])).toContain('from=2026-11-01');
       expect(String(call?.[0])).toContain('to=2026-11-30');
     });
