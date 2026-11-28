@@ -1,0 +1,110 @@
+{
+  "runId": "mx09n9lpea8f3",
+  "title": "Browserabnahme DMS mx09n9lpea8f3",
+  "base": "http://localhost:5173",
+  "viewport": {
+    "desktop": "1440x900",
+    "tablet": "768x1024"
+  },
+  "accounts": {
+    "admin": "e2e-qm-admin@example.invalid",
+    "operator": "e2e-scale-20261126@example.invalid",
+    "viewer": "e2e-viewer@example.invalid"
+  },
+  "checks": [
+    {
+      "name": "Admin/Desktop",
+      "detail": "Kennzahlen, Uploadformular und Dokumenttabelle sichtbar"
+    },
+    {
+      "name": "Admin/Desktop",
+      "detail": "KPI-Klick setzt den serverseitigen Freigabefilter"
+    },
+    {
+      "name": "Admin/Tablet",
+      "detail": "horizontales Überlaufen: 0px"
+    },
+    {
+      "name": "Operator/Upload",
+      "detail": "Dokument „Browserabnahme DMS mx09n9lpea8f3“ hochgeladen und geprüft"
+    },
+    {
+      "name": "Operator/Workflow",
+      "detail": "Dokument zur Prüfung eingereicht"
+    },
+    {
+      "name": "Admin/Freigabe",
+      "detail": "Fremdfreigabe nach Virenprüfung erfolgreich"
+    },
+    {
+      "name": "Viewer/RBAC",
+      "detail": "Nur Lese-, Vorschau- und Downloadaktionen verfügbar"
+    },
+    {
+      "name": "Viewer/Tablet",
+      "detail": "horizontales Überlaufen: 0px"
+    },
+    {
+      "name": "Versionierung",
+      "detail": "Neue Fassung v2 hat die Freigabe entzogen"
+    },
+    {
+      "name": "Audit/Historie",
+      "detail": "Freigabeentzug und erneute Freigabe im Audit sichtbar"
+    },
+    {
+      "name": "Aufräumen",
+      "detail": "Testdokument über die Oberfläche gelöscht"
+    }
+  ],
+  "consoleErrors": [],
+  "apiErrors": [],
+  "failedRequests": [],
+  "abortedRequests": [
+    {
+      "role": "admin",
+      "url": "/api/v1/nsl/dashboard",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "role": "admin",
+      "url": "/api/v1/customers",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "role": "admin",
+      "url": "/api/v1/dms/documents/query?sort=created_at&order=desc&page_size=25&page=1",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "role": "admin",
+      "url": "/api/v1/dms/overview?sort=created_at&order=desc&page_size=25&page=1",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "role": "admin",
+      "url": "/api/v1/sites",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "role": "admin",
+      "url": "/api/v1/customers",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "role": "admin",
+      "url": "/api/v1/employees",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [
+    "docs/QA/screenshots/dms-admin-desktop.png",
+    "docs/QA/screenshots/dms-admin-tablet.png",
+    "docs/QA/screenshots/dms-operator-upload.png",
+    "docs/QA/screenshots/dms-operator-detail-entwurf.png",
+    "docs/QA/screenshots/dms-admin-detail-freigegeben.png",
+    "docs/QA/screenshots/dms-viewer-detail.png",
+    "docs/QA/screenshots/dms-viewer-tablet.png",
+    "docs/QA/screenshots/dms-admin-historie.png"
+  ]
+}
