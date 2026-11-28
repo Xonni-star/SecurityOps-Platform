@@ -31,7 +31,7 @@ export function qualificationStatusSql(q='q',c='c',d='d',dv='dv'):string{
  */
 export function qualificationStatesCte(tenantParam='$1'):string{
   return `WITH states AS (
-    SELECT q.employee_id,q.code,q.catalog_id,q.valid_until,${qualificationStatusSql()} AS computed_status
+    SELECT q.id qualification_id,q.employee_id,q.code,q.catalog_id,q.valid_until,${qualificationStatusSql()} AS computed_status
     FROM employee_qualifications q
     LEFT JOIN qualification_catalog c ON c.tenant_id=q.tenant_id AND (
       (q.catalog_id IS NOT NULL AND c.id=q.catalog_id) OR (q.catalog_id IS NULL AND c.code=q.code))

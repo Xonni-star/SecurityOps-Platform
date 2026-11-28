@@ -58,6 +58,54 @@ describe('object management OpenAPI coverage', () => {
   });
 });
 
+describe('operative control centre and incident management OpenAPI coverage', () => {
+  const endpoints: Array<[string, string, boolean]> = [
+    ['/operations/control-center', 'get', false],
+    ['/operations/control-center/candidates', 'get', false],
+    ['/operations/measures', 'get', false],
+    ['/operations/measures', 'post', true],
+    ['/operations/measures/{id}', 'patch', true],
+    ['/einsatz/incidents', 'get', false],
+    ['/einsatz/incidents', 'post', true],
+    ['/einsatz/incidents/{id}', 'get', false],
+    ['/einsatz/incidents/{id}', 'patch', true],
+    ['/einsatz/incidents/{id}/status', 'post', true],
+    ['/einsatz/incidents/{id}/assignments', 'post', true],
+    ['/einsatz/incidents/{id}/documents', 'get', false],
+    ['/einsatz/incidents/{id}/documents', 'post', true],
+    ['/einsatz/incidents/{id}/documents', 'delete', true],
+    ['/einsatz/incidents/{id}/report', 'get', false],
+    ['/einsatz/incidents/{id}/report', 'patch', true],
+    ['/einsatz/incidents/{id}/escalations', 'get', false],
+    ['/einsatz/incidents/{id}/escalations', 'post', true],
+    ['/einsatz/alarms', 'get', false],
+    ['/einsatz/alarms', 'post', true],
+    ['/einsatz/alarms/{id}/acknowledge', 'post', true],
+    ['/einsatz/alarms/{id}/resolve', 'post', true],
+    ['/einsatz/alarms/{id}/history', 'get', false],
+    ['/einsatz/measures', 'get', false],
+    ['/einsatz/escalation-rules', 'get', false],
+    ['/einsatz/escalation-rules/{id}', 'patch', true],
+    ['/einsatz/notifications/{incidentId}', 'get', false],
+    ['/einsatz/reports', 'get', false],
+  ];
+
+  it.each(endpoints)('documents %s %s with session security', (path, method, requiresCsrf) => {
+    const operation = paths[path]?.[method];
+    expect(operation).toBeDefined();
+    const security = operation?.security ?? [];
+    expect(security.length).toBeGreaterThan(0);
+    expect(security[0]).toHaveProperty('sessionCookie');
+    if (requiresCsrf) expect(security[0]).toHaveProperty('csrfToken');
+  });
+
+  it('states that document links never expose DMS blobs and incident closure has conditions', () => {
+    expect(paths['/einsatz/incidents/{id}/documents'].post.summary).toMatch(/DMS/);
+    expect(paths['/einsatz/incidents/{id}/status'].post.description).toMatch(/Abschlussbedingungen/);
+    expect(paths['/operations/measures/{id}'].patch.description).toMatch(/source_open/);
+  });
+});
+
 describe('key management OpenAPI coverage', () => {
   const endpoints: Array<[string, string, boolean]> = [
     ['/keys', 'get', false],

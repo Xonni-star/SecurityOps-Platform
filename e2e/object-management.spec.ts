@@ -171,11 +171,28 @@ test('real API and browser flows manage the digital object file',async({page})=>
   await expect(page.getByRole('region',{name:'Geöffneter Datensatz'})).toBeVisible();
   await expect(page).toHaveURL(/\/sites\/[^/]+\/gefaehrdungen\?hazard=/);
 
-  await page.goto('/sites');
-  const dashboard=page.getByRole('region',{name:'Dringende Aufgaben in allen Objekten'});
-  await expect(dashboard).toBeVisible();
-  await expect(dashboard.getByRole('link',{name:`Freigabe ausstehend: E2E Anweisung ${suffix}`})).toBeVisible();
-  await expect(dashboard.getByRole('link',{name:/Qualifikation prüfen: E2E Streife/})).toBeVisible();
+  const isolatedSiteResponse=await page.request.post('/api/v1/sites',{headers,data:{
+    name:`E2E Dringlichkeit ${suffix}`,
+    site_number:`e2e_dringlichkeit_${suffix}`.slice(0,80),
+    site_type:'E2E Isolationsobjekt',status:'active',required_staff_count:0,
+  }});
+  expect(isolatedSiteResponse.status()).toBe(201);
+  const isolatedSite=await isolatedSiteResponse.json();
+  await page.goto(`/sites/${isolatedSite.id}/anweisungen`);
+  await page.getByRole('textbox',{name:'Titel'}).fill(`E2E Anweisung ${suffix}`);
+  await page.getByLabel('Inhalt').fill('Dokumentierter Ablauf für den E2E-Test.');
+  await page.getByLabel('Anweisungsstatus').selectOption('pending_approval');
+  await page.getByLabel('Bestätigung erforderlich').check();
+  await page.getByRole('button',{name:'Dienstanweisung speichern'}).click();
+  await expect(page.getByRole('listitem').filter({hasText:`E2E Anweisung ${suffix} · Fassung 1`})).toBeVisible();
+
+  await page.goto(`/sites/${isolatedSite.id}/uebersicht`);
+  const priorities=page.getByRole('region',{name:'Nächste Schritte nach Dringlichkeit'});
+  await expect(priorities).toBeVisible();
+  await expect(priorities.getByRole('link',{name:`Freigabe ausstehend: E2E Anweisung ${suffix}`})).toBeVisible();
+  for(const status of ['decommissioned','archived']){
+    await page.request.patch(`/api/v1/sites/${isolatedSite.id}`,{headers,data:{status}});
+  }
 });
 
 test('object overview exposes concrete qualification issues and binding shift eligibility',async({page})=>{
@@ -228,7 +245,7 @@ test('object overview exposes concrete qualification issues and binding shift el
   await expect(priorities.getByRole('link').first()).toBeVisible();
   await expect(page.getByRole('heading',{name:'Personalüberblick'})).toBeVisible();
   await expect(page.getByText(/Läuft bald ab/)).toBeVisible();
-  await expect(page.locator('.object-qualification-meta').getByText('Kein Nachweis verknüpft')).toBeVisible();
+  await expect(page.locator('.object-qualification-meta').getByText('Kein Nachweis verknüpft').first()).toBeVisible();
   await expect(page.getByText(/Allgemeine Personalübersicht/)).toBeVisible();
   const evidenceLink=page.getByRole('link',{name:'Nachweis öffnen',exact:true}).first();
   await expect(evidenceLink).toHaveAttribute('href',`/employees/${employeeId}/qualifikationen`);
