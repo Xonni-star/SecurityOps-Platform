@@ -37,11 +37,25 @@ const pageMeta:Record<string,PageMeta>={
   '/admin':{title:'Administration',description:'Systemweite Einstellungen, Backups, Integrationen und Audit-Nachweise verwalten.',group:'System'},
 };
 
-const permissionAliases:Record<string,string[]>={
-  '/customer-reports':['customer_reports:export','customer_portal:read'],
-  '/operative-leitstelle':['nsl:read','operations_measures:read'],
-  '/einsatz':['incidents:read','alarms:read','operations_measures:read'],
+type NavAccess={any?:string[];all?:string[];roles?:string[]};
+
+const navAccess:Record<string,NavAccess>={
+  '/customer-reports':{any:['customer_reports:export','customer_portal:read']},
+  '/operative-leitstelle':{any:['nsl:read','operations_measures:read']},
+  '/einsatz':{any:['incidents:read','alarms:read','operations_measures:read']},
+  // Die Administrationsseite ist bewusst rollengebunden: audit:read allein
+  // erlaubt nur das Lesen von Audit-Einträgen, nicht den Adminbereich.
+  '/admin':{roles:['admin','superadmin'],any:['audit:read']},
 };
+
+function hasNavAccess(path:string,permission:string,user:ReturnType<typeof storedUser>):boolean{
+  const rule=navAccess[path];
+  if(!rule)return hasPermission(permission);
+  if(rule.roles&&!rule.roles.includes(user?.role??''))return false;
+  if(rule.all&&!rule.all.every(hasPermission))return false;
+  if(rule.any&&!rule.any.some(hasPermission))return false;
+  return true;
+}
 
 const groups:{label:string;items:Item[]}[]=[
   {label:'Leitstelle',items:[['/','Übersicht','nsl:read'],['/operative-leitstelle','Operative Leitstelle','nsl:read','⌖'],['/einsatz','Einsatzmanagement','incidents:read','◈'],['/map','Live-Karte','positions:read'],['/alarms','Alarme','alarms:read'],['/incidents','Einsätze','incidents:read'],['/patrols','Kontrollgänge','patrols:read']]},
@@ -63,7 +77,7 @@ export function Layout(){
   const user=storedUser();
   const visible=groups.map(group=>({
     ...group,
-    items:group.items.filter(([path, ,permission])=>(permissionAliases[path]??[permission]).some(hasPermission)),
+    items:group.items.filter(([path, ,permission])=>hasNavAccess(path,permission,user)),
   })).filter(group=>group.items.length);
   const currentPath=basePath(location.pathname);
   const meta=pageMeta[currentPath]??pageMeta['/'];
