@@ -77,6 +77,94 @@ describe('phase 5 reporting',()=>{
   });
 });
 
+describe('reporting center',()=>{
+  const sessionQuery=(sql:string)=>sql.includes('FROM sessions')?result([session]):null;
+  const reportingRow={id:'doc-1',label:'Prüfungsdokument',status:'approved',occurred_at:'2026-11-20T10:00:00Z',
+    site_id:null,customer_id:null,employee_id:null,site_name:null,customer_name:null,employee_name:null,
+    details:{Dokumentart:'Prüfprotokoll'},metric:12.5,metric_label:'KiB',total:1};
+
+  it('lists all thirteen live modules with the single Berlin timezone',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sessionQuery(sql)??result([]));
+    const response=await request(app).get('/api/v1/reports/center/modules').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.timezone).toBe('Europe/Berlin');
+    expect(response.body.modules).toHaveLength(13);
+    expect(response.body.modules.map((module:{key:string})=>module.key)).toEqual(['A','B','C','D','E','F','G','H','I','J','K','L','M']);
+  });
+
+  it('derives the overview from real module queries with Berlin day bounds',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sessionQuery(sql)??result([{total:7}]));
+    const response=await request(app).get('/api/v1/reports/center/overview?from=2026-11-01&to=2026-11-30').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.filters).toMatchObject({from:'2026-11-01',to:'2026-11-30',page:1,page_size:25});
+    expect(response.body.modules).toHaveLength(13);
+    expect(response.body.modules.every((module:{total:number})=>module.total===7)).toBe(true);
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes("AT TIME ZONE 'Europe/Berlin'"))).toBe(true);
+  });
+
+  it('returns filtered, sorted and paginated module rows',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sessionQuery(sql)??result([reportingRow]));
+    const response=await request(app).get('/api/v1/reports/center/modules/documents?q=Prüfung&sort=label&order=asc&page=2&page_size=10').set('Cookie',csrf.Cookie);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({total:1,page:2,page_size:10});
+    expect(response.body.rows[0].label).toBe('Prüfungsdokument');
+    const call=queryMock.mock.calls.find(([sql])=>String(sql).includes('WITH normalized'));
+    expect(String(call?.[0])).toContain("ORDER BY f.label asc, f.id ASC");
+    expect(String(call?.[0])).toContain('LIMIT $8 OFFSET $9');
+  });
+
+  it('exports CSV, PDF and XLSX and audits every export',async()=>{
+    for(const format of ['csv','pdf','xlsx']){
+      queryMock.mockReset();
+      queryMock.mockImplementation(async(sql:string)=>{
+        if(sql.includes('FROM sessions'))return result([session]);
+        if(sql.includes('INSERT INTO audit_events'))return result([{id:'audit-1'}]);
+        return result([reportingRow]);
+      });
+      const response=await request(app)
+        .get(`/api/v1/reports/center/export?module=documents&format=${format}&from=2026-11-01&to=2026-11-30`)
+        .set('Cookie',csrf.Cookie)
+        .buffer(true)
+        .parse((res,callback)=>{
+          const chunks:Buffer[]=[];
+          res.on('data',chunk=>chunks.push(Buffer.from(chunk)));
+          res.on('end',()=>callback(null,Buffer.concat(chunks)));
+        });
+      expect(response.status).toBe(200);
+      expect(response.headers['x-report-row-count']).toBe('1');
+      expect(response.headers['x-report-truncated']).toBe('false');
+      expect(response.headers['content-disposition']).toContain('reporting-documents-2026-11-01-bis-2026-11-30');
+      const body=Buffer.isBuffer(response.body)?response.body.toString('utf8'):String(response.body);
+      if(format==='csv'){
+        expect(response.headers['content-type']).toContain('text/csv');
+        expect(body.startsWith('\uFEFF')).toBe(true);
+        expect(body).toContain('Prüfungsdokument');
+      }else if(format==='pdf'){
+        expect(body.startsWith('%PDF-1.4')).toBe(true);
+      }else{
+        expect(response.headers['content-type']).toContain('spreadsheetml.sheet');
+        expect(body.startsWith('PK')).toBe(true);
+      }
+      const auditCall=queryMock.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO audit_events'));
+      expect(auditCall?.[1]).toEqual(expect.arrayContaining(['reporting.center.exported']));
+    }
+  });
+
+  it('rejects unknown modules, formats, dates and site UUIDs',async()=>{
+    queryMock.mockImplementation(async(sql:string)=>sessionQuery(sql)??result([]));
+    const paths=[
+      '/api/v1/reports/center/modules/unknown',
+      '/api/v1/reports/center/export?module=documents&format=docx',
+      '/api/v1/reports/center/overview?from=2026-13-01',
+      '/api/v1/reports/center/modules/documents?site_id=not-a-uuid',
+    ];
+    for(const path of paths){
+      const response=await request(app).get(path).set('Cookie',csrf.Cookie);
+      expect(response.status).toBe(400);
+    }
+  });
+});
+
 describe('phase 5 TimeScan and privacy',()=>{
   it('reports provider status without treating unconfigured providers as verified',async()=>{
     queryMock.mockImplementation(async(sql:string)=>{

@@ -7,7 +7,14 @@ import {createTimeScanAdapter} from '../services/timescan.js';
 import {env} from '../config/env.js';
 import {checkSmsStatus,checkSmtpStatus,checkTimeScanStatus} from '../services/provider-status.js';
 import {resolveSecret} from '../services/secrets.js';
-import {pdfReport} from '../services/pdf.js';
+import {pdfReportLines} from '../services/pdf.js';
+import {recordAudit} from '../services/audit.js';
+import {
+  REPORTING_MODULES,parseReportingFilters,reportingDayRange,reportingFilterResponse,reportingModule,reportingQuery,reportingSiteScope,
+  reportCsv,reportHeaders,reportPdfLines,safeReportFilename,
+  type ReportingRow,
+} from '../services/reporting-domain.js';
+import {xlsxWorkbook} from '../services/xlsx.js';
 
 const uuid=z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const nonempty=z.string().trim().min(1);
@@ -19,13 +26,11 @@ phase5Router.use((req,res,next)=>/^\/(reports|admin|timescan|audit|privacy|reten
   : next());
 
 async function audit(req:Request,eventType:string,entityType?:string,entityId?:string,details:Record<string,unknown>={}){
-  await query('INSERT INTO audit_events(tenant_id,actor_user_id,event_type,entity_type,entity_id,details) VALUES($1,$2,$3,$4,$5,$6)',[req.user!.tenantId,req.user!.id,eventType,entityType??null,entityId??null,details]);
+  await recordAudit(req.user!.tenantId,req.user!.id,eventType,entityType,entityId,details);
 }
 
 function range(req:Request){
-  const from=typeof req.query.from==='string'?new Date(req.query.from):new Date(Date.now()-30*86400000);
-  const to=typeof req.query.to==='string'?new Date(req.query.to):new Date();
-  if(Number.isNaN(from.valueOf())||Number.isNaN(to.valueOf())||from>to)throw Object.assign(new Error('Ungültiger Zeitraum'),{status:400});
+  const {from,to}=reportingDayRange(req.query as Record<string,unknown>);
   return {from,to};
 }
 
@@ -120,6 +125,84 @@ phase5Router.get('/admin/provider-status',requirePermission('providers:read'),as
   }catch(error){next(error);}
 });
 
+// Reporting-Zentrum: ein zentraler Filter- und Exportvertrag für alle
+// Fachmodule A–M. Die Routen liegen vor /reports/:kind, damit sie nicht als
+// unbekannter Report-Kind-Wert interpretiert werden.
+const reportingPermission=requirePermission('reports:read',{allowedScopes:['tenant','site','system']});
+
+phase5Router.get('/reports/center/modules',reportingPermission,async(_req,res)=>{
+  res.json({modules:REPORTING_MODULES,timezone:'Europe/Berlin'});
+});
+
+phase5Router.get('/reports/center/overview',reportingPermission,async(req,res,next)=>{
+  try{
+    const filters=parseReportingFilters(req.query as Record<string,unknown>);
+    const siteScope=reportingSiteScope(req.user!);
+    const modules=await Promise.all(REPORTING_MODULES.map(async module=>{
+      const {text,values}=reportingQuery(module.slug,req.user!.tenantId,filters,siteScope,1);
+      const result=await query<{total:number}>(text,values);
+      return {key:module.key,slug:module.slug,title:module.title,description:module.description,
+        filters:module.filters,total:Number(result.rows[0]?.total??0)};
+    }));
+    res.json({generated_at:new Date().toISOString(),timezone:'Europe/Berlin',filters:reportingFilterResponse(filters),scope:siteScope?'site':'tenant',modules});
+  }catch(error){next(error);}
+});
+
+phase5Router.get('/reports/center/modules/:slug',reportingPermission,async(req,res,next)=>{
+  try{
+    const slug=String(req.params.slug);
+    const module=reportingModule(slug);
+    const filters=parseReportingFilters(req.query as Record<string,unknown>);
+    const {text,values}=reportingQuery(slug,req.user!.tenantId,filters,reportingSiteScope(req.user!));
+    const result=await query<ReportingRow>(text,values);
+    const total=Number(result.rows[0]?.total??0);
+    res.json({module,filters:reportingFilterResponse(filters),total,page:filters.page,page_size:filters.pageSize,
+      page_count:Math.max(1,Math.ceil(total/filters.pageSize)),rows:result.rows});
+  }catch(error){next(error);}
+});
+
+phase5Router.get('/reports/center/export',reportingPermission,async(req,res,next)=>{
+  try{
+    const slug=String(req.query.module??'');
+    const module=reportingModule(slug);
+    const format=String(req.query.format??'csv');
+    if(!['csv','pdf','xlsx'].includes(format))throw Object.assign(new Error('Ungültiges Exportformat'),{status:400});
+    const filters=parseReportingFilters(req.query as Record<string,unknown>);
+    const {text,values}=reportingQuery(slug,req.user!.tenantId,filters,reportingSiteScope(req.user!),5000);
+    const result=await query<ReportingRow>(text,values);
+    const rows=result.rows;
+    const total=Number(rows[0]?.total??0);
+    const truncated=total>rows.length;
+    await audit(req,'reporting.center.exported','reporting_module',undefined,{
+      module:slug,module_key:module.key,format,count:rows.length,total,truncated,
+      from:filters.from,to:filters.to,site_id:filters.siteId,customer_id:filters.customerId,
+      employee_id:filters.employeeId,search:filters.search,scope:reportingSiteScope(req.user!)?'site':'tenant',
+    });
+    const filename=safeReportFilename(slug,filters,format);
+    if(format==='csv'){
+      return res.set('content-type','text/csv; charset=utf-8').set({
+        'content-disposition':`attachment; filename="${filename}"`,
+        'x-report-row-count':String(rows.length),'x-report-truncated':String(truncated),
+      }).send(reportCsv(rows));
+    }
+    if(format==='pdf'){
+      return res.type('application/pdf').set({
+        'content-disposition':`attachment; filename="${filename}"`,
+        'x-report-row-count':String(rows.length),'x-report-truncated':String(truncated),
+      }).send(pdfReportLines(reportPdfLines(module.title,filters,rows)));
+    }
+    const table=[reportHeaders(rows),...rows.map(row=>[
+      row.occurred_at,row.label,row.status,row.site_name??row.site_id??'',
+      row.customer_name??row.customer_id??'',row.employee_name??row.employee_id??'',
+      row.metric??'',row.metric_label??'',JSON.stringify(row.details??{}),
+    ])];
+    return res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').set({
+      'content-disposition':`attachment; filename="${filename}"`,
+      'x-report-row-count':String(rows.length),'x-report-truncated':String(truncated),
+    }).send(xlsxWorkbook(table));
+  }catch(error){next(error);}
+});
+
 phase5Router.get('/reports/:kind',requirePermission('reports:read'),async(req,res,next)=>{
   try{
     const kind=String(req.params.kind);const {from,to}=range(req);
@@ -130,8 +213,8 @@ phase5Router.get('/reports/:kind',requirePermission('reports:read'),async(req,re
     if(format==='json')return res.json(rows);
     const output=csv(rows);
     if(format==='csv')return res.type('text/csv').set('content-disposition',`attachment; filename="${kind}-bericht.csv"`).send(output);
-    const text=(`${kind}-Bericht\n\n${rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | ')).join('\n')}`).replace(/[()\\]/g,'\\$&').replace(/\n/g,') Tj 0 -14 Td (');
-    return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-bericht.pdf"`).send(pdfReport(text));
+    const lines=[`${kind}-Bericht`,'',...rows.map(row=>Object.entries(row).map(([key,value])=>`${key}: ${String(value??'')}`).join(' | '))];
+    return res.type('application/pdf').set('content-disposition',`attachment; filename="${kind}-bericht.pdf"`).send(pdfReportLines(lines));
   }catch(error){next(error);}
 });
 
