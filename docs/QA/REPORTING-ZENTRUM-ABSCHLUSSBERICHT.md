@@ -1,6 +1,7 @@
 # Reporting-Zentrum – Abschlussbericht
 
 Branch: `feature/reporting-zentrum` (ausgehend von `origin/master` / `daa3456`)
+Pull Request: https://github.com/Xonni-star/SecurityOps-Platform/pull/70
 Stand: 28.11.2026
 
 ## Ziel und Abgrenzung
