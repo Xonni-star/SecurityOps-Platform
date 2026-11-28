@@ -16,7 +16,7 @@ Das Kundenberichtswesen wurde auf einem eigenen Branch vollständig professional
 |---|---|---|
 | 1 | Bestandsaufnahme und Abgrenzung zum Reporting-Zentrum | Bestehende Legacy-Route, RBAC-Keys, Audit, Migrationen und OpenAPI geprüft; `reporting-domain.ts` des Reporting-Zentrums bleibt nicht Teil dieser Branch-Basis, neuer zentraler SQL-Vertrag `customer-report-domain.ts` |
 | 2 | Anforderungs- und Rechteklärung | `customer_reports:read/write/approve/export` und `customer_portal:read` als getrennte Rechte; `customer_portal:read` impliziert niemals Exportberechtigung |
-| 3 | Datenmodell und Migration | `069_customer_reports_professionalisierung.sql` mit `customer_report_releases`, RLS, Indizes und Permission-Grants; nur Snapshot-Metadaten und Zeilenbasis, keine Freitexte oder Mitarbeiterdaten |
+| 3 | Datenmodell und Migration | `070_customer_reports_professionalisierung.sql` mit `customer_report_releases`, RLS, Indizes und Permission-Grants; nur Snapshot-Metadaten und Zeilenbasis, keine Freitexte oder Mitarbeiterdaten |
 | 4 | Domain-Service und Zeitvertrag | `backend/src/services/customer-report-domain.ts`: Berliner Tagesgrenzen, Filter, Sortierung, Projektion, Fingerprint, CSV-/Text-/PDF-Zeilen; keine Mock-Kennzahlen |
 | 5 | Vorschau echter Fachdaten | `GET /customer-reports/preview/:kind` mit Mandanten-, Objekt- und Kundenfilter; Audit und 403 bei fehlendem Objektzugriff |
 | 6 | Entwurf mit Datenbasis | `POST /customer-reports/releases` speichert Filter, Zeilen, `row_count` und Fingerprint atomar in derselben Transaktion wie das Audit |

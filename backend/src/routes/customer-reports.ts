@@ -76,8 +76,7 @@ async function releasedPortalRows(req:Request,kind:string,from:Date,to:Date,cust
     [req.user!.tenantId,kind,customerId??null,range.toDay,range.fromDay,siteId??null]);
   const release=result.rows[0];
   if(!release)throw Object.assign(new Error('Für diesen Zeitraum liegt kein freigegebener Kundenbericht vor'),{status:404});
-  return {id:release.id,rows:(Array.isArray(release.rows)?release.rows:[]).filter(row=>!siteId||row.site_id===siteId)};
-}
+  return {id:release.id,rows:(Array.isArray(release.rows)?release.rows:[]).filter(row=>!siteId||row.site_id===siteId)};}
 
 export const customerReportsRouter=Router();
 customerReportsRouter.use((req,res,next)=>/^\/(customer-reports|customer-portal)/.test(req.path)?requireAuth(req,res,next):next());

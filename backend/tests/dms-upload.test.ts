@@ -284,4 +284,41 @@ describe('DMS upload security and provider failures',()=>{
     expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('FROM dms_documents d JOIN dms_versions v'))).toBe(false);
     expect(storage.get).not.toHaveBeenCalled();
   });
+
+  it('replays a repeated version mutation with the stored final response',async()=>{
+    const {canonicalPayloadHash}=await import('../src/services/offline-sync.js');
+    const body=versionBody();
+    const stored={id:'00000000-0000-4000-8000-0000000000c1',version_no:2,lifecycle_state:'available',approval_invalidated:true};
+    const receipt={action:'dms.document.version',payload_hash:canonicalPayloadHash(body),status:'completed',response:stored};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('INSERT INTO sync_receipts'))return result([],0);
+      if(sql.includes('SELECT action,payload_hash,status,response FROM sync_receipts'))return result([receipt],1);
+      if(sql.includes('FROM dms_documents WHERE'))return result([document],1);
+      if(sql.includes('FROM dms_versions'))return result([version],1);
+      return result([]);
+    });
+    const response=await postVersion(body);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({id:stored.id,version_no:2,approval_invalidated:true}));
+    expect(queryMock.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO dms_versions'))).toBe(false);
+    expect(storage.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a reused version mutation id with a different payload',async()=>{
+    const {canonicalPayloadHash}=await import('../src/services/offline-sync.js');
+    const body=versionBody();
+    const receipt={action:'dms.document.version',payload_hash:canonicalPayloadHash({...body,title:'anders'}),status:'completed',response:{}};
+    queryMock.mockImplementation(async(sql:string)=>{
+      if(sql.includes('FROM sessions'))return result([activeUser]);
+      if(sql.includes('INSERT INTO sync_receipts'))return result([],0);
+      if(sql.includes('SELECT action,payload_hash,status,response FROM sync_receipts'))return result([receipt],1);
+      if(sql.includes('FROM dms_documents WHERE'))return result([document],1);
+      if(sql.includes('FROM dms_versions'))return result([version],1);
+      return result([]);
+    });
+    const response=await postVersion(body);
+    expect(response.status).toBe(409);
+    expect(storage.delete).toHaveBeenCalledTimes(1);
+  });
 });
