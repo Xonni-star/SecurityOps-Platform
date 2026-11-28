@@ -127,7 +127,8 @@ describe('Operative Leitstelle frontend',()=>{
       expect(list.get('overdue')).toBe('true');
     });
     expect(screen.queryByText('Kritischer Alarm')).toBeTruthy();
-    fireEvent.click(screen.getAllByRole('button',{name:'Weiter'}).at(-1)!);
+    const nextButtons=screen.getAllByRole('button',{name:'Weiter'});
+    fireEvent.click(nextButtons[nextButtons.length-1]!);
     await waitFor(()=>expect(new URLSearchParams(lastMeasuresUrl().split('?')[1]).get('page')).toBe('2'));
   });
 
